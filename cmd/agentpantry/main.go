@@ -13,7 +13,6 @@ import (
 
 	"github.com/solomonneas/agentpantry/internal/config"
 	"github.com/solomonneas/agentpantry/internal/keyfile"
-	"github.com/solomonneas/agentpantry/internal/policy"
 	"github.com/solomonneas/agentpantry/internal/service"
 	"github.com/solomonneas/agentpantry/internal/sink"
 	"github.com/solomonneas/agentpantry/internal/source"
@@ -149,10 +148,6 @@ func cmdSink(args []string) error {
 	if err != nil {
 		return err
 	}
-	opener, err := transport.NewOpener(key)
-	if err != nil {
-		return err
-	}
 	sidecarPath := filepath.Join(config.Dir(), "sidecar.db")
 	sc, err := surface.NewSidecar(sidecarPath)
 	if err != nil {
@@ -167,17 +162,30 @@ func cmdSink(args []string) error {
 	defer ln.Close()
 	fmt.Printf("sink: listening on %s, sidecar at %s\n", c.Peer, sidecarPath)
 
-	srv := &sink.Server{Opener: opener, Surfaces: []sink.Surface{sc}}
 	ctx := signalCtx()
+	// Closing the listener on cancellation unblocks the Accept call so the
+	// command can exit cleanly on SIGINT/SIGTERM.
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
 	for {
-		if ctx.Err() != nil {
-			return nil
-		}
 		conn, err := ln.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
-		// One connection at a time keeps the replay counter monotonic.
+		// Build a fresh Opener (and Server) per connection so the replay
+		// counter resets to match a reconnecting source, whose Sealer
+		// counter restarts at 1. The PSK is unchanged across connections.
+		opener, err := transport.NewOpener(key)
+		if err != nil {
+			conn.Close()
+			return err
+		}
+		srv := &sink.Server{Opener: opener, Surfaces: []sink.Surface{sc}}
 		if err := srv.Serve(ctx, conn); err != nil {
 			fmt.Fprintln(os.Stderr, "connection ended:", err)
 		}
@@ -225,6 +233,3 @@ func signalCtx() context.Context {
 	go func() { <-ch; cancel() }()
 	return ctx
 }
-
-// ensure policy import is used even if config has no domains in some builds.
-var _ = policy.Domain{}
