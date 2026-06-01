@@ -42,11 +42,7 @@ func Default(role string) Config {
 		Surfaces: []string{"sidecar"},
 		Domains:  policy.Domain{},
 	}
-	if role == "sink" {
-		c.Peer = "127.0.0.1:8787"
-	} else {
-		c.Peer = "127.0.0.1:8787"
-	}
+	c.Peer = "127.0.0.1:8787"
 	return c
 }
 
