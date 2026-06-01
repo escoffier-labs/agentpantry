@@ -2,11 +2,24 @@ package vault
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"sync"
 
 	"github.com/godbus/dbus/v5"
 )
 
 var errNoSecret = errors.New("secret not found")
+
+// fallbackWarnOnce ensures the "basic" backend fallback notice is printed at
+// most once per process.
+var fallbackWarnOnce sync.Once
+
+func warnPeanutsFallback() {
+	fallbackWarnOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "agentpantry: browser keyring secret not found via Secret Service; falling back to the 'basic' backend passphrase. If your browser uses gnome-keyring/kwallet, ensure it is running and unlocked.")
+	})
+}
 
 // SecretServiceKey fetches the browser keyring passphrase via the freedesktop
 // Secret Service, falling back to "peanuts" when unavailable.
@@ -24,11 +37,13 @@ func (k *SecretServiceKey) Passphrase() (string, error) {
 	secret, err := f(k.Label)
 	if err != nil {
 		if errors.Is(err, errNoSecret) {
+			warnPeanutsFallback()
 			return "peanuts", nil
 		}
 		return "", err
 	}
 	if secret == "" {
+		warnPeanutsFallback()
 		return "peanuts", nil
 	}
 	return secret, nil

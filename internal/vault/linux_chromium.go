@@ -67,6 +67,7 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 	defer rows.Close()
 
 	var out []cookie.Cookie
+	var skipped int
 	for rows.Next() {
 		var (
 			host, name, plain, path    string
@@ -81,7 +82,11 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 		if len(enc) > 0 {
 			value, err = DecryptValue(enc, pass)
 			if err != nil {
-				return nil, fmt.Errorf("decrypt %s/%s: %w", host, name, err)
+				// A single undecryptable row (wrong keyring passphrase or a
+				// foreign row) must not abort the whole sync. Skip it and
+				// continue. Never log the cookie value.
+				skipped++
+				continue
 			}
 		}
 		out = append(out, cookie.Cookie{
@@ -90,5 +95,11 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 			IsHTTPOnly: httpOnly != 0, SameSite: samesite,
 		})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d cookie(s) that failed to decrypt (wrong keyring passphrase or foreign rows)\n", skipped)
+	}
+	return out, nil
 }
