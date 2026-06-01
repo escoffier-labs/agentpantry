@@ -26,10 +26,10 @@ func TestDirReaderReadsFilesSkipsDirsAndDotfiles(t *testing.T) {
 	}
 }
 
-func TestDirReaderMissingDirIsEmpty(t *testing.T) {
+func TestDirReaderMissingDirErrors(t *testing.T) {
 	r := &DirReader{Dir: filepath.Join(t.TempDir(), "nope")}
-	secs, err := r.ReadSecrets(context.Background())
-	if err != nil || len(secs) != 0 {
-		t.Fatalf("missing dir should yield no secrets and no error, got %v / %d", err, len(secs))
+	_, err := r.ReadSecrets(context.Background())
+	if err == nil {
+		t.Fatal("missing dir should return an error so the sink keeps its synced secrets")
 	}
 }

@@ -2,6 +2,7 @@ package secretsrc
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,10 +18,7 @@ type DirReader struct {
 func (r *DirReader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 	entries, err := os.ReadDir(r.Dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, fmt.Errorf("secrets dir %s: %w", r.Dir, err)
 	}
 	var out []secret.Secret
 	for _, e := range entries {

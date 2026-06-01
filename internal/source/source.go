@@ -3,7 +3,9 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -54,18 +56,29 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	cookieDiff := curCookies.DiffFrom(s.prev)
 
 	var allSecrets []secret.Secret
+	secretsUnavailable := false
 	for _, r := range s.Secrets {
 		ss, err := r.ReadSecrets(ctx)
 		if err != nil {
-			return err
+			secretsUnavailable = true
+			break
 		}
 		allSecrets = append(allSecrets, ss...)
 	}
-	curSecrets := secret.NewSnapshot(allSecrets)
-	secretDiff := curSecrets.DiffFrom(s.prevSecrets)
+
+	var secretDiff secret.Diff
+	if secretsUnavailable {
+		// A source secrets read failed (e.g. a vanished/unmounted dir). Leave the
+		// already-synced secrets on the sink untouched this cycle instead of
+		// emitting deletes for everything. Cookies still proceed.
+		fmt.Fprintln(os.Stderr, "agentpantry: secrets source unavailable this cycle, leaving synced secrets untouched")
+	} else {
+		curSecrets := secret.NewSnapshot(allSecrets)
+		secretDiff = curSecrets.DiffFrom(s.prevSecrets)
+		s.prevSecrets = curSecrets
+	}
 
 	s.prev = curCookies
-	s.prevSecrets = curSecrets
 
 	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff}
 	if p.IsEmpty() {
