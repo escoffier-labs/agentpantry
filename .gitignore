@@ -1,0 +1,14 @@
+# Go
+/agentpantry
+/pantry
+*.test
+/dist/
+
+# Local agent dirs
+.claude/
+.codex/
+.brigade/
+
+# Secrets / runtime
+*.key
+config.toml
