@@ -129,7 +129,7 @@ func (s *ChromeStore) Apply(d cookie.Diff) error {
 		var colNames, placeholders []string
 		var args []interface{}
 		for col, typ := range s.cols {
-			colNames = append(colNames, col)
+			colNames = append(colNames, "\""+strings.ReplaceAll(col, "\"", "\"\"")+"\"")
 			placeholders = append(placeholders, "?")
 			if v, ok := mapped[col]; ok {
 				args = append(args, v)
