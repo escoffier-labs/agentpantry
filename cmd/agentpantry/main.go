@@ -13,6 +13,7 @@ import (
 
 	"github.com/solomonneas/agentpantry/internal/config"
 	"github.com/solomonneas/agentpantry/internal/keyfile"
+	"github.com/solomonneas/agentpantry/internal/secretsrc"
 	"github.com/solomonneas/agentpantry/internal/service"
 	"github.com/solomonneas/agentpantry/internal/sink"
 	"github.com/solomonneas/agentpantry/internal/source"
@@ -122,6 +123,13 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
+	var secretReaders []source.SecretReader
+	if c.SecretsDir != "" {
+		secretReaders = append(secretReaders, &secretsrc.DirReader{Dir: c.SecretsDir})
+		if _, statErr := os.Stat(c.SecretsDir); statErr == nil {
+			paths = append(paths, c.SecretsDir)
+		}
+	}
 	conn, err := net.Dial("tcp", c.Peer)
 	if err != nil {
 		return fmt.Errorf("dial sink %s: %w", c.Peer, err)
@@ -129,10 +137,11 @@ func cmdSource(args []string) error {
 	defer conn.Close()
 
 	syncer := &source.Syncer{
-		Vaults: vs,
-		Policy: c.Domains,
-		Sealer: sealer,
-		Out:    conn,
+		Vaults:  vs,
+		Secrets: secretReaders,
+		Policy:  c.Domains,
+		Sealer:  sealer,
+		Out:     conn,
 	}
 	ctx := signalCtx()
 	fmt.Printf("source: watching %d store(s), pushing to %s\n", len(paths), c.Peer)
@@ -148,27 +157,62 @@ func cmdSink(args []string) error {
 	if err != nil {
 		return err
 	}
-	sidecarPath := filepath.Join(config.Dir(), "sidecar.db")
-	sc, err := surface.NewSidecar(sidecarPath)
-	if err != nil {
-		return err
+
+	var cookieSurfaces []sink.CookieSurface
+	var secretSurfaces []sink.SecretSurface
+	var closers []func() error
+
+	for _, name := range c.Surfaces {
+		switch name {
+		case "sidecar":
+			sc, err := surface.NewSidecar(filepath.Join(config.Dir(), "sidecar.db"))
+			if err != nil {
+				return err
+			}
+			cookieSurfaces = append(cookieSurfaces, sc)
+			closers = append(closers, sc.Close)
+		case "chrome":
+			if len(c.Browsers) == 0 {
+				return fmt.Errorf("chrome surface requires a [[browsers]] entry with cookie_path")
+			}
+			cs, err := surface.NewChromeStore(c.Browsers[0].CookiePath, &vault.SecretServiceKey{Label: "Chrome Safe Storage"})
+			if err != nil {
+				return err
+			}
+			cookieSurfaces = append(cookieSurfaces, cs)
+			closers = append(closers, cs.Close)
+		case "secrets":
+			if c.SecretsDir == "" {
+				return fmt.Errorf("secrets surface requires secrets_dir in config")
+			}
+			sd, err := surface.NewSecretDir(c.SecretsDir)
+			if err != nil {
+				return err
+			}
+			secretSurfaces = append(secretSurfaces, sd)
+		default:
+			return fmt.Errorf("unknown surface %q", name)
+		}
 	}
-	defer sc.Close()
+	defer func() {
+		for _, cl := range closers {
+			cl()
+		}
+	}()
 
 	ln, err := net.Listen("tcp", c.Peer)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
-	fmt.Printf("sink: listening on %s, sidecar at %s\n", c.Peer, sidecarPath)
+	fmt.Printf("sink: listening on %s, surfaces %v\n", c.Peer, c.Surfaces)
 
 	ctx := signalCtx()
-	// Closing the listener on cancellation unblocks the Accept call so the
-	// command can exit cleanly on SIGINT/SIGTERM.
 	go func() {
 		<-ctx.Done()
 		ln.Close()
 	}()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -177,15 +221,14 @@ func cmdSink(args []string) error {
 			}
 			return err
 		}
-		// Build a fresh Opener (and Server) per connection so the replay
-		// counter resets to match a reconnecting source, whose Sealer
-		// counter restarts at 1. The PSK is unchanged across connections.
-		opener, err := transport.NewOpener(key)
-		if err != nil {
+		// Fresh opener per connection so a reconnecting source (whose Sealer
+		// counter restarts at 1) is not rejected as a replay.
+		opener, oerr := transport.NewOpener(key)
+		if oerr != nil {
 			conn.Close()
-			return err
+			return oerr
 		}
-		srv := &sink.Server{Opener: opener, Surfaces: []sink.Surface{sc}}
+		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
 		if err := srv.Serve(ctx, conn); err != nil {
 			fmt.Fprintln(os.Stderr, "connection ended:", err)
 		}
