@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/solomonneas/agentpantry/internal/cookie"
 	"github.com/solomonneas/agentpantry/internal/policy"
 	"github.com/solomonneas/agentpantry/internal/transport"
@@ -54,4 +56,50 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return err
 	}
 	return transport.WriteFrame(s.Out, frame)
+}
+
+// Watch runs an initial sync, then re-syncs on debounced events for paths.
+func (s *Syncer) Watch(ctx context.Context, paths []string, debounce time.Duration) error {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	defer w.Close()
+	for _, p := range paths {
+		if err := w.Add(p); err != nil {
+			return err
+		}
+	}
+
+	if err := s.SyncOnce(ctx); err != nil {
+		return err
+	}
+
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case _, ok := <-w.Events:
+			if !ok {
+				return nil
+			}
+			if timer == nil {
+				timer = time.NewTimer(debounce)
+				timerC = timer.C
+			} else {
+				timer.Reset(debounce)
+			}
+		case err, ok := <-w.Errors:
+			if !ok {
+				return nil
+			}
+			return err
+		case <-timerC:
+			if err := s.SyncOnce(ctx); err != nil {
+				return err
+			}
+		}
+	}
 }
