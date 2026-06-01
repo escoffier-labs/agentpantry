@@ -8,60 +8,67 @@ import (
 
 	"github.com/solomonneas/agentpantry/internal/cookie"
 	"github.com/solomonneas/agentpantry/internal/policy"
+	"github.com/solomonneas/agentpantry/internal/secret"
 	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/solomonneas/agentpantry/internal/wire"
 )
 
 type fakeVault struct{ cs []cookie.Cookie }
 
-func (f fakeVault) Name() string { return "fake" }
-func (f fakeVault) ReadCookies(context.Context) ([]cookie.Cookie, error) {
-	return f.cs, nil
-}
+func (f fakeVault) ReadCookies(context.Context) ([]cookie.Cookie, error) { return f.cs, nil }
 
-func TestSyncOnceFiltersAndSeals(t *testing.T) {
-	vault := fakeVault{cs: []cookie.Cookie{
-		{Host: "github.com", Name: "sid", Path: "/", Value: "keep"},
-		{Host: "bank.com", Name: "tok", Path: "/", Value: "drop"},
-	}}
-	sealer, _ := transport.NewSealer(make([]byte, 32))
-	var buf bytes.Buffer
+type fakeSecrets struct{ ss []secret.Secret }
 
-	syncer := &Syncer{
-		Vaults: []CookieReader{vault},
-		Policy: policy.Domain{Allow: []string{"github.com"}},
-		Sealer: sealer,
-		Out:    &buf,
-	}
+func (f fakeSecrets) ReadSecrets(context.Context) ([]secret.Secret, error) { return f.ss, nil }
 
-	if err := syncer.SyncOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	// Decode the single frame and confirm only github.com survived.
-	frame, err := transport.ReadFrame(&buf)
+func decodePayload(t *testing.T, buf *bytes.Buffer) wire.Payload {
+	t.Helper()
+	frame, err := transport.ReadFrame(buf)
 	if err != nil {
 		t.Fatal(err)
 	}
 	opener, _ := transport.NewOpener(make([]byte, 32))
-	payload, err := opener.Open(frame)
+	raw, err := opener.Open(frame)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var d cookie.Diff
-	if err := json.Unmarshal(payload, &d); err != nil {
+	var p wire.Payload
+	if err := json.Unmarshal(raw, &p); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Upserts) != 1 || d.Upserts[0].Host != "github.com" {
-		t.Fatalf("policy filter failed: %+v", d.Upserts)
+	return p
+}
+
+func TestSyncOnceFiltersCookiesAndCarriesSecrets(t *testing.T) {
+	sealer, _ := transport.NewSealer(make([]byte, 32))
+	var buf bytes.Buffer
+	syncer := &Syncer{
+		Vaults: []CookieReader{fakeVault{cs: []cookie.Cookie{
+			{Host: "github.com", Name: "sid", Path: "/", Value: "keep"},
+			{Host: "bank.com", Name: "t", Path: "/", Value: "drop"},
+		}}},
+		Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "gh", Value: "tok"}}}},
+		Policy:  policy.Domain{Allow: []string{"github.com"}},
+		Sealer:  sealer,
+		Out:     &buf,
+	}
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := decodePayload(t, &buf)
+	if len(p.Cookies.Upserts) != 1 || p.Cookies.Upserts[0].Host != "github.com" {
+		t.Fatalf("cookie filter failed: %+v", p.Cookies.Upserts)
+	}
+	if len(p.Secrets.Upserts) != 1 || p.Secrets.Upserts[0].Name != "gh" {
+		t.Fatalf("secret not carried: %+v", p.Secrets.Upserts)
 	}
 }
 
 func TestSyncOnceNoChangeSendsNothing(t *testing.T) {
-	vault := fakeVault{cs: []cookie.Cookie{{Host: "github.com", Name: "s", Path: "/", Value: "v"}}}
 	sealer, _ := transport.NewSealer(make([]byte, 32))
 	var buf bytes.Buffer
 	syncer := &Syncer{
-		Vaults: []CookieReader{vault},
+		Vaults: []CookieReader{fakeVault{cs: []cookie.Cookie{{Host: "github.com", Name: "s", Path: "/", Value: "v"}}}},
 		Policy: policy.Domain{Allow: []string{"github.com"}},
 		Sealer: sealer,
 		Out:    &buf,
@@ -71,13 +78,12 @@ func TestSyncOnceNoChangeSendsNothing(t *testing.T) {
 	}
 	first := buf.Len()
 	if first == 0 {
-		t.Fatal("first sync should send a frame")
+		t.Fatal("first sync should send")
 	}
-	// Second sync with identical state must add nothing.
 	if err := syncer.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if buf.Len() != first {
-		t.Fatalf("unchanged state must not resend: grew by %d", buf.Len()-first)
+		t.Fatalf("unchanged state must not resend")
 	}
 }
