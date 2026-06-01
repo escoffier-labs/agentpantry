@@ -84,7 +84,48 @@ user unit and prints the commands to enable it.
 - Transport is AES-256-GCM with a shared key; run it over Tailscale, Twingate,
   a LAN you trust, or an SSH tunnel.
 
+## Surfaces
+
+The sink applies each synced diff to one or more surfaces, chosen by the
+`surfaces` list in the sink config.
+
+- `sidecar` (always available): a plaintext sidecar SQLite database holding the
+  current cookie set, written mode 0600. This is the default and safest target.
+- `chrome` (opt-in, fragile): writes synced cookies directly into an existing
+  Chrome Cookies SQLite, re-encrypting each value with the sink machine's own
+  keyring key. The table schema is introspected at open time so it tolerates
+  Chrome version differences. This surface targets a profile that is not
+  running. Writing a live profile is unsupported, and Chrome may ignore or
+  overwrite the rows. It requires a `[[browsers]]` entry whose `cookie_path`
+  points at the target store.
+- `secrets`: writes synced secrets as individual files under the configured
+  secrets directory, one file per secret, mode 0600.
+
+Example sink config selecting multiple surfaces:
+
+    role = "sink"
+    peer = "127.0.0.1:8787"
+    surfaces = ["sidecar", "secrets"]
+    secrets_dir = "/home/agent/.config/agentpantry/secrets"
+
+## Secrets
+
+Beyond cookies, agentpantry can mirror a directory of secrets from source to
+sink in the same encrypted frame. On the source, set `secrets_dir` to a
+directory and each regular file becomes one secret (the file name is the secret
+name, the file contents are the value). Dotfiles and subdirectories are skipped.
+
+On the sink, enable the `secrets` surface and set `secrets_dir` to the
+destination. Each secret is written as a 0600 file named after the secret.
+Secret names are sanitized on the sink: any name containing a path separator,
+a `..` element, or an absolute path is skipped rather than written outside the
+secrets directory.
+
+Cookies and secrets travel together inside one AES-256-GCM frame, so a single
+peer connection carries both.
+
 ## Status
 
-Phase 1 (v0.1). Roadmap: real-Chrome re-encrypt surface, secrets bus, per-CLI
-adapters, Firefox, Windows.
+Phase 2 (shipped): the secrets bus and the real-Chrome re-encrypt surface are
+in. Phase 1 cookie sync to the plaintext sidecar remains the default. Roadmap:
+per-CLI adapters, Firefox, Windows.
