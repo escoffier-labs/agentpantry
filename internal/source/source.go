@@ -3,13 +3,17 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/solomonneas/agentpantry/internal/cookie"
 	"github.com/solomonneas/agentpantry/internal/policy"
+	"github.com/solomonneas/agentpantry/internal/secret"
 	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/solomonneas/agentpantry/internal/wire"
 )
 
 // CookieReader is the slice of BrowserVault that Syncer needs.
@@ -17,19 +21,26 @@ type CookieReader interface {
 	ReadCookies(ctx context.Context) ([]cookie.Cookie, error)
 }
 
-// Syncer turns successive vault reads into sealed diff frames.
-type Syncer struct {
-	Vaults []CookieReader
-	Policy policy.Domain
-	Sealer *transport.Sealer
-	Out    io.Writer
+// SecretReader yields the current secrets from one source.
+type SecretReader interface {
+	ReadSecrets(ctx context.Context) ([]secret.Secret, error)
+}
 
-	prev cookie.Snapshot
+// Syncer turns successive vault and secret reads into sealed payload frames.
+type Syncer struct {
+	Vaults  []CookieReader
+	Secrets []SecretReader
+	Policy  policy.Domain
+	Sealer  *transport.Sealer
+	Out     io.Writer
+
+	prev        cookie.Snapshot
+	prevSecrets secret.Snapshot
 }
 
 // SyncOnce performs a single read-diff-send cycle.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
-	var all []cookie.Cookie
+	var allCookies []cookie.Cookie
 	for _, v := range s.Vaults {
 		cs, err := v.ReadCookies(ctx)
 		if err != nil {
@@ -37,21 +48,47 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		}
 		for _, c := range cs {
 			if s.Policy.Permit(c.Host) {
-				all = append(all, c)
+				allCookies = append(allCookies, c)
 			}
 		}
 	}
-	cur := cookie.NewSnapshot(all)
-	d := cur.DiffFrom(s.prev)
-	s.prev = cur
-	if d.IsEmpty() {
+	curCookies := cookie.NewSnapshot(allCookies)
+	cookieDiff := curCookies.DiffFrom(s.prev)
+
+	var allSecrets []secret.Secret
+	secretsUnavailable := false
+	for _, r := range s.Secrets {
+		ss, err := r.ReadSecrets(ctx)
+		if err != nil {
+			secretsUnavailable = true
+			break
+		}
+		allSecrets = append(allSecrets, ss...)
+	}
+
+	var secretDiff secret.Diff
+	if secretsUnavailable {
+		// A source secrets read failed (e.g. a vanished/unmounted dir). Leave the
+		// already-synced secrets on the sink untouched this cycle instead of
+		// emitting deletes for everything. Cookies still proceed.
+		fmt.Fprintln(os.Stderr, "agentpantry: secrets source unavailable this cycle, leaving synced secrets untouched")
+	} else {
+		curSecrets := secret.NewSnapshot(allSecrets)
+		secretDiff = curSecrets.DiffFrom(s.prevSecrets)
+		s.prevSecrets = curSecrets
+	}
+
+	s.prev = curCookies
+
+	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff}
+	if p.IsEmpty() {
 		return nil
 	}
-	payload, err := json.Marshal(d)
+	raw, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	frame, err := s.Sealer.Seal(payload)
+	frame, err := s.Sealer.Seal(raw)
 	if err != nil {
 		return err
 	}

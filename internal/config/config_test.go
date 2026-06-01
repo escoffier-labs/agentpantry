@@ -34,3 +34,19 @@ func TestDefaultSinkBindsLoopback(t *testing.T) {
 		t.Fatalf("default surface must be sidecar, got %v", c.Surfaces)
 	}
 }
+
+func TestSecretsDirRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("source")
+	in.SecretsDir = "/home/u/.config/agentpantry/secrets"
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.SecretsDir != in.SecretsDir {
+		t.Fatalf("secrets dir lost: %q", out.SecretsDir)
+	}
+}
