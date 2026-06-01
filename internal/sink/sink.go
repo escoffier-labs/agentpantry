@@ -7,21 +7,29 @@ import (
 	"io"
 
 	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/solomonneas/agentpantry/internal/secret"
 	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/solomonneas/agentpantry/internal/wire"
 )
 
-// Surface is the sink-side destination (matches surface.Surface).
-type Surface interface {
+// CookieSurface is a sink-side destination for synced cookies.
+type CookieSurface interface {
 	Apply(d cookie.Diff) error
 }
 
-// Server opens frames from a stream and applies them to surfaces.
-type Server struct {
-	Opener   *transport.Opener
-	Surfaces []Surface
+// SecretSurface is a sink-side destination for synced secrets.
+type SecretSurface interface {
+	ApplySecrets(d secret.Diff) error
 }
 
-// Serve reads frames until EOF, applying each diff to all surfaces.
+// Server opens frames from a stream and routes payloads to surfaces.
+type Server struct {
+	Opener         *transport.Opener
+	CookieSurfaces []CookieSurface
+	SecretSurfaces []SecretSurface
+}
+
+// Serve reads frames until EOF, routing each payload to all surfaces.
 func (s *Server) Serve(ctx context.Context, r io.Reader) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -34,17 +42,26 @@ func (s *Server) Serve(ctx context.Context, r io.Reader) error {
 		if err != nil {
 			return err
 		}
-		payload, err := s.Opener.Open(frame)
+		raw, err := s.Opener.Open(frame)
 		if err != nil {
 			return err
 		}
-		var d cookie.Diff
-		if err := json.Unmarshal(payload, &d); err != nil {
+		var p wire.Payload
+		if err := json.Unmarshal(raw, &p); err != nil {
 			return err
 		}
-		for _, surf := range s.Surfaces {
-			if err := surf.Apply(d); err != nil {
-				return err
+		if !p.Cookies.IsEmpty() {
+			for _, cs := range s.CookieSurfaces {
+				if err := cs.Apply(p.Cookies); err != nil {
+					return err
+				}
+			}
+		}
+		if !p.Secrets.IsEmpty() {
+			for _, ss := range s.SecretSurfaces {
+				if err := ss.ApplySecrets(p.Secrets); err != nil {
+					return err
+				}
 			}
 		}
 	}
