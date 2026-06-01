@@ -32,6 +32,9 @@ func safeName(name string) bool {
 	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, os.PathSeparator) {
 		return false
 	}
+	if strings.ContainsRune(name, 0) || strings.ContainsRune(name, '\\') {
+		return false
+	}
 	return name == filepath.Base(name)
 }
 
@@ -43,7 +46,8 @@ func (s *SecretDir) ApplySecrets(d secret.Diff) error {
 			continue
 		}
 		if err := os.WriteFile(filepath.Join(s.Dir, sec.Name), []byte(sec.Value), 0o600); err != nil {
-			return err
+			skipped++
+			continue
 		}
 	}
 	for _, name := range d.Deletes {
@@ -52,7 +56,8 @@ func (s *SecretDir) ApplySecrets(d secret.Diff) error {
 			continue
 		}
 		if err := os.Remove(filepath.Join(s.Dir, name)); err != nil && !os.IsNotExist(err) {
-			return err
+			skipped++
+			continue
 		}
 	}
 	if skipped > 0 {

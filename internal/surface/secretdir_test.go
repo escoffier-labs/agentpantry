@@ -53,3 +53,26 @@ func TestSecretDirRejectsUnsafeNames(t *testing.T) {
 		t.Fatalf("no unsafe-named secrets should be written, found %d", len(entries))
 	}
 }
+
+func TestSecretDirSkipsNulNameWithoutError(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	s, err := NewSecretDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.ApplySecrets(secret.Diff{Upserts: []secret.Secret{
+		{Name: "bad\x00name", Value: "x"},
+		{Name: "good", Value: "ok"},
+	}})
+	if err != nil {
+		t.Fatalf("one bad secret must not fail the whole apply: %v", err)
+	}
+	good, err := os.ReadFile(filepath.Join(dir, "good"))
+	if err != nil || string(good) != "ok" {
+		t.Fatalf("valid secret should still be written: %v / %q", err, good)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("only the valid secret should be written, found %d", len(entries))
+	}
+}
