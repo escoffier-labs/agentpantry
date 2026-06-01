@@ -59,3 +59,22 @@ func DecryptValue(enc []byte, keyringPass string) (string, error) {
 	}
 	return string(pt), nil
 }
+
+func pkcs7Pad(b []byte) []byte {
+	pad := 16 - len(b)%16
+	return append(b, bytes.Repeat([]byte{byte(pad)}, pad)...)
+}
+
+// EncryptValue produces a v11-prefixed AES-128-CBC ciphertext for a Chromium
+// Linux store, using keyringPass. It is the inverse of DecryptValue for v11.
+func EncryptValue(plaintext, keyringPass string) ([]byte, error) {
+	block, err := aes.NewCipher(deriveKey(keyringPass))
+	if err != nil {
+		return nil, err
+	}
+	iv := bytes.Repeat([]byte{' '}, 16)
+	padded := pkcs7Pad([]byte(plaintext))
+	ct := make([]byte, len(padded))
+	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ct, padded)
+	return append([]byte("v11"), ct...), nil
+}
