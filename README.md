@@ -74,6 +74,13 @@ plaintext cookies from the profile's `cookies.sqlite`, so no keyring is needed).
 Point `cookie_path` at the profile's cookie store. A source configured with only
 Firefox browsers skips the keyring check in `agentpantry doctor`.
 
+On Windows, `kind = "chromium"` decrypts `v10` cookies using the DPAPI-unwrapped
+key from the profile's `Local State`. App-bound `v20` cookies (Chrome 127+) are
+skipped for now. `agentpantry install-service` on Windows prints a Scheduled Task
+command (agentpantry is a console app, so it runs as a logon task rather than an
+SCM service). A Windows sink supports the sidecar, secrets, and adapter surfaces;
+the real-Chrome re-encrypt surface is not yet available on Windows.
+
 Both ends must hold the same pre-shared key. Generate it once on the sink with
 `agentpantry keygen` and copy the file to the source. Run `agentpantry status`
 on either machine to print the active role, peer, key path, surfaces, and the
