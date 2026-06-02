@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/ffvault"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 	"github.com/escoffier-labs/agentpantry/internal/sink"
@@ -378,5 +379,62 @@ func TestEndToEndGHAdapter(t *testing.T) {
 	body, _ := os.ReadFile(hostsPath)
 	if !strings.Contains(string(body), "ghp_live") {
 		t.Fatalf("gh adapter did not receive token: %q", body)
+	}
+}
+
+func TestEndToEndFirefoxToSidecar(t *testing.T) {
+	dir := t.TempDir()
+	ffPath := filepath.Join(dir, "cookies.sqlite")
+	db, err := sql.Open("sqlite", ffPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE moz_cookies(
+		id INTEGER PRIMARY KEY, originAttributes TEXT NOT NULL DEFAULT '',
+		name TEXT, value TEXT, host TEXT, path TEXT, expiry INTEGER,
+		lastAccessed INTEGER, creationTime INTEGER, isSecure INTEGER,
+		isHttpOnly INTEGER, inBrowserElement INTEGER DEFAULT 0,
+		sameSite INTEGER DEFAULT 0, rawSameSite INTEGER DEFAULT 0, schemeMap INTEGER DEFAULT 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO moz_cookies(name,value,host,path,expiry,isSecure,isHttpOnly,sameSite)
+		VALUES(?,?,?,?,?,?,?,?)`, "sid", "ff-session", "github.com", "/", int64(1637000000), 1, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	sc, err := surface.NewSidecar(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key)
+	opener, _ := transport.NewOpener(key)
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Vaults: []source.CookieReader{&ffvault.Firefox{Profile: "p", CookiePath: ffPath}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    pw,
+	}
+	srv := &sink.Server{Opener: opener, CookieSurfaces: []sink.CookieSurface{sc}}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), pr) }()
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	rdb, _ := sql.Open("sqlite", sidecarPath)
+	defer rdb.Close()
+	var got string
+	if err := rdb.QueryRow(`SELECT value FROM cookies WHERE host=?`, "github.com").Scan(&got); err != nil || got != "ff-session" {
+		t.Fatalf("firefox cookie did not sync: %q / %v", got, err)
 	}
 }

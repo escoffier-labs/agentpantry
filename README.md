@@ -68,6 +68,12 @@ framing do not care which.
     # edit config.toml: set peer to the sink address, add a [[browsers]] block and allow domains
     agentpantry source
 
+A `[[browsers]]` entry takes a `kind`: `chromium` (Chrome, Chromium, Brave, Edge;
+decrypted via the Secret Service with a `peanuts` fallback) or `firefox` (reads
+plaintext cookies from the profile's `cookies.sqlite`, so no keyring is needed).
+Point `cookie_path` at the profile's cookie store. A source configured with only
+Firefox browsers skips the keyring check in `agentpantry doctor`.
+
 Both ends must hold the same pre-shared key. Generate it once on the sink with
 `agentpantry keygen` and copy the file to the source. Run `agentpantry status`
 on either machine to print the active role, peer, key path, surfaces, and the
