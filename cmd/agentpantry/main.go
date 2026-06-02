@@ -142,10 +142,6 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
-	sealer, err := transport.NewSealer(key)
-	if err != nil {
-		return err
-	}
 	vs, paths, err := buildVaults(c)
 	if err != nil {
 		return err
@@ -159,8 +155,14 @@ func cmdSource(args []string) error {
 	}
 
 	var out io.Writer
+	var salt []byte
 	if *stdio {
 		out = os.Stdout
+		// One-way pipe: the source issues the session salt as the first frame.
+		salt, err = transport.SendSalt(os.Stdout)
+		if err != nil {
+			return err
+		}
 	} else {
 		conn, derr := net.Dial("tcp", c.Peer)
 		if derr != nil {
@@ -168,16 +170,26 @@ func cmdSource(args []string) error {
 		}
 		defer conn.Close()
 		out = conn
+		// The sink issues a fresh per-connection salt challenge.
+		salt, err = transport.RecvSalt(conn)
+		if err != nil {
+			return fmt.Errorf("handshake: %w", err)
+		}
+	}
+	sealer, err := transport.NewSealer(key, salt)
+	if err != nil {
+		return err
 	}
 
 	clock := state.RealClock{}
 	sp := statePath(*cfgPath)
 	syncer := &source.Syncer{
-		Vaults:  vs,
-		Secrets: secretReaders,
-		Policy:  c.Domains,
-		Sealer:  sealer,
-		Out:     out,
+		Vaults:       vs,
+		Secrets:      secretReaders,
+		Policy:       c.Domains,
+		SecretPolicy: c.SecretNames,
+		Sealer:       sealer,
+		Out:          out,
 		AfterSync: func(sent bool, cookies, secrets int) {
 			st, _ := state.Load(sp)
 			now := clock.Now().Unix()
@@ -200,6 +212,10 @@ func cmdSource(args []string) error {
 	}
 	return syncer.Watch(ctx, paths, 500*time.Millisecond)
 }
+
+// handshakeTimeout bounds the per-connection salt exchange so a stuck or
+// malicious peer cannot wedge the sink's accept loop.
+const handshakeTimeout = 10 * time.Second
 
 func cmdSink(args []string) error {
 	fs := flag.NewFlagSet("sink", flag.ExitOnError)
@@ -284,17 +300,22 @@ func cmdSink(args []string) error {
 	ctx := signalCtx()
 
 	if *stdio {
-		opener, oerr := transport.NewOpener(key)
+		// Close stdin on signal so a blocking read (handshake or frame) unblocks.
+		go func() {
+			<-ctx.Done()
+			os.Stdin.Close()
+		}()
+		// One-way pipe: the source issued the salt as the first frame.
+		salt, herr := transport.RecvSalt(os.Stdin)
+		if herr != nil {
+			return fmt.Errorf("handshake: %w", herr)
+		}
+		opener, oerr := transport.NewOpener(key, salt)
 		if oerr != nil {
 			return oerr
 		}
 		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
 		fmt.Fprintf(os.Stderr, "sink: reading frames from stdin, surfaces %v\n", c.Surfaces)
-		// Close stdin on signal so a blocking ReadFrame unblocks and Serve returns.
-		go func() {
-			<-ctx.Done()
-			os.Stdin.Close()
-		}()
 		return srv.Serve(ctx, os.Stdin)
 	}
 
@@ -318,9 +339,18 @@ func cmdSink(args []string) error {
 			}
 			return err
 		}
-		// Fresh opener per connection so a reconnecting source (whose Sealer
-		// counter restarts at 1) is not rejected as a replay.
-		opener, oerr := transport.NewOpener(key)
+		// Issue a fresh per-connection salt so frames from one session cannot be
+		// replayed into another, and so a reconnecting source is not rejected.
+		// Bound the handshake write so one stuck peer cannot wedge the listener.
+		conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+		salt, herr := transport.SendSalt(conn)
+		if herr != nil {
+			fmt.Fprintln(os.Stderr, "handshake failed:", herr)
+			conn.Close()
+			continue
+		}
+		conn.SetWriteDeadline(time.Time{}) // clear; Serve is a long-lived stream
+		opener, oerr := transport.NewOpener(key, salt)
 		if oerr != nil {
 			conn.Close()
 			return oerr

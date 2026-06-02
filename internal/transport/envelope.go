@@ -4,18 +4,37 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 const counterLen = 8
 
-func newAEAD(key []byte) (cipher.AEAD, error) {
+// deriveSessionKey mixes the pre-shared key with a per-session salt so frames
+// from one session never authenticate on another.
+func deriveSessionKey(key, salt []byte) ([]byte, error) {
 	if len(key) != 32 {
 		return nil, fmt.Errorf("key must be 32 bytes, got %d", len(key))
 	}
-	block, err := aes.NewCipher(key)
+	r := hkdf.New(sha256.New, key, salt, []byte("agentpantry/v1 session"))
+	sk := make([]byte, 32)
+	if _, err := io.ReadFull(r, sk); err != nil {
+		return nil, err
+	}
+	return sk, nil
+}
+
+func newAEAD(key, salt []byte) (cipher.AEAD, error) {
+	sk, err := deriveSessionKey(key, salt)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(sk)
 	if err != nil {
 		return nil, err
 	}
@@ -28,8 +47,8 @@ type Sealer struct {
 	counter uint64
 }
 
-func NewSealer(key []byte) (*Sealer, error) {
-	a, err := newAEAD(key)
+func NewSealer(key, salt []byte) (*Sealer, error) {
+	a, err := newAEAD(key, salt)
 	if err != nil {
 		return nil, err
 	}
@@ -61,8 +80,8 @@ type Opener struct {
 	lastCounter uint64
 }
 
-func NewOpener(key []byte) (*Opener, error) {
-	a, err := newAEAD(key)
+func NewOpener(key, salt []byte) (*Opener, error) {
+	a, err := newAEAD(key, salt)
 	if err != nil {
 		return nil, err
 	}

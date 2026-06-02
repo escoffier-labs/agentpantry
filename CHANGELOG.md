@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- BREAKING (transport): the connection now begins with a session-salt handshake and derives a per-session AES key (HKDF) from the pre-shared key, so a frame captured from one session can no longer be replayed into another. Source and sink must both run this version or newer.
+
 ### Added
+- Secret-name allow/deny policy (`[secret_names]`) mirroring the cookie domain policy.
+- Fuzz targets for the wire payload, transport open path, Netscape parser, and the v10/v11 cookie decoders; a `Makefile` with `vuln` (govulncheck) and `fuzz` targets.
 - `[[adapters]]` config block declaring per-CLI sink adapters layered on top of the `surfaces` list.
 - Netscape `cookies.txt` cookie adapter (curl, wget, yt-dlp format) that seeds from its own file on start so a sink restart does not drop rows, and rewrites the whole file mode 0600 on each apply.
 - `gh` hosts adapter that writes the GitHub token into the GitHub CLI `hosts.yml`, merge-only so other hosts survive and upsert-only so a transient missing secret never logs you out.

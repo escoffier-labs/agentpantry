@@ -126,6 +126,17 @@ In `--stdio` mode the source never dials the peer and the sink never binds a
 port, so the encrypted link exists only inside the SSH channel. The same key
 and framing apply.
 
+## Hardening
+
+The transport begins each connection with a session-salt handshake (the sink
+issues a fresh random salt over TCP; the source issues it over `--stdio`) and
+derives a per-session AES-256 key from the pre-shared key via HKDF, so a frame
+captured from one session cannot be replayed into another. Secret syncing can be
+narrowed with a `[secret_names]` allow/deny policy (exact names; deny overrides
+allow; an empty allow permits everything in the `secrets_dir`). `make vuln` runs
+govulncheck and `make fuzz PKG=... FUZZ=...` runs the fuzz targets for the
+untrusted-input parsers.
+
 ## Security
 
 - Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An

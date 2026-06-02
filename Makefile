@@ -1,0 +1,16 @@
+.PHONY: build test vet windows vuln fuzz
+build:
+	go build ./...
+test:
+	go test ./...
+vet:
+	go vet ./...
+windows:
+	GOOS=windows go build ./...
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+# Fuzz one package/target, e.g. make fuzz PKG=./internal/transport FUZZ=FuzzOpen
+PKG ?= ./internal/transport
+FUZZ ?= FuzzOpen
+fuzz:
+	go test $(PKG) -run '^$$' -fuzz $(FUZZ) -fuzztime 20s

@@ -22,7 +22,7 @@ func (c *capSecret) ApplySecrets(d secret.Diff) error { c.applied = append(c.app
 
 func TestServeRoutesPayloadToBothSurfaces(t *testing.T) {
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
 	var w bytes.Buffer
 
 	p := wire.Payload{
@@ -33,7 +33,7 @@ func TestServeRoutesPayloadToBothSurfaces(t *testing.T) {
 	frame, _ := sealer.Seal(b)
 	transport.WriteFrame(&w, frame)
 
-	opener, _ := transport.NewOpener(key)
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 	cc := &capCookie{}
 	ss := &capSecret{}
 	srv := &Server{Opener: opener, CookieSurfaces: []CookieSurface{cc}, SecretSurfaces: []SecretSurface{ss}}

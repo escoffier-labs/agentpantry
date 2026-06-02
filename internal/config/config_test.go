@@ -3,6 +3,8 @@ package config
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/escoffier-labs/agentpantry/internal/policy"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
@@ -87,5 +89,21 @@ func TestBrowserURLRoundTrip(t *testing.T) {
 	}
 	if len(out.Browsers) != 1 || out.Browsers[0].URL != "http://127.0.0.1:9222" {
 		t.Fatalf("URL field lost: %+v", out.Browsers)
+	}
+}
+
+func TestSecretNamesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("source")
+	in.SecretNames = policy.Names{Allow: []string{"gh_token"}, Deny: []string{"aws"}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.SecretNames.Allow) != 1 || len(out.SecretNames.Deny) != 1 || out.SecretNames.Deny[0] != "aws" {
+		t.Fatalf("secret_names lost: %+v", out.SecretNames)
 	}
 }

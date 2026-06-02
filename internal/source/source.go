@@ -8,12 +8,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
+	"github.com/fsnotify/fsnotify"
 )
 
 // CookieReader is the slice of BrowserVault that Syncer needs.
@@ -28,11 +28,12 @@ type SecretReader interface {
 
 // Syncer turns successive vault and secret reads into sealed payload frames.
 type Syncer struct {
-	Vaults  []CookieReader
-	Secrets []SecretReader
-	Policy  policy.Domain
-	Sealer  *transport.Sealer
-	Out     io.Writer
+	Vaults       []CookieReader
+	Secrets      []SecretReader
+	Policy       policy.Domain
+	SecretPolicy policy.Names
+	Sealer       *transport.Sealer
+	Out          io.Writer
 
 	// AfterSync, if set, is called at the end of each successful SyncOnce.
 	// sent reports whether a frame was written; cookies/secrets are the upsert
@@ -41,6 +42,17 @@ type Syncer struct {
 
 	prev        cookie.Snapshot
 	prevSecrets secret.Snapshot
+}
+
+// filterSecrets keeps only secrets whose name the policy permits.
+func filterSecrets(in []secret.Secret, p policy.Names) []secret.Secret {
+	out := in[:0]
+	for _, s := range in {
+		if p.Permit(s.Name) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // SyncOnce performs a single read-diff-send cycle.
@@ -78,7 +90,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		// emitting deletes for everything. Cookies still proceed.
 		fmt.Fprintln(os.Stderr, "agentpantry: secrets source unavailable this cycle, leaving synced secrets untouched")
 	} else {
-		curSecrets := secret.NewSnapshot(allSecrets)
+		curSecrets := secret.NewSnapshot(filterSecrets(allSecrets, s.SecretPolicy))
 		secretDiff = curSecrets.DiffFrom(s.prevSecrets)
 		s.prevSecrets = curSecrets
 	}

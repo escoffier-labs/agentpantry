@@ -3,11 +3,14 @@ package source
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 type oneVault struct{ cs []cookie.Cookie }
@@ -15,7 +18,7 @@ type oneVault struct{ cs []cookie.Cookie }
 func (o oneVault) ReadCookies(context.Context) ([]cookie.Cookie, error) { return o.cs, nil }
 
 func TestAfterSyncFiresWithSentAndCounts(t *testing.T) {
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	type call struct {
 		sent             bool
@@ -52,3 +55,37 @@ func TestAfterSyncFiresWithSentAndCounts(t *testing.T) {
 		t.Fatalf("second call must be no-send: %+v", calls[1])
 	}
 }
+
+func TestSyncOnceFiltersSecretsByName(t *testing.T) {
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
+	var buf bytes.Buffer
+	syncer := &Syncer{
+		Secrets:      []SecretReader{fixedSecrets{ss: []secret.Secret{{Name: "keep", Value: "1"}, {Name: "drop", Value: "2"}}}},
+		SecretPolicy: policy.Names{Deny: []string{"drop"}},
+		Sealer:       sealer,
+		Out:          &buf,
+	}
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := transport.ReadFrame(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, _ := transport.NewOpener(make([]byte, 32), make([]byte, 16))
+	raw, err := opener.Open(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p wire.Payload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Secrets.Upserts) != 1 || p.Secrets.Upserts[0].Name != "keep" {
+		t.Fatalf("secret-name policy did not filter: %+v", p.Secrets.Upserts)
+	}
+}
+
+type fixedSecrets struct{ ss []secret.Secret }
+
+func (f fixedSecrets) ReadSecrets(context.Context) ([]secret.Secret, error) { return f.ss, nil }

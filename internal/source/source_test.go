@@ -34,7 +34,7 @@ func decodePayload(t *testing.T, buf *bytes.Buffer) wire.Payload {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opener, _ := transport.NewOpener(make([]byte, 32))
+	opener, _ := transport.NewOpener(make([]byte, 32), make([]byte, 16))
 	raw, err := opener.Open(frame)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func decodePayload(t *testing.T, buf *bytes.Buffer) wire.Payload {
 }
 
 func TestSyncOnceFiltersCookiesAndCarriesSecrets(t *testing.T) {
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	syncer := &Syncer{
 		Vaults: []CookieReader{fakeVault{cs: []cookie.Cookie{
@@ -72,7 +72,7 @@ func TestSyncOnceFiltersCookiesAndCarriesSecrets(t *testing.T) {
 }
 
 func TestSyncOnceSecretReaderErrorKeepsSecretsAndSyncsCookies(t *testing.T) {
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	syncer := &Syncer{
 		Vaults: []CookieReader{fakeVault{cs: []cookie.Cookie{
@@ -96,7 +96,7 @@ func TestSyncOnceSecretReaderErrorKeepsSecretsAndSyncsCookies(t *testing.T) {
 }
 
 func TestSyncOnceNoChangeSendsNothing(t *testing.T) {
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	syncer := &Syncer{
 		Vaults: []CookieReader{fakeVault{cs: []cookie.Cookie{{Host: "github.com", Name: "s", Path: "/", Value: "v"}}}},
