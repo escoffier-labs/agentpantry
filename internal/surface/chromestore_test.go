@@ -100,3 +100,29 @@ func TestChromeStoreMissingDBErrors(t *testing.T) {
 		t.Fatal("missing chrome store must error")
 	}
 }
+
+func TestNewChromeStoreEncUsesInjectedEncryptor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Cookies")
+	makeChromeDB(t, path)
+
+	enc := func(v string) ([]byte, error) { return []byte("ENC:" + v), nil }
+	cs, err := NewChromeStoreEnc(path, enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	c := cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "hello"}
+	if err := cs.Apply(cookie.Diff{Upserts: []cookie.Cookie{c}}); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := sql.Open("sqlite", path)
+	defer db.Close()
+	var got []byte
+	if err := db.QueryRow(`SELECT encrypted_value FROM cookies WHERE host_key=?`, "github.com").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ENC:hello" {
+		t.Fatalf("writer did not use the injected encryptor: %q", got)
+	}
+}

@@ -78,8 +78,15 @@ On Windows, `kind = "chromium"` decrypts `v10` cookies using the DPAPI-unwrapped
 key from the profile's `Local State`. `agentpantry install-service` on Windows
 prints a Scheduled Task command (agentpantry is a console app, so it runs as a
 logon task rather than an SCM service). A Windows sink supports the sidecar,
-secrets, and adapter surfaces; the real-Chrome re-encrypt surface is not yet
-available on Windows.
+secrets, and adapter surfaces, plus the real-Chrome re-encrypt surface described
+next.
+
+A Windows sink can also use the real-Chrome re-encrypt surface (`chrome`): it
+writes synced cookies into the target Chrome Cookies store as `v10` AES-256-GCM,
+encrypted with the sink's own DPAPI-unwrapped key. Use it against a not-running,
+pre-app-bound, or dedicated automation profile; an app-bound (version 127+)
+profile may prefer `v20`, so v10 writes are best treated as a legacy/automation
+path.
 
 For app-bound Chrome (version 127+, `v20` cookies) where the key is no longer
 recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with

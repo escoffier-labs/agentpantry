@@ -26,7 +26,6 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/state"
 	"github.com/escoffier-labs/agentpantry/internal/surface"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
-	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
 
 func main() {
@@ -298,12 +297,12 @@ func cmdSink(args []string) error {
 			if len(c.Browsers) == 0 {
 				return fmt.Errorf("chrome surface requires a [[browsers]] entry with cookie_path")
 			}
-			cs, err := surface.NewChromeStore(c.Browsers[0].CookiePath, &vault.SecretServiceKey{Label: "Chrome Safe Storage"})
+			cs, closeFn, err := newChromeSurface(c.Browsers[0].CookiePath)
 			if err != nil {
 				return err
 			}
 			cookieSurfaces = append(cookieSurfaces, cs)
-			closers = append(closers, cs.Close)
+			closers = append(closers, closeFn)
 		case "secrets":
 			if c.SecretsDir == "" {
 				return fmt.Errorf("secrets surface requires secrets_dir in config")

@@ -6,6 +6,7 @@
 - BREAKING (transport): the connection now begins with a session-salt handshake and derives a per-session AES key (HKDF) from the pre-shared key, so a frame captured from one session can no longer be replayed into another. Source and sink must both run this version or newer.
 
 ### Added
+- Windows sink real-Chrome re-encrypt surface: a Windows sink can write synced cookies into a real Chrome Cookies store as `v10` AES-256-GCM, encrypted with the sink's own DPAPI-unwrapped key. Best used against a not-running, pre-app-bound, or dedicated automation profile (an app-bound v127+ profile may prefer v20).
 - GitHub Actions CI (go test -race, vet, Windows cross-build, golangci-lint, govulncheck) and a `.golangci.yml` config.
 - SECURITY.md and a threat-model document (what the pre-shared key protects, operator responsibilities, and the plaintext-sidecar / no-forward-secrecy tradeoffs).
 - Source auto-reconnect with capped exponential backoff (1s..30s): a sink restart or network blip recovers in-process, resending full state on reconnect.

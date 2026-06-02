@@ -19,20 +19,19 @@ var chromeWarnOnce sync.Once
 // into an existing Chrome-schema Cookies SQLite. Targets a not-running profile.
 type ChromeStore struct {
 	db      *sql.DB
-	keyPass string
+	encrypt func(plaintext string) ([]byte, error)
 	cols    map[string]string // present column name -> upper-cased declared type
 }
 
-func NewChromeStore(cookiePath string, kp KeyProvider) (*ChromeStore, error) {
+// NewChromeStoreEnc opens an existing Chrome-schema Cookies SQLite and writes
+// cookies whose values are encrypted by the supplied encryptor (platform- and
+// scheme-specific). Targets a not-running profile.
+func NewChromeStoreEnc(cookiePath string, encrypt func(string) ([]byte, error)) (*ChromeStore, error) {
 	if _, err := os.Stat(cookiePath); err != nil {
 		return nil, fmt.Errorf("chrome cookie store not found at %s: %w", cookiePath, err)
 	}
 	warnIfChromeRunning(cookiePath)
 
-	pass, err := kp.Passphrase()
-	if err != nil {
-		return nil, err
-	}
 	db, err := sql.Open("sqlite", cookiePath)
 	if err != nil {
 		return nil, err
@@ -46,7 +45,19 @@ func NewChromeStore(cookiePath string, kp KeyProvider) (*ChromeStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("no cookies table in %s", cookiePath)
 	}
-	return &ChromeStore{db: db, keyPass: pass, cols: cols}, nil
+	return &ChromeStore{db: db, encrypt: encrypt, cols: cols}, nil
+}
+
+// NewChromeStore wires the Linux v11 AES-128-CBC encryptor from a keyring
+// passphrase provider.
+func NewChromeStore(cookiePath string, kp KeyProvider) (*ChromeStore, error) {
+	pass, err := kp.Passphrase()
+	if err != nil {
+		return nil, err
+	}
+	return NewChromeStoreEnc(cookiePath, func(v string) ([]byte, error) {
+		return vault.EncryptValue(v, pass)
+	})
 }
 
 func (s *ChromeStore) Close() error { return s.db.Close() }
@@ -71,7 +82,7 @@ func introspectCookieColumns(db *sql.DB) (map[string]string, error) {
 }
 
 func (s *ChromeStore) mappedValues(c cookie.Cookie) (map[string]interface{}, error) {
-	enc, err := vault.EncryptValue(c.Value, s.keyPass)
+	enc, err := s.encrypt(c.Value)
 	if err != nil {
 		return nil, err
 	}
