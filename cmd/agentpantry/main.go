@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -329,6 +330,13 @@ func cmdInstallService(args []string) error {
 	c, err := loadConfig(args)
 	if err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		bin, _ := os.Executable()
+		cfgPath := filepath.Join(config.Dir(), "config.toml")
+		fmt.Println("Register a Scheduled Task by running:")
+		fmt.Println(service.WindowsTaskCommand(c.Role, bin, cfgPath))
+		return nil
 	}
 	bin, err := os.Executable()
 	if err != nil {
