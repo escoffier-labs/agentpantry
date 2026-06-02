@@ -16,6 +16,7 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/doctor"
+	"github.com/escoffier-labs/agentpantry/internal/ffvault"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 	"github.com/escoffier-labs/agentpantry/internal/service"
@@ -106,14 +107,18 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 	var vs []source.CookieReader
 	var paths []string
 	for _, b := range c.Browsers {
-		if b.Kind != "chromium" {
-			return nil, nil, fmt.Errorf("unsupported browser kind %q (phase 1 supports chromium)", b.Kind)
+		switch b.Kind {
+		case "chromium":
+			vs = append(vs, &vault.LinuxChromium{
+				Profile:     b.Profile,
+				CookiePath:  b.CookiePath,
+				KeyProvider: &vault.SecretServiceKey{Label: "Chrome Safe Storage"},
+			})
+		case "firefox":
+			vs = append(vs, &ffvault.Firefox{Profile: b.Profile, CookiePath: b.CookiePath})
+		default:
+			return nil, nil, fmt.Errorf("unsupported browser kind %q (supported: chromium, firefox)", b.Kind)
 		}
-		vs = append(vs, &vault.LinuxChromium{
-			Profile:     b.Profile,
-			CookiePath:  b.CookiePath,
-			KeyProvider: &vault.SecretServiceKey{Label: "Chrome Safe Storage"},
-		})
 		paths = append(paths, b.CookiePath)
 	}
 	return vs, paths, nil

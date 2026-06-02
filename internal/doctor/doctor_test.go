@@ -191,3 +191,31 @@ var errProbe = errProbeType("boom")
 type errProbeType string
 
 func (e errProbeType) Error() string { return string(e) }
+
+func TestPureFirefoxSourceHasNoKeyringCheck(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	ff := filepath.Join(dir, "cookies.sqlite")
+	os.WriteFile(ff, []byte("x"), 0o600)
+	c := config.Config{
+		Role: "source", Peer: "127.0.0.1:8787", KeyPath: key,
+		Browsers: []config.BrowserRef{{Kind: "firefox", Profile: "p", CookiePath: ff}},
+	}
+	if find(Run(c), "keyring").Status != -1 {
+		t.Fatal("a pure-firefox source must not emit a keyring check")
+	}
+}
+
+func TestChromiumSourceStillHasKeyringCheck(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	cp := filepath.Join(dir, "Cookies")
+	os.WriteFile(cp, []byte("x"), 0o600)
+	c := config.Config{
+		Role: "source", Peer: "127.0.0.1:8787", KeyPath: key,
+		Browsers: []config.BrowserRef{{Kind: "chromium", Profile: "p", CookiePath: cp}},
+	}
+	if find(Run(c), "keyring").Status == -1 {
+		t.Fatal("a chromium source must still emit a keyring check")
+	}
+}
