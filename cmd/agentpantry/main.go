@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -260,10 +262,55 @@ func cmdInstallService(args []string) error {
 }
 
 func cmdStatus(args []string) error {
-	c, err := loadConfig(args)
-	if err != nil {
-		return err
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
+	fs.Parse(args)
+
+	if _, statErr := os.Stat(*cfgPath); errors.Is(statErr, os.ErrNotExist) {
+		fmt.Fprintln(os.Stderr, "unwired: no config at", *cfgPath)
+		os.Exit(2)
 	}
+
+	c, err := config.Load(*cfgPath)
+	if err != nil {
+		return err // -> main exits 1
+	}
+
+	_, keyErr := os.Stat(c.KeyPath)
+	keyPresent := keyErr == nil
+
+	if *jsonOut {
+		allow := c.Domains.Allow
+		if allow == nil {
+			allow = []string{}
+		}
+		deny := c.Domains.Deny
+		if deny == nil {
+			deny = []string{}
+		}
+		surfaces := c.Surfaces
+		if surfaces == nil {
+			surfaces = []string{}
+		}
+		payload := map[string]any{
+			"role":        c.Role,
+			"configured":  true,
+			"peer":        c.Peer,
+			"key_present": keyPresent,
+			"surfaces":    surfaces,
+			"browsers":    len(c.Browsers),
+			"allow":       allow,
+			"deny":        deny,
+		}
+		b, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+
 	fmt.Printf("role:     %s\npeer:     %s\nkey:      %s\nsurfaces: %v\nbrowsers: %d\nallow:    %v\ndeny:     %v\n",
 		c.Role, c.Peer, c.KeyPath, c.Surfaces, len(c.Browsers), c.Domains.Allow, c.Domains.Deny)
 	return nil
