@@ -50,27 +50,33 @@ func (n *Netscape) seed() error {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), "\r")
-		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
-			continue
+		if r, ok := parseNetscapeLine(strings.TrimRight(sc.Text(), "\r")); ok {
+			n.rows[cookie.Key(cookie.Cookie{Host: r.domain, Name: r.name, Path: r.path})] = r
 		}
-		parts := strings.Split(line, "\t")
-		if len(parts) != 7 {
-			continue
-		}
-		exp, _ := strconv.ParseInt(parts[4], 10, 64)
-		r := netscapeRow{
-			domain:     parts[0],
-			includeSub: parts[1] == "TRUE",
-			path:       parts[2],
-			secure:     parts[3] == "TRUE",
-			expiry:     exp,
-			name:       parts[5],
-			value:      parts[6],
-		}
-		n.rows[cookie.Key(cookie.Cookie{Host: r.domain, Name: r.name, Path: r.path})] = r
 	}
 	return sc.Err()
+}
+
+// parseNetscapeLine parses one Netscape cookies.txt line. ok is false for
+// comments, blanks, and malformed lines.
+func parseNetscapeLine(line string) (netscapeRow, bool) {
+	if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+		return netscapeRow{}, false
+	}
+	parts := strings.Split(line, "\t")
+	if len(parts) != 7 {
+		return netscapeRow{}, false
+	}
+	exp, _ := strconv.ParseInt(parts[4], 10, 64)
+	return netscapeRow{
+		domain:     parts[0],
+		includeSub: parts[1] == "TRUE",
+		path:       parts[2],
+		secure:     parts[3] == "TRUE",
+		expiry:     exp,
+		name:       parts[5],
+		value:      parts[6],
+	}, true
 }
 
 func (n *Netscape) Apply(d cookie.Diff) error {

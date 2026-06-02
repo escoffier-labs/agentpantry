@@ -12,3 +12,6 @@
 # Secrets / runtime
 *.key
 config.toml
+
+# Generated fuzz corpus
+testdata/fuzz/
