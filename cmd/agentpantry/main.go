@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -14,11 +15,13 @@ import (
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/doctor"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 	"github.com/escoffier-labs/agentpantry/internal/service"
 	"github.com/escoffier-labs/agentpantry/internal/sink"
 	"github.com/escoffier-labs/agentpantry/internal/source"
+	"github.com/escoffier-labs/agentpantry/internal/state"
 	"github.com/escoffier-labs/agentpantry/internal/surface"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
@@ -42,6 +45,8 @@ func main() {
 		err = cmdSink(args)
 	case "install-service":
 		err = cmdInstallService(args)
+	case "doctor":
+		err = cmdDoctor(args)
 	case "status":
 		err = cmdStatus(args)
 	default:
@@ -54,7 +59,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agentpantry <init|keygen|source|sink|install-service|status> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: agentpantry <init|keygen|source|sink|doctor|status|install-service> [flags]")
 	os.Exit(2)
 }
 
@@ -91,6 +96,10 @@ func loadConfig(args []string) (config.Config, error) {
 	return config.Load(*path)
 }
 
+func statePath() string {
+	return filepath.Join(config.Dir(), "state.json")
+}
+
 func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 	var vs []source.CookieReader
 	var paths []string
@@ -109,7 +118,12 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 }
 
 func cmdSource(args []string) error {
-	c, err := loadConfig(args)
+	fs := flag.NewFlagSet("source", flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	stdio := fs.Bool("stdio", false, "stream frames to stdout instead of dialing the peer")
+	fs.Parse(args)
+
+	c, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -132,26 +146,55 @@ func cmdSource(args []string) error {
 			paths = append(paths, c.SecretsDir)
 		}
 	}
-	conn, err := net.Dial("tcp", c.Peer)
-	if err != nil {
-		return fmt.Errorf("dial sink %s: %w", c.Peer, err)
-	}
-	defer conn.Close()
 
+	var out io.Writer
+	if *stdio {
+		out = os.Stdout
+	} else {
+		conn, derr := net.Dial("tcp", c.Peer)
+		if derr != nil {
+			return fmt.Errorf("dial sink %s: %w", c.Peer, derr)
+		}
+		defer conn.Close()
+		out = conn
+	}
+
+	clock := state.RealClock{}
 	syncer := &source.Syncer{
 		Vaults:  vs,
 		Secrets: secretReaders,
 		Policy:  c.Domains,
 		Sealer:  sealer,
-		Out:     conn,
+		Out:     out,
+		AfterSync: func(sent bool, cookies, secrets int) {
+			st, _ := state.Load(statePath())
+			now := clock.Now().Unix()
+			st.LastSyncUnix = now
+			if sent {
+				st.LastSentUnix = now
+				st.Cookies = cookies
+				st.Secrets = secrets
+			}
+			if err := state.Save(statePath(), st); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: could not write state:", err)
+			}
+		},
 	}
 	ctx := signalCtx()
-	fmt.Printf("source: watching %d store(s), pushing to %s\n", len(paths), c.Peer)
+	if *stdio {
+		fmt.Fprintf(os.Stderr, "source: watching %d store(s), streaming frames to stdout\n", len(paths))
+	} else {
+		fmt.Printf("source: watching %d store(s), pushing to %s\n", len(paths), c.Peer)
+	}
 	return syncer.Watch(ctx, paths, 500*time.Millisecond)
 }
 
 func cmdSink(args []string) error {
-	c, err := loadConfig(args)
+	fs := flag.NewFlagSet("sink", flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	stdio := fs.Bool("stdio", false, "read frames from stdin instead of listening on a port")
+	fs.Parse(args)
+	c, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -202,6 +245,18 @@ func cmdSink(args []string) error {
 		}
 	}()
 
+	ctx := signalCtx()
+
+	if *stdio {
+		opener, oerr := transport.NewOpener(key)
+		if oerr != nil {
+			return oerr
+		}
+		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
+		fmt.Fprintf(os.Stderr, "sink: reading frames from stdin, surfaces %v\n", c.Surfaces)
+		return srv.Serve(ctx, os.Stdin)
+	}
+
 	ln, err := net.Listen("tcp", c.Peer)
 	if err != nil {
 		return err
@@ -209,7 +264,6 @@ func cmdSink(args []string) error {
 	defer ln.Close()
 	fmt.Printf("sink: listening on %s, surfaces %v\n", c.Peer, c.Surfaces)
 
-	ctx := signalCtx()
 	go func() {
 		<-ctx.Done()
 		ln.Close()
@@ -261,6 +315,30 @@ func cmdInstallService(args []string) error {
 	return nil
 }
 
+func cmdDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	timeout := fs.Duration("timeout", 3*time.Second, "peer reachability dial timeout")
+	skipNet := fs.Bool("no-net", false, "skip the peer reachability check")
+	fs.Parse(args)
+
+	c, err := config.Load(*cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	checks := doctor.Run(c)
+	if c.Role == "source" && !*skipNet {
+		checks = append(checks, doctor.PeerReachable(c.Peer, *timeout))
+	}
+	for _, ck := range checks {
+		fmt.Printf("[%-4s] %s: %s\n", ck.Status, ck.Name, ck.Detail)
+	}
+	if doctor.HasFail(checks) {
+		return fmt.Errorf("doctor found problems")
+	}
+	return nil
+}
+
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
@@ -280,6 +358,12 @@ func cmdStatus(args []string) error {
 	_, keyErr := os.Stat(c.KeyPath)
 	keyPresent := keyErr == nil
 
+	st, _ := state.Load(statePath())
+	lastSync := "never"
+	if st.LastSyncUnix > 0 {
+		lastSync = time.Unix(st.LastSyncUnix, 0).Format(time.RFC3339)
+	}
+
 	if *jsonOut {
 		allow := c.Domains.Allow
 		if allow == nil {
@@ -294,14 +378,17 @@ func cmdStatus(args []string) error {
 			surfaces = []string{}
 		}
 		payload := map[string]any{
-			"role":        c.Role,
-			"configured":  true,
-			"peer":        c.Peer,
-			"key_present": keyPresent,
-			"surfaces":    surfaces,
-			"browsers":    len(c.Browsers),
-			"allow":       allow,
-			"deny":        deny,
+			"role":         c.Role,
+			"configured":   true,
+			"peer":         c.Peer,
+			"key_present":  keyPresent,
+			"surfaces":     surfaces,
+			"browsers":     len(c.Browsers),
+			"allow":        allow,
+			"deny":         deny,
+			"last_sync":    lastSync,
+			"last_cookies": st.Cookies,
+			"last_secrets": st.Secrets,
 		}
 		b, err := json.MarshalIndent(payload, "", "  ")
 		if err != nil {
@@ -313,6 +400,7 @@ func cmdStatus(args []string) error {
 
 	fmt.Printf("role:     %s\npeer:     %s\nkey:      %s\nsurfaces: %v\nbrowsers: %d\nallow:    %v\ndeny:     %v\n",
 		c.Role, c.Peer, c.KeyPath, c.Surfaces, len(c.Browsers), c.Domains.Allow, c.Domains.Deny)
+	fmt.Printf("last sync: %s (cookies %d, secrets %d)\n", lastSync, st.Cookies, st.Secrets)
 	return nil
 }
 
