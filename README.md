@@ -75,11 +75,20 @@ Point `cookie_path` at the profile's cookie store. A source configured with only
 Firefox browsers skips the keyring check in `agentpantry doctor`.
 
 On Windows, `kind = "chromium"` decrypts `v10` cookies using the DPAPI-unwrapped
-key from the profile's `Local State`. App-bound `v20` cookies (Chrome 127+) are
-skipped for now. `agentpantry install-service` on Windows prints a Scheduled Task
-command (agentpantry is a console app, so it runs as a logon task rather than an
-SCM service). A Windows sink supports the sidecar, secrets, and adapter surfaces;
-the real-Chrome re-encrypt surface is not yet available on Windows.
+key from the profile's `Local State`. `agentpantry install-service` on Windows
+prints a Scheduled Task command (agentpantry is a console app, so it runs as a
+logon task rather than an SCM service). A Windows sink supports the sidecar,
+secrets, and adapter surfaces; the real-Chrome re-encrypt surface is not yet
+available on Windows.
+
+For app-bound Chrome (version 127+, `v20` cookies) where the key is no longer
+recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with
+`--remote-debugging-port=9222` (bound to loopback, ideally a dedicated automation
+profile) and set `url = "http://127.0.0.1:9222"` on the browser entry. agentpantry
+asks Chrome for the cookies over the DevTools Protocol, so Chrome performs its own
+authorized decryption. The debugging port grants full browser control, so keep it
+on loopback and treat it as sensitive. A `cdp` reader syncs at startup and on
+other browsers' file events; interval polling is a planned follow-on.
 
 Both ends must hold the same pre-shared key. Generate it once on the sink with
 `agentpantry keygen` and copy the file to the source. Run `agentpantry status`

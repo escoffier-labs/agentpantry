@@ -3,12 +3,16 @@ package test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/escoffier-labs/agentpantry/internal/cdpvault"
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/ffvault"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
@@ -19,6 +23,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/surface"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
+	"github.com/gorilla/websocket"
 	_ "modernc.org/sqlite"
 )
 
@@ -436,5 +441,67 @@ func TestEndToEndFirefoxToSidecar(t *testing.T) {
 	var got string
 	if err := rdb.QueryRow(`SELECT value FROM cookies WHERE host=?`, "github.com").Scan(&got); err != nil || got != "ff-session" {
 		t.Fatalf("firefox cookie did not sync: %q / %v", got, err)
+	}
+}
+
+func TestEndToEndCDPToSidecar(t *testing.T) {
+	up := websocket.Upgrader{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"type": "page", "webSocketDebuggerUrl": "ws://" + r.Host + "/devtools/page/A"},
+		})
+	})
+	mux.HandleFunc("/devtools/page/A", func(w http.ResponseWriter, r *http.Request) {
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		var cmd struct {
+			ID int `json:"id"`
+		}
+		c.ReadJSON(&cmd)
+		c.WriteJSON(map[string]any{"id": cmd.ID, "result": map[string]any{"cookies": []map[string]any{
+			{"name": "sid", "value": "appbound", "domain": "github.com", "path": "/", "expires": -1.0, "secure": true, "httpOnly": true, "sameSite": "Lax"},
+		}}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	sc, err := surface.NewSidecar(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key)
+	opener, _ := transport.NewOpener(key)
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Vaults: []source.CookieReader{&cdpvault.CDP{BaseURL: srv.URL}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    pw,
+	}
+	ssrv := &sink.Server{Opener: opener, CookieSurfaces: []sink.CookieSurface{sc}}
+	done := make(chan error, 1)
+	go func() { done <- ssrv.Serve(context.Background(), pr) }()
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	db, _ := sql.Open("sqlite", sidecarPath)
+	defer db.Close()
+	var got string
+	if err := db.QueryRow(`SELECT value FROM cookies WHERE host=?`, "github.com").Scan(&got); err != nil || got != "appbound" {
+		t.Fatalf("cdp cookie did not sync: %q / %v", got, err)
 	}
 }

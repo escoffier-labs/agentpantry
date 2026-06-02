@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/escoffier-labs/agentpantry/internal/cdpvault"
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/doctor"
 	"github.com/escoffier-labs/agentpantry/internal/ffvault"
@@ -113,10 +114,16 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 			vs = append(vs, newChromiumReader(b))
 		case "firefox":
 			vs = append(vs, &ffvault.Firefox{Profile: b.Profile, CookiePath: b.CookiePath})
+		case "cdp":
+			vs = append(vs, &cdpvault.CDP{BaseURL: b.URL})
 		default:
-			return nil, nil, fmt.Errorf("unsupported browser kind %q (supported: chromium, firefox)", b.Kind)
+			return nil, nil, fmt.Errorf("unsupported browser kind %q (supported: chromium, firefox, cdp)", b.Kind)
 		}
-		paths = append(paths, b.CookiePath)
+		// cdp has no local file to watch; it syncs at startup and on other
+		// browsers' file events.
+		if b.Kind != "cdp" {
+			paths = append(paths, b.CookiePath)
+		}
 	}
 	return vs, paths, nil
 }

@@ -3,6 +3,7 @@ package doctor
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -117,6 +118,18 @@ func Run(c config.Config) []Check {
 	switch c.Role {
 	case "source":
 		for _, b := range c.Browsers {
+			if b.Kind == "cdp" {
+				name := "cdp:" + b.Profile
+				client := &http.Client{Timeout: 2 * time.Second}
+				resp, err := client.Get(b.URL + "/json")
+				if err != nil {
+					checks = append(checks, Check{name, Fail, "CDP endpoint unreachable: " + b.URL})
+				} else {
+					resp.Body.Close()
+					checks = append(checks, Check{name, OK, b.URL})
+				}
+				continue
+			}
 			name := "vault:" + b.Profile
 			if _, err := os.Stat(b.CookiePath); err != nil {
 				checks = append(checks, Check{name, Fail, "cookie store unreadable: " + b.CookiePath})

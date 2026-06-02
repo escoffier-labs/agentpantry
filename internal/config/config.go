@@ -10,9 +10,10 @@ import (
 
 // BrowserRef names a browser profile and its cookie store path.
 type BrowserRef struct {
-	Kind       string `toml:"kind"` // "chromium"
+	Kind       string `toml:"kind"` // "chromium" | "firefox" | "cdp"
 	Profile    string `toml:"profile"`
 	CookiePath string `toml:"cookie_path"`
+	URL        string `toml:"url"` // cdp: DevTools base URL, e.g. http://127.0.0.1:9222
 }
 
 // AdapterRef declares a per-CLI adapter sink surface.

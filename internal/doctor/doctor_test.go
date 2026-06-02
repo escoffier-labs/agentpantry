@@ -219,3 +219,15 @@ func TestChromiumSourceStillHasKeyringCheck(t *testing.T) {
 		t.Fatal("a chromium source must still emit a keyring check")
 	}
 }
+
+func TestCDPBrowserReachabilityCheck(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "source", Peer: "127.0.0.1:8787", KeyPath: key,
+		Browsers: []config.BrowserRef{{Kind: "cdp", Profile: "p", URL: "http://127.0.0.1:1"}},
+	}
+	if find(Run(c), "cdp:p").Status != Fail {
+		t.Fatal("unreachable cdp endpoint must Fail")
+	}
+}

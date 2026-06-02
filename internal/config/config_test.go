@@ -73,3 +73,19 @@ func TestAdaptersRoundTrip(t *testing.T) {
 		t.Fatalf("adapter fields lost: %+v", out.Adapters)
 	}
 }
+
+func TestBrowserURLRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("source")
+	in.Browsers = []BrowserRef{{Kind: "cdp", Profile: "chrome", URL: "http://127.0.0.1:9222"}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Browsers) != 1 || out.Browsers[0].URL != "http://127.0.0.1:9222" {
+		t.Fatalf("URL field lost: %+v", out.Browsers)
+	}
+}
