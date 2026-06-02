@@ -13,6 +13,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 	"github.com/escoffier-labs/agentpantry/internal/sink"
 	"github.com/escoffier-labs/agentpantry/internal/source"
+	"github.com/escoffier-labs/agentpantry/internal/state"
 	"github.com/escoffier-labs/agentpantry/internal/surface"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
@@ -233,3 +234,80 @@ func makeSinkChromeDB(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+func TestStdioPipeEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	sc, err := surface.NewSidecar(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key)
+	opener, _ := transport.NewOpener(key)
+
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Vaults: []source.CookieReader{fixedCookie{c: cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "v"}}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    pw,
+	}
+	srv := &sink.Server{Opener: opener, CookieSurfaces: []sink.CookieSurface{sc}}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), pr) }()
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	db, _ := sql.Open("sqlite", sidecarPath)
+	defer db.Close()
+	var got string
+	if err := db.QueryRow(`SELECT value FROM cookies WHERE host=?`, "github.com").Scan(&got); err != nil || got != "v" {
+		t.Fatalf("stdio pipe did not deliver cookie: %q / %v", got, err)
+	}
+}
+
+func TestStatePersistsAcrossSyncs(t *testing.T) {
+	dir := t.TempDir()
+	sp := filepath.Join(dir, "state.json")
+
+	st, _ := state.Load(sp)
+	if st.LastSyncUnix != 0 {
+		t.Fatal("fresh state must be never-synced")
+	}
+
+	sealer, _ := transport.NewSealer(make([]byte, 32))
+	syncer := &source.Syncer{
+		Vaults: []source.CookieReader{fixedCookie{c: cookie.Cookie{Host: "github.com", Name: "s", Path: "/", Value: "1"}}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    discard{},
+		AfterSync: func(sent bool, cookies, secrets int) {
+			s2, _ := state.Load(sp)
+			s2.LastSyncUnix = 1700000000
+			if sent {
+				s2.LastSentUnix = 1700000000
+				s2.Cookies = cookies
+			}
+			state.Save(sp, s2)
+		},
+	}
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := state.Load(sp)
+	if got.LastSyncUnix == 0 || got.Cookies != 1 {
+		t.Fatalf("state not persisted: %+v", got)
+	}
+}
+
+type discard struct{}
+
+func (discard) Write(p []byte) (int, error) { return len(p), nil }

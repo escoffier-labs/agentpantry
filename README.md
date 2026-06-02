@@ -75,6 +75,35 @@ configured allow/deny domains. To run the source or sink as a persistent
 background service, use `agentpantry install-service`, which writes a systemd
 user unit and prints the commands to enable it.
 
+## Operating
+
+`agentpantry doctor` checks a configuration before you rely on it. It verifies
+that the pre-shared key exists, is 32 bytes, and is mode 0600, that the role
+and peer are well formed, and that the role-specific pieces are in place: on a
+source it confirms each browser cookie store and the secrets directory are
+readable, and on a sink it confirms the bind address is loopback (warning if
+not), and that each configured surface is satisfiable. On a source it also
+dials the peer to confirm reachability; pass `--no-net` to skip that or
+`--timeout` to change the dial timeout. Each check prints `OK`, `WARN`, or
+`FAIL`. doctor exits 0 when nothing failed and exits 1 when any check is a
+`FAIL` (warnings do not fail the run), so it can gate a startup script.
+
+`agentpantry status` reports the active role, peer, key path, surfaces, and the
+configured allow/deny domains. It also reports the last sync: the time of the
+most recent successful source cycle and the cookie and secret counts in the
+last frame that was sent, or `never` if the source has not run yet. Pass
+`--json` for machine-readable output.
+
+The transport can ride an SSH channel instead of a TCP listener. Run the source
+with `--stdio` to stream sealed frames to stdout, and the sink with `--stdio` to
+read them from stdin, then connect the two over SSH:
+
+    agentpantry source --stdio | ssh sink.example agentpantry sink --stdio
+
+In `--stdio` mode the source never dials the peer and the sink never binds a
+port, so the encrypted link exists only inside the SSH channel. The same key
+and framing apply.
+
 ## Security
 
 - Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An
