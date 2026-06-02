@@ -1,9 +1,11 @@
 package doctor
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
@@ -87,5 +89,23 @@ func TestHasFailHelper(t *testing.T) {
 	}
 	if !HasFail([]Check{{Status: Fail}}) {
 		t.Fatal("Fail present")
+	}
+}
+
+func TestPeerReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if PeerReachable(ln.Addr().String(), time.Second).Status != OK {
+		t.Fatal("listening peer must be reachable")
+	}
+}
+
+func TestPeerUnreachable(t *testing.T) {
+	// Port 1 on loopback is not listening.
+	if PeerReachable("127.0.0.1:1", 500*time.Millisecond).Status != Fail {
+		t.Fatal("closed port must be unreachable")
 	}
 }
