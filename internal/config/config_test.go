@@ -50,3 +50,26 @@ func TestSecretsDirRoundTrip(t *testing.T) {
 		t.Fatalf("secrets dir lost: %q", out.SecretsDir)
 	}
 }
+
+func TestAdaptersRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("sink")
+	in.Adapters = []AdapterRef{
+		{Type: "netscape", Path: "/tmp/cookies.txt"},
+		{Type: "gh", Path: "/tmp/hosts.yml", Secret: "gh_token", Host: "github.com", User: "octocat"},
+		{Type: "openclaw", Path: "/tmp/auth.json", Profiles: map[string]string{"anthropic_secret": "anthropic:default"}},
+	}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Adapters) != 3 {
+		t.Fatalf("want 3 adapters, got %d", len(out.Adapters))
+	}
+	if out.Adapters[1].Secret != "gh_token" || out.Adapters[2].Profiles["anthropic_secret"] != "anthropic:default" {
+		t.Fatalf("adapter fields lost: %+v", out.Adapters)
+	}
+}
