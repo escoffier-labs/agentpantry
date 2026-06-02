@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/wire"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 type capCookie struct{ applied []cookie.Diff }

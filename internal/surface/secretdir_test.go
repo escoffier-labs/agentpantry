@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 func TestSecretDirWriteDeleteAndPerms(t *testing.T) {

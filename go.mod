@@ -1,4 +1,4 @@
-module github.com/solomonneas/agentpantry
+module github.com/escoffier-labs/agentpantry
 
 go 1.25.0
 

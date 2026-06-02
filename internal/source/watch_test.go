@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
 type countingVault struct {

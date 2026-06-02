@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/secret"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/wire"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 // CookieReader is the slice of BrowserVault that Syncer needs.

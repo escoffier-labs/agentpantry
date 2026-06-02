@@ -50,7 +50,7 @@ Each `internal` package has one responsibility and a small surface so it can be 
 Run:
 ```bash
 cd ~/repos/agentpantry
-go mod init github.com/solomonneas/agentpantry
+go mod init github.com/escoffier-labs/agentpantry
 go get modernc.org/sqlite@latest
 go get golang.org/x/crypto/pbkdf2@latest
 go get github.com/godbus/dbus/v5@latest
@@ -927,7 +927,7 @@ package vault
 import (
 	"context"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 )
 
 // KeyProvider supplies the v11 keyring passphrase for a browser.
@@ -954,7 +954,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	_ "modernc.org/sqlite"
 )
 
@@ -1219,7 +1219,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	_ "modernc.org/sqlite"
 )
 
@@ -1282,7 +1282,7 @@ Expected: FAIL, `undefined: NewSidecar`.
 ```go
 package surface
 
-import "github.com/solomonneas/agentpantry/internal/cookie"
+import "github.com/escoffier-labs/agentpantry/internal/cookie"
 
 // Surface is a sink-side destination for synced cookies.
 type Surface interface {
@@ -1299,7 +1299,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	_ "modernc.org/sqlite"
 )
 
@@ -1460,7 +1460,7 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
-	"github.com/solomonneas/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
 )
 
 // BrowserRef names a browser profile and its cookie store path.
@@ -1671,9 +1671,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
 type fakeVault struct{ cs []cookie.Cookie }
@@ -1764,9 +1764,9 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
 // cookieReader is the slice of BrowserVault that Syncer needs.
@@ -1858,8 +1858,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
 type capturingSurface struct{ applied []cookie.Diff }
@@ -1909,8 +1909,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
 // Surface is the sink-side destination (matches surface.Surface).
@@ -1991,9 +1991,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
 type countingVault struct {
@@ -2235,15 +2235,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/solomonneas/agentpantry/internal/config"
-	"github.com/solomonneas/agentpantry/internal/keyfile"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/service"
-	"github.com/solomonneas/agentpantry/internal/sink"
-	"github.com/solomonneas/agentpantry/internal/source"
-	"github.com/solomonneas/agentpantry/internal/surface"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/vault"
+	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/service"
+	"github.com/escoffier-labs/agentpantry/internal/sink"
+	"github.com/escoffier-labs/agentpantry/internal/source"
+	"github.com/escoffier-labs/agentpantry/internal/surface"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
 
 func main() {
@@ -2504,13 +2504,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/sink"
-	"github.com/solomonneas/agentpantry/internal/source"
-	"github.com/solomonneas/agentpantry/internal/surface"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/vault"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/sink"
+	"github.com/escoffier-labs/agentpantry/internal/source"
+	"github.com/escoffier-labs/agentpantry/internal/surface"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 	_ "modernc.org/sqlite"
 )
 

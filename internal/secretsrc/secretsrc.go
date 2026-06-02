@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 // DirReader reads each regular file in Dir as one secret (name=file, value=contents).
