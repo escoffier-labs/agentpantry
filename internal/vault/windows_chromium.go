@@ -26,13 +26,11 @@ type WindowsChromium struct {
 
 func (v *WindowsChromium) Name() string { return "chromium-win:" + v.Profile }
 
-func (v *WindowsChromium) localStatePath() string {
-	if v.LocalStatePath != "" {
-		return v.LocalStatePath
-	}
-	// CookiePath is typically <UserData>/<Profile>/Network/Cookies; Local State
-	// lives in <UserData>. Walk up to find it.
-	dir := filepath.Dir(v.CookiePath)
+// localStatePath discovers the Chrome "Local State" file for a cookie store.
+// CookiePath is typically <UserData>/<Profile>/Network/Cookies; Local State
+// lives in <UserData>, so walk up to find it.
+func localStatePath(cookiePath string) string {
+	dir := filepath.Dir(cookiePath)
 	for i := 0; i < 3; i++ {
 		cand := filepath.Join(dir, "Local State")
 		if _, err := os.Stat(cand); err == nil {
@@ -40,11 +38,13 @@ func (v *WindowsChromium) localStatePath() string {
 		}
 		dir = filepath.Dir(dir)
 	}
-	return filepath.Join(filepath.Dir(v.CookiePath), "Local State")
+	return filepath.Join(filepath.Dir(cookiePath), "Local State")
 }
 
-func (v *WindowsChromium) key() ([]byte, error) {
-	b, err := os.ReadFile(v.localStatePath())
+// WindowsChromeKey returns the profile's AES key (DPAPI-unwrapped) used for v10
+// AES-256-GCM cookie values. Used by the Windows sink re-encrypt surface.
+func WindowsChromeKey(cookiePath string) ([]byte, error) {
+	b, err := os.ReadFile(localStatePath(cookiePath))
 	if err != nil {
 		return nil, fmt.Errorf("read Local State: %w", err)
 	}
@@ -53,6 +53,21 @@ func (v *WindowsChromium) key() ([]byte, error) {
 		return nil, err
 	}
 	return wincrypto.UnwrapDPAPI(wrapped)
+}
+
+func (v *WindowsChromium) key() ([]byte, error) {
+	if v.LocalStatePath != "" {
+		b, err := os.ReadFile(v.LocalStatePath)
+		if err != nil {
+			return nil, fmt.Errorf("read Local State: %w", err)
+		}
+		wrapped, err := wincrypto.ParseLocalStateKey(b)
+		if err != nil {
+			return nil, err
+		}
+		return wincrypto.UnwrapDPAPI(wrapped)
+	}
+	return WindowsChromeKey(v.CookiePath)
 }
 
 func (v *WindowsChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
