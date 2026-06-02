@@ -137,6 +137,15 @@ allow; an empty allow permits everything in the `secrets_dir`). `make vuln` runs
 govulncheck and `make fuzz PKG=... FUZZ=...` runs the fuzz targets for the
 untrusted-input parsers.
 
+## Reliability
+
+A TCP source reconnects automatically with capped backoff (1s up to 30s) if the
+sink restarts or the link drops, and resends its full current state on each
+reconnect. Set `resync_seconds` to have the source periodically re-sync on a
+timer in addition to filesystem events (covers any missed event); a `kind=cdp`
+source, which has no file to watch, defaults to a 60s poll when `resync_seconds`
+is unset.
+
 ## Security
 
 - Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An
