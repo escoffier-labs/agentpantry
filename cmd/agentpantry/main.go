@@ -109,11 +109,7 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 	for _, b := range c.Browsers {
 		switch b.Kind {
 		case "chromium":
-			vs = append(vs, &vault.LinuxChromium{
-				Profile:     b.Profile,
-				CookiePath:  b.CookiePath,
-				KeyProvider: &vault.SecretServiceKey{Label: "Chrome Safe Storage"},
-			})
+			vs = append(vs, newChromiumReader(b))
 		case "firefox":
 			vs = append(vs, &ffvault.Firefox{Profile: b.Profile, CookiePath: b.CookiePath})
 		default:
