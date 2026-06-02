@@ -1,8 +1,8 @@
 package surface
 
 import (
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 // CookieSurface is a sink-side destination for synced cookies.

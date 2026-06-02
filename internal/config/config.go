@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
-	"github.com/solomonneas/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
 )
 
 // BrowserRef names a browser profile and its cookie store path.

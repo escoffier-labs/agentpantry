@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.25 toolchain (auto-selected), `modernc.org/sqlite`, `golang.org/x/crypto/pbkdf2`, `github.com/godbus/dbus/v5`, existing internal packages.
 
-Base branch: `phase-2` (already created off `master`). Module: `github.com/solomonneas/agentpantry`.
+Base branch: `phase-2` (already created off `master`). Module: `github.com/escoffier-labs/agentpantry`.
 
 ---
 
@@ -161,8 +161,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 func TestPayloadRoundTripAndEmpty(t *testing.T) {
@@ -202,8 +202,8 @@ Expected: FAIL `undefined: Payload`.
 package wire
 
 import (
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 // Payload is the single envelope carried inside each transport frame.
@@ -394,7 +394,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 // DirReader reads each regular file in Dir as one secret (name=file, value=contents).
@@ -458,7 +458,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 func TestSecretDirWriteDeleteAndPerms(t *testing.T) {
@@ -520,8 +520,8 @@ Replace `internal/surface/surface.go` with:
 package surface
 
 import (
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 // CookieSurface is a sink-side destination for synced cookies.
@@ -550,7 +550,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/solomonneas/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
 // SecretDir writes secrets as 0600 files under Dir.
@@ -637,8 +637,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/vault"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 	_ "modernc.org/sqlite"
 )
 
@@ -753,8 +753,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/vault"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 	_ "modernc.org/sqlite"
 )
 
@@ -946,10 +946,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/wire"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 type capCookie struct{ applied []cookie.Diff }
@@ -1007,10 +1007,10 @@ import (
 	"errors"
 	"io"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/secret"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/wire"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 // CookieSurface is a sink-side destination for synced cookies.
@@ -1099,11 +1099,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/secret"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/wire"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 type fakeVault struct{ cs []cookie.Cookie }
@@ -1202,11 +1202,11 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/policy"
-	"github.com/solomonneas/agentpantry/internal/secret"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/wire"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 ```
 
@@ -1357,7 +1357,7 @@ This is integration glue, verified by build + the integration test in Task 11. N
 
 Ensure `cmd/agentpantry/main.go` imports include:
 ```go
-	"github.com/solomonneas/agentpantry/internal/secretsrc"
+	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 ```
 (alongside the existing config, keyfile, service, sink, source, surface, transport, vault imports).
 
@@ -1635,7 +1635,7 @@ func makeSinkChromeDB(t *testing.T, path string) {
 }
 ```
 
-Update the import block of `test/integration_test.go` to include `os`, `github.com/solomonneas/agentpantry/internal/secretsrc`, and `github.com/solomonneas/agentpantry/internal/secret` if not already present (it already imports cookie, policy, sink, source, surface, transport, vault, sql, filepath, context, testing).
+Update the import block of `test/integration_test.go` to include `os`, `github.com/escoffier-labs/agentpantry/internal/secretsrc`, and `github.com/escoffier-labs/agentpantry/internal/secret` if not already present (it already imports cookie, policy, sink, source, surface, transport, vault, sql, filepath, context, testing).
 
 - [ ] **Step 2: Run, verify (fails before Tasks 1-10 land, passes after)**
 

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
-	"github.com/solomonneas/agentpantry/internal/vault"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 	_ "modernc.org/sqlite"
 )
 

@@ -13,15 +13,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/solomonneas/agentpantry/internal/config"
-	"github.com/solomonneas/agentpantry/internal/keyfile"
-	"github.com/solomonneas/agentpantry/internal/secretsrc"
-	"github.com/solomonneas/agentpantry/internal/service"
-	"github.com/solomonneas/agentpantry/internal/sink"
-	"github.com/solomonneas/agentpantry/internal/source"
-	"github.com/solomonneas/agentpantry/internal/surface"
-	"github.com/solomonneas/agentpantry/internal/transport"
-	"github.com/solomonneas/agentpantry/internal/vault"
+	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
+	"github.com/escoffier-labs/agentpantry/internal/service"
+	"github.com/escoffier-labs/agentpantry/internal/sink"
+	"github.com/escoffier-labs/agentpantry/internal/source"
+	"github.com/escoffier-labs/agentpantry/internal/surface"
+	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
 
 func main() {

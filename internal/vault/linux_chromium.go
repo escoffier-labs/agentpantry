@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	_ "modernc.org/sqlite"
 )
 

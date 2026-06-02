@@ -8,6 +8,10 @@ wakes up logged in.
 Cross-platform reimagining of agentcookie. Phase 1 supports Linux Chromium on
 both ends.
 
+## Install
+
+    go install github.com/escoffier-labs/agentpantry/cmd/agentpantry@latest
+
 ## How it works
 
 agentpantry is a single binary that takes on one of two roles, chosen by

@@ -3,7 +3,7 @@ package vault
 import (
 	"context"
 
-	"github.com/solomonneas/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 )
 
 // KeyProvider supplies the v11 keyring passphrase for a browser.
