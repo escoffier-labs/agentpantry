@@ -4,12 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
-
-type fixedClock struct{ t time.Time }
-
-func (f fixedClock) Now() time.Time { return f.t }
 
 func TestSaveLoadRoundTripAndPerms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
