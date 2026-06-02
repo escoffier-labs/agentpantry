@@ -131,7 +131,15 @@ func Run(c config.Config) []Check {
 				checks = append(checks, Check{"secrets_dir", OK, c.SecretsDir})
 			}
 		}
-		checks = append(checks, KeyringCheck(&vault.SecretServiceKey{Label: "Chrome Safe Storage"}))
+		hasChromium := false
+		for _, b := range c.Browsers {
+			if b.Kind == "chromium" {
+				hasChromium = true
+			}
+		}
+		if hasChromium {
+			checks = append(checks, KeyringCheck(&vault.SecretServiceKey{Label: "Chrome Safe Storage"}))
+		}
 	case "sink":
 		if !isLoopbackBind(c.Peer) {
 			checks = append(checks, Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", c.Peer)})

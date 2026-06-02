@@ -14,6 +14,7 @@
 - `doctor` command that reports specific setup failures (key, role, peer, surfaces) and, on a source, peer reachability, exiting non-zero when any check fails.
 - Persisted last-sync state surfaced by `status`: the time of the last successful sync plus the cookie and secret counts in the last frame sent.
 - `--stdio` transport mode on `source` and `sink` so the link can ride an SSH channel instead of a TCP listener.
+- Firefox source reader: a `kind = "firefox"` browser entry reads plaintext cookies from a profile's `cookies.sqlite` (no keyring needed); a pure-Firefox source skips the keyring check in `doctor`.
 
 ## v0.1.0
 
