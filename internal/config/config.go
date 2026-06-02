@@ -15,6 +15,16 @@ type BrowserRef struct {
 	CookiePath string `toml:"cookie_path"`
 }
 
+// AdapterRef declares a per-CLI adapter sink surface.
+type AdapterRef struct {
+	Type     string            `toml:"type"`     // "netscape" | "gh" | "openclaw"
+	Path     string            `toml:"path"`     // target file
+	Secret   string            `toml:"secret"`   // gh: secret Name holding the token
+	Host     string            `toml:"host"`     // gh: default "github.com"
+	User     string            `toml:"user"`     // gh: optional user field
+	Profiles map[string]string `toml:"profiles"` // openclaw: secretName -> profileKey
+}
+
 // Config is the on-disk configuration for either role.
 type Config struct {
 	Role       string        `toml:"role"` // "source" | "sink"
@@ -23,6 +33,7 @@ type Config struct {
 	Surfaces   []string      `toml:"surfaces"`
 	Browsers   []BrowserRef  `toml:"browsers"`
 	SecretsDir string        `toml:"secrets_dir"` // source: read from; sink: write to
+	Adapters   []AdapterRef  `toml:"adapters"`
 	Domains    policy.Domain `toml:"domains"`
 }
 

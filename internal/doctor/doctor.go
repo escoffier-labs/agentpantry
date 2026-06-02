@@ -168,6 +168,25 @@ func Run(c config.Config) []Check {
 				checks = append(checks, Check{"surface:" + name, Fail, "unknown surface"})
 			}
 		}
+		for _, a := range c.Adapters {
+			name := "adapter:" + a.Type
+			switch a.Type {
+			case "netscape", "gh", "openclaw":
+				if a.Path == "" {
+					checks = append(checks, Check{name, Fail, "adapter needs a path"})
+				} else if !writableOrCreatable(filepath.Dir(a.Path)) {
+					checks = append(checks, Check{name, Fail, "adapter target dir not writable: " + a.Path})
+				} else if a.Type == "gh" && a.Secret == "" {
+					checks = append(checks, Check{name, Fail, "gh adapter needs a secret name"})
+				} else if a.Type == "openclaw" && len(a.Profiles) == 0 {
+					checks = append(checks, Check{name, Fail, "openclaw adapter needs a profiles mapping"})
+				} else {
+					checks = append(checks, Check{name, OK, a.Path})
+				}
+			default:
+				checks = append(checks, Check{name, Fail, "unknown adapter type"})
+			}
+		}
 	}
 	return checks
 }

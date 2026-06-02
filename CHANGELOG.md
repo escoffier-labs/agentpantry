@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- `[[adapters]]` config block declaring per-CLI sink adapters layered on top of the `surfaces` list.
+- Netscape `cookies.txt` cookie adapter (curl, wget, yt-dlp format) that seeds from its own file on start so a sink restart does not drop rows, and rewrites the whole file mode 0600 on each apply.
+- `gh` hosts adapter that writes the GitHub token into the GitHub CLI `hosts.yml`, merge-only so other hosts survive and upsert-only so a transient missing secret never logs you out.
+- `openclaw` auth-profiles adapter that merges provider profiles into an OpenClaw `auth-profiles.json` (object keyed by `<provider>:default`), merge-only and upsert-only, skipping any secret whose value is not valid profile JSON.
 - Secrets bus: sync a secrets directory from source to sink (one file per secret), with strict secret-name sanitization on the sink.
 - Real-Chrome re-encrypt surface: the sink can write synced cookies into an existing Chrome Cookies SQLite, re-encrypted with the sink's own keyring key. Schema is introspected so it tolerates Chrome version differences. Targets a not-running profile.
 - `wire.Payload` envelope carrying cookies and secrets in one encrypted frame.

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -311,3 +312,71 @@ func TestStatePersistsAcrossSyncs(t *testing.T) {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestEndToEndNetscapeAdapter(t *testing.T) {
+	dir := t.TempDir()
+	nsPath := filepath.Join(dir, "cookies.txt")
+	ns, err := surface.NewNetscape(nsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key)
+	opener, _ := transport.NewOpener(key)
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Vaults: []source.CookieReader{fixedCookie{c: cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "tok", IsSecure: true}}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    pw,
+	}
+	srv := &sink.Server{Opener: opener, CookieSurfaces: []sink.CookieSurface{ns}}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), pr) }()
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(nsPath)
+	if !strings.Contains(string(body), "github.com") || !strings.Contains(string(body), "tok") {
+		t.Fatalf("netscape adapter did not receive cookie: %q", body)
+	}
+}
+
+func TestEndToEndGHAdapter(t *testing.T) {
+	dir := t.TempDir()
+	srcSecrets := filepath.Join(dir, "secrets")
+	os.MkdirAll(srcSecrets, 0o700)
+	os.WriteFile(filepath.Join(srcSecrets, "gh_token"), []byte("ghp_live"), 0o600)
+	hostsPath := filepath.Join(dir, "hosts.yml")
+	gh, err := surface.NewGHHosts(hostsPath, "gh_token", "github.com", "octocat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key)
+	opener, _ := transport.NewOpener(key)
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Secrets: []source.SecretReader{&secretsrc.DirReader{Dir: srcSecrets}},
+		Sealer:  sealer,
+		Out:     pw,
+	}
+	srv := &sink.Server{Opener: opener, SecretSurfaces: []sink.SecretSurface{gh}}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), pr) }()
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(hostsPath)
+	if !strings.Contains(string(body), "ghp_live") {
+		t.Fatalf("gh adapter did not receive token: %q", body)
+	}
+}

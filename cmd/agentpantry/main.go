@@ -242,6 +242,30 @@ func cmdSink(args []string) error {
 			return fmt.Errorf("unknown surface %q", name)
 		}
 	}
+	for _, a := range c.Adapters {
+		switch a.Type {
+		case "netscape":
+			ns, err := surface.NewNetscape(a.Path)
+			if err != nil {
+				return err
+			}
+			cookieSurfaces = append(cookieSurfaces, ns)
+		case "gh":
+			gh, err := surface.NewGHHosts(a.Path, a.Secret, a.Host, a.User)
+			if err != nil {
+				return err
+			}
+			secretSurfaces = append(secretSurfaces, gh)
+		case "openclaw":
+			oc, err := surface.NewOpenClawAuth(a.Path, a.Profiles)
+			if err != nil {
+				return err
+			}
+			secretSurfaces = append(secretSurfaces, oc)
+		default:
+			return fmt.Errorf("unknown adapter type %q", a.Type)
+		}
+	}
 	defer func() {
 		for _, cl := range closers {
 			cl()
