@@ -79,7 +79,7 @@ func TestLoadMissingIsZeroValue(t *testing.T) {
 }
 
 func TestRealClockNonZero(t *testing.T) {
-	if RealClock{}.Now().IsZero() {
+	if (RealClock{}).Now().IsZero() {
 		t.Fatal("real clock must return a real time")
 	}
 }
