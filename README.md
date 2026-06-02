@@ -81,6 +81,13 @@ logon task rather than an SCM service). A Windows sink supports the sidecar,
 secrets, and adapter surfaces; the real-Chrome re-encrypt surface is not yet
 available on Windows.
 
+A Windows sink can also use the real-Chrome re-encrypt surface (`chrome`): it
+writes synced cookies into the target Chrome Cookies store as `v10` AES-256-GCM,
+encrypted with the sink's own DPAPI-unwrapped key. Use it against a not-running,
+pre-app-bound, or dedicated automation profile; an app-bound (version 127+)
+profile may prefer `v20`, so v10 writes are best treated as a legacy/automation
+path.
+
 For app-bound Chrome (version 127+, `v20` cookies) where the key is no longer
 recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with
 `--remote-debugging-port=9222` (bound to loopback, ideally a dedicated automation
