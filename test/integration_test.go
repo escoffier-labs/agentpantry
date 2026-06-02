@@ -65,8 +65,8 @@ func TestEndToEndSourceToSink(t *testing.T) {
 	writeChromeDB(t, chromePath, "keyring")
 
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 
 	sidecarPath := filepath.Join(dir, "sidecar.db")
 	sc, err := surface.NewSidecar(sidecarPath)
@@ -133,8 +133,8 @@ func TestEndToEndSecret(t *testing.T) {
 	}
 
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 	sd, err := surface.NewSecretDir(sinkDir)
 	if err != nil {
 		t.Fatal(err)
@@ -170,8 +170,8 @@ func TestEndToEndChromeStore(t *testing.T) {
 	makeSinkChromeDB(t, chromePath)
 
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 
 	cs, err := surface.NewChromeStore(chromePath, sinkKP{"sink-key"})
 	if err != nil {
@@ -252,8 +252,8 @@ func TestStdioPipeEndToEnd(t *testing.T) {
 	defer sc.Close()
 
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 
 	pr, pw := newPipe()
 	syncer := &source.Syncer{
@@ -290,7 +290,7 @@ func TestStatePersistsAcrossSyncs(t *testing.T) {
 		t.Fatal("fresh state must be never-synced")
 	}
 
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	syncer := &source.Syncer{
 		Vaults: []source.CookieReader{fixedCookie{c: cookie.Cookie{Host: "github.com", Name: "s", Path: "/", Value: "1"}}},
 		Policy: policy.Domain{Allow: []string{"github.com"}},
@@ -327,8 +327,8 @@ func TestEndToEndNetscapeAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 	pr, pw := newPipe()
 	syncer := &source.Syncer{
 		Vaults: []source.CookieReader{fixedCookie{c: cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "tok", IsSecure: true}}},
@@ -363,8 +363,8 @@ func TestEndToEndGHAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 	pr, pw := newPipe()
 	syncer := &source.Syncer{
 		Secrets: []source.SecretReader{&secretsrc.DirReader{Dir: srcSecrets}},
@@ -416,8 +416,8 @@ func TestEndToEndFirefoxToSidecar(t *testing.T) {
 	defer sc.Close()
 
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 	pr, pw := newPipe()
 	syncer := &source.Syncer{
 		Vaults: []source.CookieReader{&ffvault.Firefox{Profile: "p", CookiePath: ffPath}},
@@ -478,8 +478,8 @@ func TestEndToEndCDPToSidecar(t *testing.T) {
 	defer sc.Close()
 
 	key := make([]byte, 32)
-	sealer, _ := transport.NewSealer(key)
-	opener, _ := transport.NewOpener(key)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
 	pr, pw := newPipe()
 	syncer := &source.Syncer{
 		Vaults: []source.CookieReader{&cdpvault.CDP{BaseURL: srv.URL}},

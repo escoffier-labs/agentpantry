@@ -13,12 +13,20 @@ func key32() []byte {
 	return k
 }
 
+func salt16() []byte {
+	s := make([]byte, 16)
+	for i := range s {
+		s[i] = byte(100 + i)
+	}
+	return s
+}
+
 func TestSealOpenRoundTrip(t *testing.T) {
-	s, err := NewSealer(key32())
+	s, err := NewSealer(key32(), salt16())
 	if err != nil {
 		t.Fatal(err)
 	}
-	o, err := NewOpener(key32())
+	o, err := NewOpener(key32(), salt16())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +45,8 @@ func TestSealOpenRoundTrip(t *testing.T) {
 }
 
 func TestOpenRejectsReplay(t *testing.T) {
-	s, _ := NewSealer(key32())
-	o, _ := NewOpener(key32())
+	s, _ := NewSealer(key32(), salt16())
+	o, _ := NewOpener(key32(), salt16())
 	f1, _ := s.Seal([]byte("one"))
 	if _, err := o.Open(f1); err != nil {
 		t.Fatal(err)
@@ -49,12 +57,23 @@ func TestOpenRejectsReplay(t *testing.T) {
 }
 
 func TestOpenRejectsWrongKey(t *testing.T) {
-	s, _ := NewSealer(key32())
+	s, _ := NewSealer(key32(), salt16())
 	bad := key32()
 	bad[0] ^= 0xff
-	o, _ := NewOpener(bad)
+	o, _ := NewOpener(bad, salt16())
 	f, _ := s.Seal([]byte("secret"))
 	if _, err := o.Open(f); err == nil {
 		t.Fatal("frame under wrong key must fail authentication")
+	}
+}
+
+func TestDifferentSaltFailsToOpen(t *testing.T) {
+	s, _ := NewSealer(key32(), salt16())
+	frame, _ := s.Seal([]byte("hi"))
+	other := salt16()
+	other[0] ^= 0xff
+	o, _ := NewOpener(key32(), other)
+	if _, err := o.Open(frame); err == nil {
+		t.Fatal("a frame sealed under one salt must not open under another")
 	}
 }

@@ -15,7 +15,7 @@ type oneVault struct{ cs []cookie.Cookie }
 func (o oneVault) ReadCookies(context.Context) ([]cookie.Cookie, error) { return o.cs, nil }
 
 func TestAfterSyncFiresWithSentAndCounts(t *testing.T) {
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	type call struct {
 		sent             bool

@@ -142,10 +142,6 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
-	sealer, err := transport.NewSealer(key)
-	if err != nil {
-		return err
-	}
 	vs, paths, err := buildVaults(c)
 	if err != nil {
 		return err
@@ -159,8 +155,14 @@ func cmdSource(args []string) error {
 	}
 
 	var out io.Writer
+	var salt []byte
 	if *stdio {
 		out = os.Stdout
+		// One-way pipe: the source issues the session salt as the first frame.
+		salt, err = transport.SendSalt(os.Stdout)
+		if err != nil {
+			return err
+		}
 	} else {
 		conn, derr := net.Dial("tcp", c.Peer)
 		if derr != nil {
@@ -168,6 +170,15 @@ func cmdSource(args []string) error {
 		}
 		defer conn.Close()
 		out = conn
+		// The sink issues a fresh per-connection salt challenge.
+		salt, err = transport.RecvSalt(conn)
+		if err != nil {
+			return fmt.Errorf("handshake: %w", err)
+		}
+	}
+	sealer, err := transport.NewSealer(key, salt)
+	if err != nil {
+		return err
 	}
 
 	clock := state.RealClock{}
@@ -284,7 +295,12 @@ func cmdSink(args []string) error {
 	ctx := signalCtx()
 
 	if *stdio {
-		opener, oerr := transport.NewOpener(key)
+		// One-way pipe: the source issued the salt as the first frame.
+		salt, herr := transport.RecvSalt(os.Stdin)
+		if herr != nil {
+			return fmt.Errorf("handshake: %w", herr)
+		}
+		opener, oerr := transport.NewOpener(key, salt)
 		if oerr != nil {
 			return oerr
 		}
@@ -318,9 +334,15 @@ func cmdSink(args []string) error {
 			}
 			return err
 		}
-		// Fresh opener per connection so a reconnecting source (whose Sealer
-		// counter restarts at 1) is not rejected as a replay.
-		opener, oerr := transport.NewOpener(key)
+		// Issue a fresh per-connection salt so frames from one session cannot be
+		// replayed into another, and so a reconnecting source is not rejected.
+		salt, herr := transport.SendSalt(conn)
+		if herr != nil {
+			fmt.Fprintln(os.Stderr, "handshake failed:", herr)
+			conn.Close()
+			continue
+		}
+		opener, oerr := transport.NewOpener(key, salt)
 		if oerr != nil {
 			conn.Close()
 			return oerr

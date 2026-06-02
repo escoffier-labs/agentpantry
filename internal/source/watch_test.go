@@ -32,7 +32,7 @@ func TestWatchSyncsOnEvent(t *testing.T) {
 	watched := filepath.Join(dir, "Cookies")
 	os.WriteFile(watched, []byte("init"), 0o600)
 
-	sealer, _ := transport.NewSealer(make([]byte, 32))
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	v := &countingVault{}
 	syncer := &Syncer{
