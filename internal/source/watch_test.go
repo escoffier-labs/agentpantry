@@ -44,7 +44,7 @@ func TestWatchSyncsOnEvent(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- syncer.Watch(ctx, []string{watched}, 20*time.Millisecond) }()
+	go func() { done <- syncer.Watch(ctx, []string{watched}, 20*time.Millisecond, 0) }()
 
 	time.Sleep(50 * time.Millisecond)               // allow the initial sync
 	os.WriteFile(watched, []byte("changed"), 0o600) // trigger an event
@@ -58,5 +58,28 @@ func TestWatchSyncsOnEvent(t *testing.T) {
 	defer v.mu.Unlock()
 	if v.calls < 2 {
 		t.Fatalf("expected initial sync plus at least one event-driven sync, got %d", v.calls)
+	}
+}
+
+func TestWatchPeriodicResync(t *testing.T) {
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
+	var buf bytes.Buffer
+	v := &countingVault{}
+	syncer := &Syncer{
+		Vaults: []CookieReader{v},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    &buf,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- syncer.Watch(ctx, nil, 10*time.Millisecond, 25*time.Millisecond) }()
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+	<-done
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.calls < 2 {
+		t.Fatalf("resync ticker should fire repeatedly, got %d calls", v.calls)
 	}
 }

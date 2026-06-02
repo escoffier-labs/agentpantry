@@ -107,3 +107,19 @@ func TestSecretNamesRoundTrip(t *testing.T) {
 		t.Fatalf("secret_names lost: %+v", out.SecretNames)
 	}
 }
+
+func TestResyncSecondsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("source")
+	in.ResyncSeconds = 90
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ResyncSeconds != 90 {
+		t.Fatalf("resync_seconds lost: %d", out.ResyncSeconds)
+	}
+}

@@ -44,6 +44,28 @@ type Syncer struct {
 	prevSecrets secret.Snapshot
 }
 
+// Reset clears the previous snapshots so the next SyncOnce resends full state.
+// Used after a (re)connect, since the peer starts a fresh session.
+func (s *Syncer) Reset() {
+	s.prev = cookie.Snapshot{}
+	s.prevSecrets = secret.Snapshot{}
+}
+
+// Backoff returns a capped exponential delay for reconnect attempt n (0-based):
+// 1s, 2s, 4s, 8s, 16s, then 30s.
+func Backoff(attempt int) time.Duration {
+	const base = time.Second
+	const maxDelay = 30 * time.Second
+	if attempt >= 5 {
+		return maxDelay
+	}
+	d := base << attempt
+	if d <= 0 || d > maxDelay {
+		return maxDelay
+	}
+	return d
+}
+
 // filterSecrets keeps only secrets whose name the policy permits.
 func filterSecrets(in []secret.Secret, p policy.Names) []secret.Secret {
 	out := in[:0]
@@ -123,8 +145,10 @@ func (s *Syncer) afterSync(sent bool, cookies, secrets int) {
 	}
 }
 
-// Watch runs an initial sync, then re-syncs on debounced events for paths.
-func (s *Syncer) Watch(ctx context.Context, paths []string, debounce time.Duration) error {
+// Watch runs an initial sync, then re-syncs on debounced events for paths and,
+// if resync > 0, on a periodic ticker (covers missed events and file-less cdp
+// sources).
+func (s *Syncer) Watch(ctx context.Context, paths []string, debounce, resync time.Duration) error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -138,6 +162,13 @@ func (s *Syncer) Watch(ctx context.Context, paths []string, debounce time.Durati
 
 	if err := s.SyncOnce(ctx); err != nil {
 		return err
+	}
+
+	var resyncC <-chan time.Time
+	if resync > 0 {
+		tk := time.NewTicker(resync)
+		defer tk.Stop()
+		resyncC = tk.C
 	}
 
 	var timer *time.Timer
@@ -162,6 +193,10 @@ func (s *Syncer) Watch(ctx context.Context, paths []string, debounce time.Durati
 			}
 			return err
 		case <-timerC:
+			if err := s.SyncOnce(ctx); err != nil {
+				return err
+			}
+		case <-resyncC:
 			if err := s.SyncOnce(ctx); err != nil {
 				return err
 			}
