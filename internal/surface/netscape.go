@@ -117,8 +117,8 @@ func (n *Netscape) write() error {
 	b.WriteString("# Netscape HTTP Cookie File\n")
 	for _, k := range keys {
 		r := n.rows[k]
-		b.WriteString(fmt.Sprintf("%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-			r.domain, boolTF(r.includeSub), r.path, boolTF(r.secure), r.expiry, r.name, r.value))
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+			r.domain, boolTF(r.includeSub), r.path, boolTF(r.secure), r.expiry, r.name, r.value)
 	}
 	return os.WriteFile(n.path, []byte(b.String()), 0o600)
 }
