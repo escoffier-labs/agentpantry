@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -109,11 +110,7 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 	for _, b := range c.Browsers {
 		switch b.Kind {
 		case "chromium":
-			vs = append(vs, &vault.LinuxChromium{
-				Profile:     b.Profile,
-				CookiePath:  b.CookiePath,
-				KeyProvider: &vault.SecretServiceKey{Label: "Chrome Safe Storage"},
-			})
+			vs = append(vs, newChromiumReader(b))
 		case "firefox":
 			vs = append(vs, &ffvault.Firefox{Profile: b.Profile, CookiePath: b.CookiePath})
 		default:
@@ -333,6 +330,13 @@ func cmdInstallService(args []string) error {
 	c, err := loadConfig(args)
 	if err != nil {
 		return err
+	}
+	if runtime.GOOS == "windows" {
+		bin, _ := os.Executable()
+		cfgPath := filepath.Join(config.Dir(), "config.toml")
+		fmt.Println("Register a Scheduled Task by running:")
+		fmt.Println(service.WindowsTaskCommand(c.Role, bin, cfgPath))
+		return nil
 	}
 	bin, err := os.Executable()
 	if err != nil {

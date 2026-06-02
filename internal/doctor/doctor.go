@@ -137,7 +137,7 @@ func Run(c config.Config) []Check {
 				hasChromium = true
 			}
 		}
-		if hasChromium {
+		if hasChromium && keyringRelevant() {
 			checks = append(checks, KeyringCheck(&vault.SecretServiceKey{Label: "Chrome Safe Storage"}))
 		}
 	case "sink":

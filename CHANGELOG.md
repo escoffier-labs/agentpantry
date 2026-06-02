@@ -15,6 +15,7 @@
 - Persisted last-sync state surfaced by `status`: the time of the last successful sync plus the cookie and secret counts in the last frame sent.
 - `--stdio` transport mode on `source` and `sink` so the link can ride an SSH channel instead of a TCP listener.
 - Firefox source reader: a `kind = "firefox"` browser entry reads plaintext cookies from a profile's `cookies.sqlite` (no keyring needed); a pure-Firefox source skips the keyring check in `doctor`.
+- Windows Chromium source support (needs validation on a Windows host): decrypts `v10` AES-256-GCM cookies using the DPAPI-unwrapped key from `Local State`. App-bound `v20` cookies (Chrome 127+) are skipped pending a later release. `install-service` on Windows prints a Scheduled Task registration command.
 
 ## v0.1.0
 
