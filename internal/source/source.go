@@ -34,6 +34,11 @@ type Syncer struct {
 	Sealer  *transport.Sealer
 	Out     io.Writer
 
+	// AfterSync, if set, is called at the end of each successful SyncOnce.
+	// sent reports whether a frame was written; cookies/secrets are the upsert
+	// counts in that frame (0 when nothing was sent).
+	AfterSync func(sent bool, cookies, secrets int)
+
 	prev        cookie.Snapshot
 	prevSecrets secret.Snapshot
 }
@@ -82,6 +87,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff}
 	if p.IsEmpty() {
+		s.afterSync(false, 0, 0)
 		return nil
 	}
 	raw, err := json.Marshal(p)
@@ -92,7 +98,17 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return transport.WriteFrame(s.Out, frame)
+	if err := transport.WriteFrame(s.Out, frame); err != nil {
+		return err
+	}
+	s.afterSync(true, len(cookieDiff.Upserts), len(secretDiff.Upserts))
+	return nil
+}
+
+func (s *Syncer) afterSync(sent bool, cookies, secrets int) {
+	if s.AfterSync != nil {
+		s.AfterSync(sent, cookies, secrets)
+	}
 }
 
 // Watch runs an initial sync, then re-syncs on debounced events for paths.
