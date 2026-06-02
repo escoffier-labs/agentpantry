@@ -28,15 +28,16 @@ type AdapterRef struct {
 
 // Config is the on-disk configuration for either role.
 type Config struct {
-	Role        string        `toml:"role"` // "source" | "sink"
-	Peer        string        `toml:"peer"` // dial target (source) or bind addr (sink)
-	KeyPath     string        `toml:"key_path"`
-	Surfaces    []string      `toml:"surfaces"`
-	Browsers    []BrowserRef  `toml:"browsers"`
-	SecretsDir  string        `toml:"secrets_dir"` // source: read from; sink: write to
-	Adapters    []AdapterRef  `toml:"adapters"`
-	Domains     policy.Domain `toml:"domains"`
-	SecretNames policy.Names  `toml:"secret_names"`
+	Role          string        `toml:"role"` // "source" | "sink"
+	Peer          string        `toml:"peer"` // dial target (source) or bind addr (sink)
+	KeyPath       string        `toml:"key_path"`
+	Surfaces      []string      `toml:"surfaces"`
+	Browsers      []BrowserRef  `toml:"browsers"`
+	SecretsDir    string        `toml:"secrets_dir"` // source: read from; sink: write to
+	Adapters      []AdapterRef  `toml:"adapters"`
+	Domains       policy.Domain `toml:"domains"`
+	SecretNames   policy.Names  `toml:"secret_names"`
+	ResyncSeconds int           `toml:"resync_seconds"` // source: periodic resync (0 = off)
 }
 
 // Dir returns the config directory, honoring XDG_CONFIG_HOME.

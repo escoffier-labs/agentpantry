@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -154,31 +153,16 @@ func cmdSource(args []string) error {
 		}
 	}
 
-	var out io.Writer
-	var salt []byte
-	if *stdio {
-		out = os.Stdout
-		// One-way pipe: the source issues the session salt as the first frame.
-		salt, err = transport.SendSalt(os.Stdout)
-		if err != nil {
-			return err
-		}
-	} else {
-		conn, derr := net.Dial("tcp", c.Peer)
-		if derr != nil {
-			return fmt.Errorf("dial sink %s: %w", c.Peer, derr)
-		}
-		defer conn.Close()
-		out = conn
-		// The sink issues a fresh per-connection salt challenge.
-		salt, err = transport.RecvSalt(conn)
-		if err != nil {
-			return fmt.Errorf("handshake: %w", err)
+	resync := time.Duration(c.ResyncSeconds) * time.Second
+	hasCDP := false
+	for _, b := range c.Browsers {
+		if b.Kind == "cdp" {
+			hasCDP = true
 		}
 	}
-	sealer, err := transport.NewSealer(key, salt)
-	if err != nil {
-		return err
+	if hasCDP && resync == 0 {
+		resync = 60 * time.Second
+		fmt.Fprintln(os.Stderr, "agentpantry: cdp source detected, defaulting resync to 60s")
 	}
 
 	clock := state.RealClock{}
@@ -188,8 +172,6 @@ func cmdSource(args []string) error {
 		Secrets:      secretReaders,
 		Policy:       c.Domains,
 		SecretPolicy: c.SecretNames,
-		Sealer:       sealer,
-		Out:          out,
 		AfterSync: func(sent bool, cookies, secrets int) {
 			st, _ := state.Load(sp)
 			now := clock.Now().Unix()
@@ -205,12 +187,80 @@ func cmdSource(args []string) error {
 		},
 	}
 	ctx := signalCtx()
+
 	if *stdio {
+		salt, serr := transport.SendSalt(os.Stdout)
+		if serr != nil {
+			return serr
+		}
+		sealer, serr := transport.NewSealer(key, salt)
+		if serr != nil {
+			return serr
+		}
+		syncer.Sealer = sealer
+		syncer.Out = os.Stdout
 		fmt.Fprintf(os.Stderr, "source: watching %d store(s), streaming frames to stdout\n", len(paths))
-	} else {
-		fmt.Printf("source: watching %d store(s), pushing to %s\n", len(paths), c.Peer)
+		return syncer.Watch(ctx, paths, 500*time.Millisecond, resync)
 	}
-	return syncer.Watch(ctx, paths, 500*time.Millisecond)
+
+	// TCP: reconnect with capped backoff so a sink restart or blip recovers.
+	fmt.Printf("source: watching %d store(s), pushing to %s\n", len(paths), c.Peer)
+	attempt := 0
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		conn, derr := net.Dial("tcp", c.Peer)
+		if derr != nil {
+			if !sleepCtx(ctx, source.Backoff(attempt)) {
+				return nil
+			}
+			attempt++
+			continue
+		}
+		conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		salt, herr := transport.RecvSalt(conn)
+		if herr != nil {
+			conn.Close()
+			if !sleepCtx(ctx, source.Backoff(attempt)) {
+				return nil
+			}
+			attempt++
+			continue
+		}
+		conn.SetReadDeadline(time.Time{})
+		sealer, serr := transport.NewSealer(key, salt)
+		if serr != nil {
+			conn.Close()
+			return serr
+		}
+		syncer.Sealer = sealer
+		syncer.Out = conn
+		syncer.Reset()
+		attempt = 0
+		werr := syncer.Watch(ctx, paths, 500*time.Millisecond, resync)
+		conn.Close()
+		if ctx.Err() != nil {
+			return nil
+		}
+		fmt.Fprintln(os.Stderr, "source: connection lost, reconnecting:", werr)
+		if !sleepCtx(ctx, source.Backoff(attempt)) {
+			return nil
+		}
+		attempt++
+	}
+}
+
+// sleepCtx waits d or until ctx is done; returns false if ctx was cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // handshakeTimeout bounds the per-connection salt exchange so a stuck or
