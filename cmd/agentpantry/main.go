@@ -184,11 +184,12 @@ func cmdSource(args []string) error {
 	clock := state.RealClock{}
 	sp := statePath(*cfgPath)
 	syncer := &source.Syncer{
-		Vaults:  vs,
-		Secrets: secretReaders,
-		Policy:  c.Domains,
-		Sealer:  sealer,
-		Out:     out,
+		Vaults:       vs,
+		Secrets:      secretReaders,
+		Policy:       c.Domains,
+		SecretPolicy: c.SecretNames,
+		Sealer:       sealer,
+		Out:          out,
 		AfterSync: func(sent bool, cookies, secrets int) {
 			st, _ := state.Load(sp)
 			now := clock.Now().Unix()
