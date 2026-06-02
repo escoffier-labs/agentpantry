@@ -37,6 +37,9 @@ func (o *OpenClawAuth) ApplySecrets(d secret.Diff) error {
 		if e := json.Unmarshal(b, &doc); e != nil {
 			return fmt.Errorf("parse existing %s: %w", o.path, e)
 		}
+	} else if !os.IsNotExist(err) {
+		// Refuse to clobber a file that exists but cannot be read.
+		return fmt.Errorf("read existing %s: %w", o.path, err)
 	}
 	if doc == nil {
 		doc = map[string]json.RawMessage{}

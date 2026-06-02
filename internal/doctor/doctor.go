@@ -172,7 +172,9 @@ func Run(c config.Config) []Check {
 			name := "adapter:" + a.Type
 			switch a.Type {
 			case "netscape", "gh", "openclaw":
-				if !writableOrCreatable(filepath.Dir(a.Path)) {
+				if a.Path == "" {
+					checks = append(checks, Check{name, Fail, "adapter needs a path"})
+				} else if !writableOrCreatable(filepath.Dir(a.Path)) {
 					checks = append(checks, Check{name, Fail, "adapter target dir not writable: " + a.Path})
 				} else if a.Type == "gh" && a.Secret == "" {
 					checks = append(checks, Check{name, Fail, "gh adapter needs a secret name"})

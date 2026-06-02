@@ -48,6 +48,9 @@ func (g *GHHosts) ApplySecrets(d secret.Diff) error {
 		if e := yaml.Unmarshal(b, &doc); e != nil {
 			return fmt.Errorf("parse existing %s: %w", g.path, e)
 		}
+	} else if !os.IsNotExist(err) {
+		// Refuse to clobber a file that exists but cannot be read.
+		return fmt.Errorf("read existing %s: %w", g.path, err)
 	}
 	if doc == nil {
 		doc = map[string]map[string]any{}

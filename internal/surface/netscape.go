@@ -50,7 +50,7 @@ func (n *Netscape) seed() error {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := sc.Text()
+		line := strings.TrimRight(sc.Text(), "\r")
 		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -74,7 +74,14 @@ func (n *Netscape) seed() error {
 }
 
 func (n *Netscape) Apply(d cookie.Diff) error {
+	skipped := 0
 	for _, c := range d.Upserts {
+		// A tab or newline in any field would corrupt the tab-delimited,
+		// line-per-cookie format and break re-seeding; skip such cookies.
+		if strings.ContainsAny(c.Host+c.Path+c.Name+c.Value, "\t\n") {
+			skipped++
+			continue
+		}
 		n.rows[cookie.Key(c)] = netscapeRow{
 			domain:     c.Host,
 			includeSub: strings.HasPrefix(c.Host, "."),
@@ -87,6 +94,9 @@ func (n *Netscape) Apply(d cookie.Diff) error {
 	}
 	for _, k := range d.Deletes {
 		delete(n.rows, k)
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d cookie(s) with tab/newline unrepresentable in netscape format\n", skipped)
 	}
 	return n.write()
 }

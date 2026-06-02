@@ -51,3 +51,19 @@ func TestOpenClawAuthSkipsInvalidJSON(t *testing.T) {
 		t.Fatal("invalid-JSON secret must not write a file")
 	}
 }
+
+func TestOpenClawAuthRefusesToClobberUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	path := filepath.Join(t.TempDir(), "auth-profiles.json")
+	os.WriteFile(path, []byte(`{"profiles":{"openai-codex:default":{"type":"oauth"}}}`), 0o600)
+	os.Chmod(path, 0o000)
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+
+	o, _ := NewOpenClawAuth(path, map[string]string{"anthropic_secret": "anthropic:default"})
+	err := o.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "anthropic_secret", Value: `{"type":"oauth"}`}}})
+	if err == nil {
+		t.Fatal("must error on an unreadable existing file rather than clobber it")
+	}
+}
