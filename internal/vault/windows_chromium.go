@@ -6,11 +6,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
 	"github.com/escoffier-labs/agentpantry/internal/wincrypto"
 	_ "modernc.org/sqlite"
 )
@@ -55,31 +55,12 @@ func (v *WindowsChromium) key() ([]byte, error) {
 	return wincrypto.UnwrapDPAPI(wrapped)
 }
 
-func copyToTempWin(src string) (string, func(), error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return "", nil, err
-	}
-	defer in.Close()
-	tmp, err := os.CreateTemp("", "agentpantry-wincookies-*.db")
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", nil, err
-	}
-	tmp.Close()
-	return tmp.Name(), func() { os.Remove(tmp.Name()) }, nil
-}
-
 func (v *WindowsChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	key, err := v.key()
 	if err != nil {
 		return nil, err
 	}
-	tmp, cleanup, err := copyToTempWin(v.CookiePath)
+	tmp, cleanup, err := dbcopy.ToTemp(v.CookiePath)
 	if err != nil {
 		return nil, err
 	}

@@ -3,11 +3,10 @@ package ffvault
 import (
 	"context"
 	"database/sql"
-	"io"
-	"os"
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
 	_ "modernc.org/sqlite"
 )
 
@@ -19,27 +18,8 @@ type Firefox struct {
 
 func (f *Firefox) Name() string { return "firefox:" + f.Profile }
 
-func copyToTemp(src string) (string, func(), error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return "", nil, err
-	}
-	defer in.Close()
-	tmp, err := os.CreateTemp("", "agentpantry-ff-*.sqlite")
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", nil, err
-	}
-	tmp.Close()
-	return tmp.Name(), func() { os.Remove(tmp.Name()) }, nil
-}
-
 func (f *Firefox) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
-	tmp, cleanup, err := copyToTemp(f.CookiePath)
+	tmp, cleanup, err := dbcopy.ToTemp(f.CookiePath)
 	if err != nil {
 		return nil, err
 	}

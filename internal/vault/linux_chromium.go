@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
 	_ "modernc.org/sqlite"
 )
 
@@ -21,33 +21,12 @@ type LinuxChromium struct {
 
 func (v *LinuxChromium) Name() string { return "chromium:" + v.Profile }
 
-// copyToTemp copies the (possibly locked) cookie DB to a temp file.
-func copyToTemp(src string) (string, func(), error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return "", nil, err
-	}
-	defer in.Close()
-	tmp, err := os.CreateTemp("", "agentpantry-cookies-*.db")
-	if err != nil {
-		return "", nil, err
-	}
-	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return "", nil, err
-	}
-	tmp.Close()
-	cleanup := func() { os.Remove(tmp.Name()) }
-	return tmp.Name(), cleanup, nil
-}
-
 func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	pass, err := v.KeyProvider.Passphrase()
 	if err != nil {
 		return nil, fmt.Errorf("keyring passphrase: %w", err)
 	}
-	tmp, cleanup, err := copyToTemp(v.CookiePath)
+	tmp, cleanup, err := dbcopy.ToTemp(v.CookiePath)
 	if err != nil {
 		return nil, err
 	}

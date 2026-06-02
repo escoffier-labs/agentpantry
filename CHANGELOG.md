@@ -6,6 +6,8 @@
 - BREAKING (transport): the connection now begins with a session-salt handshake and derives a per-session AES key (HKDF) from the pre-shared key, so a frame captured from one session can no longer be replayed into another. Source and sink must both run this version or newer.
 
 ### Added
+- GitHub Actions CI (go test -race, vet, Windows cross-build, golangci-lint, govulncheck) and a `.golangci.yml` config.
+- SECURITY.md and a threat-model document (what the pre-shared key protects, operator responsibilities, and the plaintext-sidecar / no-forward-secrecy tradeoffs).
 - Source auto-reconnect with capped exponential backoff (1s..30s): a sink restart or network blip recovers in-process, resending full state on reconnect.
 - Periodic resync (`resync_seconds`, 0 = off) so a missed filesystem event does not cause drift; `kind=cdp` sources default to a 60s poll since they have no file to watch.
 - Secret-name allow/deny policy (`[secret_names]`) mirroring the cookie domain policy.
