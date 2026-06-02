@@ -157,8 +157,64 @@ secrets directory.
 Cookies and secrets travel together inside one AES-256-GCM frame, so a single
 peer connection carries both.
 
+## Adapters
+
+Adapters are extra sink surfaces that write synced data into the native file a
+specific CLI already reads, so the tool wakes up authenticated without any
+agentpantry-aware glue. They are declared with an optional `[[adapters]]` block
+in the sink config, each entry chosen by `type`. An adapter is layered on top of
+the regular `surfaces` list; you can run both at once.
+
+Three adapter types ship:
+
+- `netscape`: a cookie surface that writes a Netscape `cookies.txt` (the format
+  curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
+  seeded from its own file on start, so a sink restart does not drop rows the
+  source has not re-sent, and it rewrites the whole file on each apply.
+- `gh`: a secret surface that writes the GitHub token into the GitHub CLI's
+  `hosts.yml`. It is merge-only, so unrelated hosts already in the file are
+  preserved, and upsert-only, so a transient missing secret never deletes the
+  token and logs you out. Set `secret` to the secret name holding the token,
+  `host` (defaults to `github.com`), and optionally `user`.
+- `openclaw`: a secret surface that merges provider profiles into an OpenClaw
+  `auth-profiles.json`. The `profiles` field there is an OBJECT keyed by
+  `<provider>:default`, not an array, so each `profiles` mapping entry maps a
+  secret name to its profile key. The secret value must itself be the profile
+  JSON object; a value that is not valid JSON is skipped rather than written, so
+  a malformed secret never corrupts a working gateway file. Like `gh` it is
+  merge-only and upsert-only.
+
+Example sink config with all three adapters:
+
+    role = "sink"
+    peer = "127.0.0.1:8787"
+    surfaces = ["sidecar"]
+
+    [[adapters]]
+    type = "netscape"
+    path = "/home/agent/.config/agentpantry/cookies.txt"
+
+    [[adapters]]
+    type = "gh"
+    path = "/home/agent/.config/gh/hosts.yml"
+    secret = "gh_token"
+    host = "github.com"
+    user = "octocat"
+
+    [[adapters]]
+    type = "openclaw"
+    path = "/home/agent/.openclaw/auth-profiles.json"
+
+    [adapters.profiles]
+    anthropic_secret = "anthropic:default"
+
+`agentpantry doctor` checks each adapter: that its target directory is writable
+or creatable, that a `gh` adapter names a secret, and that an `openclaw` adapter
+carries a profiles mapping.
+
 ## Status
 
-Phase 2 (shipped): the secrets bus and the real-Chrome re-encrypt surface are
-in. Phase 1 cookie sync to the plaintext sidecar remains the default. Roadmap:
-per-CLI adapters, Firefox, Windows.
+Phase 4 (shipped): per-CLI adapters add a Netscape `cookies.txt` cookie surface
+and `gh` plus `openclaw` secret surfaces. Phase 2 added the secrets bus and the
+real-Chrome re-encrypt surface. Phase 1 cookie sync to the plaintext sidecar
+remains the default. Roadmap: Firefox, Windows.
