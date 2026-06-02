@@ -9,6 +9,7 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
 
 // Status is the outcome of a single check.
@@ -77,6 +78,18 @@ func writable(dir string) bool {
 	return true
 }
 
+// writableOrCreatable reports whether dir is writable, or does not yet exist but
+// its parent is writable (so it will be created on first run).
+func writableOrCreatable(dir string) bool {
+	if writable(dir) {
+		return true
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return writable(filepath.Dir(dir))
+	}
+	return false
+}
+
 // Run executes the role-appropriate non-network checks.
 func Run(c config.Config) []Check {
 	var checks []Check
@@ -118,6 +131,7 @@ func Run(c config.Config) []Check {
 				checks = append(checks, Check{"secrets_dir", OK, c.SecretsDir})
 			}
 		}
+		checks = append(checks, KeyringCheck(&vault.SecretServiceKey{Label: "Chrome Safe Storage"}))
 	case "sink":
 		if !isLoopbackBind(c.Peer) {
 			checks = append(checks, Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", c.Peer)})
@@ -127,7 +141,11 @@ func Run(c config.Config) []Check {
 		for _, name := range c.Surfaces {
 			switch name {
 			case "sidecar":
-				checks = append(checks, Check{"surface:sidecar", OK, "plaintext sidecar"})
+				if !writableOrCreatable(config.Dir()) {
+					checks = append(checks, Check{"surface:sidecar", Fail, "sidecar dir not writable: " + config.Dir()})
+				} else {
+					checks = append(checks, Check{"surface:sidecar", OK, "plaintext sidecar"})
+				}
 			case "chrome":
 				if len(c.Browsers) == 0 {
 					checks = append(checks, Check{"surface:chrome", Fail, "chrome surface needs a [[browsers]] entry"})
@@ -162,6 +180,19 @@ func singletonLockPresent(cookiePath string) bool {
 		}
 	}
 	return false
+}
+
+// KeyringCheck resolves the browser keyring passphrase and warns on the basic
+// fallback. It never includes the passphrase value in the result.
+func KeyringCheck(kp vault.KeyProvider) Check {
+	pass, err := kp.Passphrase()
+	if err != nil {
+		return Check{"keyring", Fail, "keyring passphrase error: " + err.Error()}
+	}
+	if pass == "peanuts" {
+		return Check{"keyring", Warn, "keyring fell back to the basic 'peanuts' passphrase (no Secret Service or locked keyring); v11 cookies will not decrypt with a real keyring"}
+	}
+	return Check{"keyring", OK, "resolved from Secret Service"}
 }
 
 // PeerReachable dials peer with a timeout. role=source only; no data is sent.

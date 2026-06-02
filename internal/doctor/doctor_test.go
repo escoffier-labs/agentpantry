@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,3 +110,60 @@ func TestPeerUnreachable(t *testing.T) {
 		t.Fatal("closed port must be unreachable")
 	}
 }
+
+type fakeKP struct {
+	pass string
+	err  error
+}
+
+func (f fakeKP) Passphrase() (string, error) { return f.pass, f.err }
+
+func TestKeyringCheck(t *testing.T) {
+	if KeyringCheck(fakeKP{pass: "peanuts"}).Status != Warn {
+		t.Fatal("peanuts fallback must Warn")
+	}
+	if KeyringCheck(fakeKP{pass: "realpass"}).Status != OK {
+		t.Fatal("a resolved keyring passphrase must be OK")
+	}
+	if KeyringCheck(fakeKP{err: errProbe}).Status != Fail {
+		t.Fatal("a keyring error must Fail")
+	}
+	// The resolved passphrase must never appear in the detail.
+	if d := KeyringCheck(fakeKP{pass: "realpass"}).Detail; strings.Contains(d, "realpass") {
+		t.Fatalf("passphrase leaked into detail: %q", d)
+	}
+}
+
+func TestSidecarSurfaceWritable(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	key := writeKey(t, cfgDir, 0o600)
+	c := config.Config{Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"}}
+	if find(Run(c), "surface:sidecar").Status != OK {
+		t.Fatal("writable config dir must yield sidecar OK")
+	}
+}
+
+func TestSidecarSurfaceUnwritableFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	cfgDir := t.TempDir()
+	locked := filepath.Join(cfgDir, "agentpantry")
+	if err := os.MkdirAll(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	key := writeKey(t, cfgDir, 0o600)
+	c := config.Config{Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"}}
+	if find(Run(c), "surface:sidecar").Status != Fail {
+		t.Fatal("unwritable sidecar dir must Fail")
+	}
+}
+
+var errProbe = errProbeType("boom")
+
+type errProbeType string
+
+func (e errProbeType) Error() string { return string(e) }

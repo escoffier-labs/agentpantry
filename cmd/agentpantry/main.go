@@ -96,8 +96,10 @@ func loadConfig(args []string) (config.Config, error) {
 	return config.Load(*path)
 }
 
-func statePath() string {
-	return filepath.Join(config.Dir(), "state.json")
+// statePath puts state.json beside the resolved config file so two sources with
+// different configs do not stomp a single shared state.
+func statePath(cfgPath string) string {
+	return filepath.Join(filepath.Dir(cfgPath), "state.json")
 }
 
 func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
@@ -160,6 +162,7 @@ func cmdSource(args []string) error {
 	}
 
 	clock := state.RealClock{}
+	sp := statePath(*cfgPath)
 	syncer := &source.Syncer{
 		Vaults:  vs,
 		Secrets: secretReaders,
@@ -167,7 +170,7 @@ func cmdSource(args []string) error {
 		Sealer:  sealer,
 		Out:     out,
 		AfterSync: func(sent bool, cookies, secrets int) {
-			st, _ := state.Load(statePath())
+			st, _ := state.Load(sp)
 			now := clock.Now().Unix()
 			st.LastSyncUnix = now
 			if sent {
@@ -175,7 +178,7 @@ func cmdSource(args []string) error {
 				st.Cookies = cookies
 				st.Secrets = secrets
 			}
-			if err := state.Save(statePath(), st); err != nil {
+			if err := state.Save(sp, st); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: could not write state:", err)
 			}
 		},
@@ -254,6 +257,11 @@ func cmdSink(args []string) error {
 		}
 		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
 		fmt.Fprintf(os.Stderr, "sink: reading frames from stdin, surfaces %v\n", c.Surfaces)
+		// Close stdin on signal so a blocking ReadFrame unblocks and Serve returns.
+		go func() {
+			<-ctx.Done()
+			os.Stdin.Close()
+		}()
 		return srv.Serve(ctx, os.Stdin)
 	}
 
@@ -358,7 +366,7 @@ func cmdStatus(args []string) error {
 	_, keyErr := os.Stat(c.KeyPath)
 	keyPresent := keyErr == nil
 
-	st, _ := state.Load(statePath())
+	st, _ := state.Load(statePath(*cfgPath))
 	lastSync := "never"
 	if st.LastSyncUnix > 0 {
 		lastSync = time.Unix(st.LastSyncUnix, 0).Format(time.RFC3339)
