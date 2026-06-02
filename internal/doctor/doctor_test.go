@@ -162,6 +162,30 @@ func TestSidecarSurfaceUnwritableFails(t *testing.T) {
 	}
 }
 
+func TestAdapterUnknownTypeFails(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"},
+		Adapters: []config.AdapterRef{{Type: "bogus", Path: filepath.Join(dir, "x")}},
+	}
+	if find(Run(c), "adapter:bogus").Status != Fail {
+		t.Fatal("unknown adapter type must Fail")
+	}
+}
+
+func TestAdapterWritableParentOK(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"},
+		Adapters: []config.AdapterRef{{Type: "netscape", Path: filepath.Join(dir, "cookies.txt")}},
+	}
+	if find(Run(c), "adapter:netscape").Status != OK {
+		t.Fatal("netscape adapter with writable parent must be OK")
+	}
+}
+
 var errProbe = errProbeType("boom")
 
 type errProbeType string
