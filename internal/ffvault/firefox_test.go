@@ -65,3 +65,34 @@ func TestFirefoxMissingDBErrors(t *testing.T) {
 		t.Fatal("missing DB must error")
 	}
 }
+
+func TestFirefoxToleratesNullColumns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cookies.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE moz_cookies(
+		id INTEGER PRIMARY KEY, originAttributes TEXT NOT NULL DEFAULT '',
+		name TEXT, value TEXT, host TEXT, path TEXT, expiry INTEGER,
+		lastAccessed INTEGER, creationTime INTEGER, isSecure INTEGER,
+		isHttpOnly INTEGER, inBrowserElement INTEGER DEFAULT 0,
+		sameSite INTEGER DEFAULT 0, rawSameSite INTEGER DEFAULT 0, schemeMap INTEGER DEFAULT 0)`); err != nil {
+		t.Fatal(err)
+	}
+	// value, expiry, isSecure left NULL.
+	if _, err := db.Exec(`INSERT INTO moz_cookies(name,host,path) VALUES(?,?,?)`, "sid", "github.com", "/"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	f := &Firefox{Profile: "p", CookiePath: path}
+	cs, err := f.ReadCookies(context.Background())
+	if err != nil {
+		t.Fatalf("NULL columns must not abort the read: %v", err)
+	}
+	if len(cs) != 1 || cs[0].Value != "" || cs[0].ExpiresUTC != 0 || cs[0].IsSecure {
+		t.Fatalf("NULL columns not coalesced to zero values: %+v", cs)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	_ "modernc.org/sqlite"
@@ -44,14 +45,17 @@ func (f *Firefox) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	}
 	defer cleanup()
 
-	db, err := sql.Open("sqlite", tmp+"?mode=ro")
+	db, err := sql.Open("sqlite", filepath.ToSlash(tmp)+"?mode=ro")
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, `SELECT host, name, value, path, expiry,
-		isSecure, isHttpOnly, sameSite FROM moz_cookies`)
+	// COALESCE so a NULL column (Firefox declares these nullable) yields a zero
+	// value instead of failing the scan and aborting the whole read.
+	rows, err := db.QueryContext(ctx, `SELECT COALESCE(host,''), COALESCE(name,''),
+		COALESCE(value,''), COALESCE(path,''), COALESCE(expiry,0),
+		COALESCE(isSecure,0), COALESCE(isHttpOnly,0), COALESCE(sameSite,0) FROM moz_cookies`)
 	if err != nil {
 		return nil, err
 	}
