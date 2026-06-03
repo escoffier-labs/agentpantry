@@ -46,23 +46,9 @@ whose counter is not strictly greater than the last accepted one, and applies
 the diff to its surfaces. Phase 1 ships one surface: a plaintext sidecar
 SQLite database that holds the current cookie set.
 
-```
-daily driver (source)                          agent machine (sink)
----------------------                          --------------------
-Chromium Cookies DB
-        |
-   decrypt + normalize
-        |
-   domain allow/deny filter
-        |
-   diff vs last snapshot
-        |
-   AES-256-GCM seal  --- TCP or stdio --->  open + replay check
-                                                    |
-                                              apply diff
-                                                    |
-                                            plaintext sidecar SQLite
-```
+### Source-to-sink flow
+
+![agentpantry source-to-sink architecture](docs/assets/agentpantry-readme-diagram.svg)
 
 The transport is just a byte stream, so the link can be a TCP connection over a
 trusted network or a piped stdio channel through a tunnel. The encryption and
