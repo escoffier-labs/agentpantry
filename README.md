@@ -1,4 +1,17 @@
-# agentpantry
+<div align="center">
+  <img src="docs/assets/agentpantry-social-preview.jpg" alt="agentpantry secure kitchen pantry banner" width="900">
+
+  <h1>agentpantry</h1>
+
+  <p><strong>Authenticated sessions for agent machines.</strong></p>
+
+  <p>
+    <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/agentpantry/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
+    <img src="https://img.shields.io/badge/go-1.25%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.25+">
+    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155?style=for-the-badge" alt="Platform: Linux, macOS, Windows">
+    <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+  </p>
+</div>
 
 Keep your agent's machine authenticated. agentpantry mirrors authenticated
 browser sessions from your daily-driver (source) to the machine your agent runs
