@@ -16,8 +16,9 @@
 Keep your agent's machine authenticated. Agent Pantry (`agentpantry`) is a
 secure browser session and secret sync CLI for AI agents. It mirrors selected
 cookies, browser auth state, and named secrets from your daily-driver (source)
-to the machine your agent runs on (sink), encrypted over any reachable byte
-stream, so automation can use tools that expect local auth state.
+to the machine your agent runs on (sink), whether that is Codex, Claude Code,
+OpenClaw, Hermes Agent, or a custom runner. Everything moves encrypted over any
+reachable byte stream, so automation can use tools that expect local auth state.
 
 Agent Pantry is part of the [Brigade](https://github.com/escoffier-labs/brigade)
 fleet from Escoffier Labs: small, composable agent-ops tools that help agent
@@ -63,7 +64,8 @@ whose counter is not strictly greater than the last accepted one, and applies
 the diff to its configured surfaces. The default sink surface is a plaintext
 sidecar SQLite database that holds the current cookie set; opt-in surfaces and
 adapters can also write secrets, browser stores, Netscape cookie files, GitHub
-CLI auth, and OpenClaw provider profiles.
+CLI auth, OpenClaw provider profiles, and generic local files that Hermes Agent
+and other harnesses can consume.
 
 ### Source-to-sink flow
 
@@ -232,12 +234,16 @@ peer connection carries both.
 ## Adapters
 
 Adapters are extra sink surfaces that write synced data into the native file a
-specific CLI already reads, so the tool wakes up authenticated without any
-agentpantry-aware glue. They are declared with an optional `[[adapters]]` block
-in the sink config, each entry chosen by `type`. An adapter is layered on top of
-the regular `surfaces` list; you can run both at once.
+specific CLI or agent harness already reads, so the tool wakes up authenticated
+without any agentpantry-aware glue. They are declared with an optional
+`[[adapters]]` block in the sink config, each entry chosen by `type`. An adapter
+is layered on top of the regular `surfaces` list; you can run both at once.
 
-Three adapter types ship:
+Three native adapter types ship today (`netscape`, `gh`, and `openclaw`).
+Hermes Agent is covered through the generic sink surfaces, especially
+`secrets`, `sidecar`, and the `netscape` `cookies.txt` adapter; there is no
+separate `type = "hermes"` adapter until Hermes has a stable native auth-file
+target for Agent Pantry to write.
 
 - `netscape`: a cookie surface that writes a Netscape `cookies.txt` (the format
   curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
@@ -288,9 +294,9 @@ carries a profiles mapping.
 
 Current status: cookie sync to the plaintext sidecar remains the default path.
 Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
-`cookies.txt`, `gh`, and `openclaw`. Source support includes Linux Chromium,
-Firefox, Windows Chromium, and Chrome DevTools Protocol export for app-bound
-Chrome profiles.
+`cookies.txt`, `gh`, and `openclaw`; Hermes Agent can use the generic sink
+outputs. Source support includes Linux Chromium, Firefox, Windows Chromium, and
+Chrome DevTools Protocol export for app-bound Chrome profiles.
 
 ## Acknowledgements
 
