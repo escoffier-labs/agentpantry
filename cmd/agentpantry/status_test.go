@@ -34,12 +34,73 @@ func runStatus(t *testing.T, bin string, args ...string) (int, string, string) {
 	return 0, string(stdout), ""
 }
 
+func runDoctor(t *testing.T, bin string, args ...string) (int, string, string) {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{"doctor"}, args...)...)
+	stdout, err := cmd.Output()
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), string(stdout), string(ee.Stderr)
+	}
+	if err != nil {
+		t.Fatalf("run error: %v", err)
+	}
+	return 0, string(stdout), ""
+}
+
 func TestStatusJSONUnwired(t *testing.T) {
 	bin := buildBin(t)
 	missing := filepath.Join(t.TempDir(), "nope.toml")
 	code, _, stderr := runStatus(t, bin, "--json", "--config", missing)
 	if code != 2 {
 		t.Fatalf("want exit 2 for missing config, got %d (stderr=%s)", code, stderr)
+	}
+}
+
+func TestDoctorJSONUnwired(t *testing.T) {
+	bin := buildBin(t)
+	missing := filepath.Join(t.TempDir(), "nope.toml")
+	code, stdout, stderr := runDoctor(t, bin, "--json", "--config", missing)
+	if code != 2 {
+		t.Fatalf("want exit 2 for missing config, got %d (stderr=%s)", code, stderr)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if payload["configured"] != false {
+		t.Fatalf("want configured=false, got %v", payload["configured"])
+	}
+	if payload["fail_count"] != float64(1) {
+		t.Fatalf("want one fail, got %v", payload["fail_count"])
+	}
+}
+
+func TestDoctorJSONConfigured(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	body := "role = \"sink\"\npeer = \"127.0.0.1:8787\"\nkey_path = \"" +
+		filepath.Join(dir, "missing.key") + "\"\nsurfaces = [\"sidecar\"]\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runDoctor(t, bin, "--json", "--config", cfg)
+	if code != 1 {
+		t.Fatalf("want exit 1 for failing checks, got %d (stderr=%s)", code, stderr)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	if payload["configured"] != true || payload["role"] != "sink" {
+		t.Fatalf("unexpected payload identity: %+v", payload)
+	}
+	checks, ok := payload["checks"].([]any)
+	if !ok || len(checks) == 0 {
+		t.Fatalf("missing checks: %+v", payload["checks"])
+	}
+	if payload["fail_count"] != float64(1) {
+		t.Fatalf("want one fail for missing key, got %v", payload["fail_count"])
 	}
 }
 
