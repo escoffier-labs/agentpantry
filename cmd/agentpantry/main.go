@@ -532,9 +532,10 @@ func doctorPayload(cfgPath string, c config.Config, checks []doctor.Check, skipp
 	warnCount := 0
 	for _, ck := range checks {
 		status := ck.Status.String()
-		if ck.Status == doctor.Fail {
+		switch ck.Status {
+		case doctor.Fail:
 			failCount++
-		} else if ck.Status == doctor.Warn {
+		case doctor.Warn:
 			warnCount++
 		}
 		rows = append(rows, map[string]any{
