@@ -305,12 +305,12 @@
       "id": "transport-label",
       "type": "text",
       "x": 766,
-      "y": 475,
+      "y": 464,
       "width": 175,
-      "height": 44,
+      "height": 38,
       "strokeColor": "#4b5563",
       "text": "TCP, SSH stdio, or any\ntrusted byte stream",
-      "fontSize": 15,
+      "fontSize": 14,
       "textAlign": "center"
     },
     {
@@ -388,9 +388,9 @@
       "id": "surfaces-box",
       "type": "rectangle",
       "x": 1047,
-      "y": 405,
+      "y": 392,
       "width": 255,
-      "height": 130,
+      "height": 150,
       "strokeColor": "#7c3aed",
       "backgroundColor": "#ffffff",
       "fillStyle": "solid",
@@ -420,10 +420,10 @@
     {
       "id": "a-browser-copy",
       "type": "arrow",
-      "x": 315,
-      "y": 250,
-      "width": 90,
-      "height": -12,
+      "x": 305,
+      "y": 251,
+      "width": 110,
+      "height": -15,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -436,8 +436,8 @@
           0
         ],
         [
-          90,
-          -12
+          110,
+          -15
         ]
       ],
       "endArrowhead": "arrow"
@@ -445,10 +445,10 @@
     {
       "id": "a-secrets-decrypt",
       "type": "arrow",
-      "x": 315,
+      "x": 305,
       "y": 366,
-      "width": 90,
-      "height": -37,
+      "width": 110,
+      "height": -40,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -461,8 +461,8 @@
           0
         ],
         [
-          90,
-          -37
+          110,
+          -40
         ]
       ],
       "endArrowhead": "arrow"
@@ -470,10 +470,10 @@
     {
       "id": "a-policy-diff",
       "type": "arrow",
-      "x": 315,
+      "x": 305,
       "y": 474,
-      "width": 90,
-      "height": -55,
+      "width": 110,
+      "height": -58,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -486,8 +486,8 @@
           0
         ],
         [
-          90,
-          -55
+          110,
+          -58
         ]
       ],
       "endArrowhead": "arrow"
@@ -496,9 +496,9 @@
       "id": "a-copy-decrypt",
       "type": "arrow",
       "x": 532,
-      "y": 274,
+      "y": 267,
       "width": 0,
-      "height": 16,
+      "height": 28,
       "strokeColor": "#15803d",
       "strokeWidth": 2,
       "roughness": 1,
@@ -512,7 +512,7 @@
         ],
         [
           0,
-          16
+          28
         ]
       ],
       "endArrowhead": "arrow"
@@ -521,9 +521,9 @@
       "id": "a-decrypt-diff",
       "type": "arrow",
       "x": 532,
-      "y": 364,
+      "y": 357,
       "width": 0,
-      "height": 16,
+      "height": 28,
       "strokeColor": "#15803d",
       "strokeWidth": 2,
       "roughness": 1,
@@ -537,7 +537,7 @@
         ],
         [
           0,
-          16
+          28
         ]
       ],
       "endArrowhead": "arrow"
@@ -546,9 +546,9 @@
       "id": "a-diff-delta",
       "type": "arrow",
       "x": 532,
-      "y": 454,
+      "y": 447,
       "width": 0,
-      "height": 16,
+      "height": 28,
       "strokeColor": "#15803d",
       "strokeWidth": 2,
       "roughness": 1,
@@ -562,7 +562,7 @@
         ],
         [
           0,
-          16
+          28
         ]
       ],
       "endArrowhead": "arrow"
@@ -570,10 +570,10 @@
     {
       "id": "a-delta-transport",
       "type": "arrow",
-      "x": 660,
+      "x": 650,
       "y": 506,
-      "width": 60,
-      "height": -118,
+      "width": 80,
+      "height": -171,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -586,8 +586,16 @@
           0
         ],
         [
-          60,
-          -118
+          65,
+          0
+        ],
+        [
+          65,
+          -171
+        ],
+        [
+          80,
+          -171
         ]
       ],
       "endArrowhead": "arrow"
@@ -596,9 +604,9 @@
       "id": "a-frame-salt",
       "type": "arrow",
       "x": 847,
-      "y": 362,
+      "y": 356,
       "width": 0,
-      "height": 18,
+      "height": 29,
       "strokeColor": "#d97706",
       "strokeWidth": 2,
       "roughness": 1,
@@ -612,7 +620,7 @@
         ],
         [
           0,
-          18
+          29
         ]
       ],
       "endArrowhead": "arrow"
@@ -620,10 +628,10 @@
     {
       "id": "a-transport-sink",
       "type": "arrow",
-      "x": 975,
-      "y": 322,
-      "width": 25,
-      "height": -30,
+      "x": 965,
+      "y": 335,
+      "width": 45,
+      "height": -97,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -636,8 +644,8 @@
           0
         ],
         [
-          25,
-          -30
+          45,
+          -97
         ]
       ],
       "endArrowhead": "arrow"
@@ -646,9 +654,9 @@
       "id": "a-open-apply",
       "type": "arrow",
       "x": 1175,
-      "y": 278,
+      "y": 271,
       "width": 0,
-      "height": 20,
+      "height": 34,
       "strokeColor": "#7c3aed",
       "strokeWidth": 2,
       "roughness": 1,
@@ -662,7 +670,7 @@
         ],
         [
           0,
-          20
+          34
         ]
       ],
       "endArrowhead": "arrow"
@@ -671,9 +679,9 @@
       "id": "a-apply-surfaces",
       "type": "arrow",
       "x": 1175,
-      "y": 378,
+      "y": 371,
       "width": 0,
-      "height": 20,
+      "height": 21,
       "strokeColor": "#7c3aed",
       "strokeWidth": 2,
       "roughness": 1,
@@ -687,7 +695,7 @@
         ],
         [
           0,
-          20
+          21
         ]
       ],
       "endArrowhead": "arrow"
