@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="docs/assets/agentpantry-social-preview.jpg" alt="agentpantry secure kitchen pantry banner" width="900">
+  <img src="docs/assets/agentpantry-social-preview.jpg" alt="Agent Pantry secure browser session sync for AI agents" width="900">
 
-  <h1>agentpantry</h1>
+  <h1>Agent Pantry</h1>
 
   <p><strong>Authenticated sessions for agent machines.</strong></p>
 
@@ -13,22 +13,17 @@
   </p>
 </div>
 
-Keep your agent's machine authenticated. agentpantry mirrors selected browser
-sessions and named secrets from your daily-driver (source) to the machine your
-agent runs on (sink), encrypted over any reachable byte stream, so automation can
-use tools that expect local auth state.
+Keep your agent's machine authenticated. Agent Pantry (`agentpantry`) is a
+secure browser session and secret sync CLI for AI agents. It mirrors selected
+cookies, browser auth state, and named secrets from your daily-driver (source)
+to the machine your agent runs on (sink), encrypted over any reachable byte
+stream, so automation can use tools that expect local auth state.
 
-agentpantry is part of the Brigade fleet from Escoffier Labs: small, composable
-agent-ops tools that help agent runtimes work with real local environments. It
-is still a standalone MIT-licensed CLI; you can use it without Brigade or any
-other Escoffier Labs tool.
-
-The project is inspired by [agentcookie](https://github.com/mvanhorn/agentcookie),
-which proved the value of keeping an agent machine stocked with the auth state it
-needs. agentpantry takes that idea in a cross-platform direction, with Linux and
-Windows browser readers, Firefox support, Chrome DevTools cookie export for
-app-bound Chrome, and sink surfaces for sidecar SQLite, real-Chrome re-encrypt,
-secrets, and CLI adapters.
+Agent Pantry is part of the [Brigade](https://github.com/escoffier-labs/brigade)
+fleet from Escoffier Labs: small, composable agent-ops tools that help agent
+runtimes work with real local environments. It is still a standalone
+MIT-licensed CLI; you can use it without Brigade or any other Escoffier Labs
+tool.
 
 ## Install
 
@@ -296,3 +291,7 @@ Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
 `cookies.txt`, `gh`, and `openclaw`. Source support includes Linux Chromium,
 Firefox, Windows Chromium, and Chrome DevTools Protocol export for app-bound
 Chrome profiles.
+
+## Acknowledgements
+
+Hat tip to [agentcookie](https://github.com/mvanhorn/agentcookie) for the spark.
