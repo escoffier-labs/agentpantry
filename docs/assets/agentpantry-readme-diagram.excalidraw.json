@@ -572,8 +572,8 @@
       "type": "arrow",
       "x": 650,
       "y": 506,
-      "width": 110,
-      "height": -184,
+      "width": 80,
+      "height": -126,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -586,8 +586,8 @@
           0
         ],
         [
-          110,
-          -184
+          80,
+          -126
         ]
       ],
       "endArrowhead": "arrow"
@@ -622,8 +622,8 @@
       "type": "arrow",
       "x": 965,
       "y": 322,
-      "width": 82,
-      "height": -84,
+      "width": 45,
+      "height": -48,
       "strokeColor": "#334155",
       "strokeWidth": 2,
       "roughness": 1,
@@ -636,8 +636,8 @@
           0
         ],
         [
-          82,
-          -84
+          45,
+          -48
         ]
       ],
       "endArrowhead": "arrow"
