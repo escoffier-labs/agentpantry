@@ -13,15 +13,22 @@
   </p>
 </div>
 
-Keep your agent's machine authenticated. agentpantry mirrors authenticated
-browser sessions from your daily-driver (source) to the machine your agent runs
-on (sink), encrypted over any reachable network path, so your agent runtime
-wakes up logged in.
+Keep your agent's machine authenticated. agentpantry mirrors selected browser
+sessions and named secrets from your daily-driver (source) to the machine your
+agent runs on (sink), encrypted over any reachable byte stream, so automation can
+use tools that expect local auth state.
 
-Cross-platform reimagining of agentcookie. Current builds cover Linux Chromium
-and Firefox sources, Windows Chromium source/sink support, Chrome DevTools
-cookie export for app-bound Chrome, and sink surfaces for sidecar SQLite,
-real-Chrome re-encrypt, secrets, and CLI adapters.
+agentpantry is part of the Brigade fleet from Escoffier Labs: small, composable
+agent-ops tools that help agent runtimes work with real local environments. It
+is still a standalone MIT-licensed CLI; you can use it without Brigade or any
+other Escoffier Labs tool.
+
+The project is inspired by [agentcookie](https://github.com/mvanhorn/agentcookie),
+which proved the value of keeping an agent machine stocked with the auth state it
+needs. agentpantry takes that idea in a cross-platform direction, with Linux and
+Windows browser readers, Firefox support, Chrome DevTools cookie export for
+app-bound Chrome, and sink surfaces for sidecar SQLite, real-Chrome re-encrypt,
+secrets, and CLI adapters.
 
 ## Install
 
@@ -37,10 +44,10 @@ Local release archives can be built into `dist/`:
 
     make package VERSION=v0.2.0
 
-The package target runs `go test ./...` and `go vet ./...`, then cross-builds
-Linux, macOS, and Windows archives with build metadata stamped into the
-`agentpantry version` output. `dist/checksums.txt` contains SHA-256 checksums
-for the generated archives.
+The package target runs `go test ./...`, `go vet ./...`, `gosec`, and
+`govulncheck`, then cross-builds Linux, macOS, and Windows archives with build
+metadata stamped into the `agentpantry version` output. `dist/checksums.txt`
+contains SHA-256 checksums for the generated archives.
 
 ## How it works
 
@@ -58,8 +65,10 @@ replay counter, and written length-prefixed onto a stream.
 
 The sink runs on your agent's machine. It opens each frame, rejects any frame
 whose counter is not strictly greater than the last accepted one, and applies
-the diff to its surfaces. Phase 1 ships one surface: a plaintext sidecar
-SQLite database that holds the current cookie set.
+the diff to its configured surfaces. The default sink surface is a plaintext
+sidecar SQLite database that holds the current cookie set; opt-in surfaces and
+adapters can also write secrets, browser stores, Netscape cookie files, GitHub
+CLI auth, and OpenClaw provider profiles.
 
 ### Source-to-sink flow
 
@@ -158,9 +167,10 @@ issues a fresh random salt over TCP; the source issues it over `--stdio`) and
 derives a per-session AES-256 key from the pre-shared key via HKDF, so a frame
 captured from one session cannot be replayed into another. Secret syncing can be
 narrowed with a `[secret_names]` allow/deny policy (exact names; deny overrides
-allow; an empty allow permits everything in the `secrets_dir`). `make vuln` runs
-govulncheck and `make fuzz PKG=... FUZZ=...` runs the fuzz targets for the
-untrusted-input parsers.
+allow; an empty allow permits everything in the `secrets_dir`). `make gosec`
+runs the security scanner, `make vuln` runs govulncheck, and
+`make fuzz PKG=... FUZZ=...` runs the fuzz targets for the untrusted-input
+parsers.
 
 ## Reliability
 

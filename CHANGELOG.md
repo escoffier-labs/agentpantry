@@ -6,8 +6,14 @@
 
 ### Changed
 - BREAKING (transport): the connection now begins with a session-salt handshake and derives a per-session AES key (HKDF) from the pre-shared key, so a frame captured from one session can no longer be replayed into another. Source and sink must both run this version or newer.
+- Release packaging now gates archives on tests, vet, gosec, and govulncheck before cross-building.
+- CDP sources now require loopback HTTP and WebSocket endpoints; remote DevTools endpoints are rejected because they grant full browser control.
+- Runtime PSK loading now rejects group/world-readable key files on Unix-like systems instead of only warning in `doctor`.
+- Sink secret and adapter writes now tighten existing output file modes, refuse existing symlink targets, and reject shared-writable adapter output directories.
+- Source secret reads now skip symlinks and non-regular files.
 
 ### Added
+- `make gosec` and a CI security job, with documented suppressions only for intentional operator-selected paths, Chromium compatibility crypto, and bounded conversions.
 - `agentpantry version` command with JSON output for release and support diagnostics.
 - `make package` release packaging target that cross-builds Linux, macOS, and Windows archives with checksums.
 - Windows sink real-Chrome re-encrypt surface: a Windows sink can write synced cookies into a real Chrome Cookies store as `v10` AES-256-GCM, encrypted with the sink's own DPAPI-unwrapped key. Best used against a not-running, pre-app-bound, or dedicated automation profile (an app-bound v127+ profile may prefer v20).

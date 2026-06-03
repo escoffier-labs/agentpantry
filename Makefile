@@ -25,7 +25,7 @@ fuzz:
 	go test $(PKG) -run '^$$' -fuzz $(FUZZ) -fuzztime 20s
 clean-dist:
 	rm -rf dist
-package: clean-dist test vet
+package: clean-dist test vet gosec vuln
 	mkdir -p dist/tmp
 	for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
