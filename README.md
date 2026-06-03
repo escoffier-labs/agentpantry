@@ -5,8 +5,10 @@ browser sessions from your daily-driver (source) to the machine your agent runs
 on (sink), encrypted over any reachable network path, so your agent runtime
 wakes up logged in.
 
-Cross-platform reimagining of agentcookie. Phase 1 supports Linux Chromium on
-both ends.
+Cross-platform reimagining of agentcookie. Current builds cover Linux Chromium
+and Firefox sources, Windows Chromium source/sink support, Chrome DevTools
+cookie export for app-bound Chrome, and sink surfaces for sidecar SQLite,
+real-Chrome re-encrypt, secrets, and CLI adapters.
 
 ## Install
 
@@ -266,7 +268,8 @@ carries a profiles mapping.
 
 ## Status
 
-Phase 4 (shipped): per-CLI adapters add a Netscape `cookies.txt` cookie surface
-and `gh` plus `openclaw` secret surfaces. Phase 2 added the secrets bus and the
-real-Chrome re-encrypt surface. Phase 1 cookie sync to the plaintext sidecar
-remains the default. Roadmap: Firefox, Windows.
+Current status: cookie sync to the plaintext sidecar remains the default path.
+Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
+`cookies.txt`, `gh`, and `openclaw`. Source support includes Linux Chromium,
+Firefox, Windows Chromium, and Chrome DevTools Protocol export for app-bound
+Chrome profiles.
