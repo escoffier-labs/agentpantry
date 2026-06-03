@@ -42,7 +42,7 @@ Confirm the installed binary:
 
 Local release archives can be built into `dist/`:
 
-    make package VERSION=v0.2.0
+    make package VERSION=v0.2.1
 
 The package target runs `go test ./...`, `go vet ./...`, `gosec`, and
 `govulncheck`, then cross-builds Linux, macOS, and Windows archives with build

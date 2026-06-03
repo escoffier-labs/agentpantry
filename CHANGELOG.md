@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.2.0 - 2026-06-03
+## v0.2.1 - 2026-06-03
 
 ### Changed
 - BREAKING (transport): the connection now begins with a session-salt handshake and derives a per-session AES key (HKDF) from the pre-shared key, so a frame captured from one session can no longer be replayed into another. Source and sink must both run this version or newer.
