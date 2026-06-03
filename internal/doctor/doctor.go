@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/escoffier-labs/agentpantry/internal/cdpvault"
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
@@ -74,8 +75,8 @@ func writable(dir string) bool {
 		return false
 	}
 	name := f.Name()
-	f.Close()
-	os.Remove(name)
+	_ = f.Close()
+	_ = os.Remove(name)
 	return true
 }
 
@@ -120,12 +121,16 @@ func Run(c config.Config) []Check {
 		for _, b := range c.Browsers {
 			if b.Kind == "cdp" {
 				name := "cdp:" + b.Profile
+				if err := cdpvault.ValidateLoopbackURL(b.URL, "http", "https"); err != nil {
+					checks = append(checks, Check{name, Fail, "CDP endpoint must be loopback: " + b.URL})
+					continue
+				}
 				client := &http.Client{Timeout: 2 * time.Second}
 				resp, err := client.Get(b.URL + "/json")
 				if err != nil {
 					checks = append(checks, Check{name, Fail, "CDP endpoint unreachable: " + b.URL})
 				} else {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 					checks = append(checks, Check{name, OK, b.URL})
 				}
 				continue
@@ -241,6 +246,6 @@ func PeerReachable(peer string, timeout time.Duration) Check {
 	if err != nil {
 		return Check{"peer", Fail, "unreachable: " + err.Error()}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return Check{"peer", OK, "reachable " + peer}
 }

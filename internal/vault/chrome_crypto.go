@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- Chromium Linux cookie encryption derives keys with PBKDF2-HMAC-SHA1 for compatibility.
 	"errors"
 
 	"golang.org/x/crypto/pbkdf2"

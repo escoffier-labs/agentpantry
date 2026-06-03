@@ -38,11 +38,11 @@ func NewChromeStoreEnc(cookiePath string, encrypt func(string) ([]byte, error)) 
 	}
 	cols, err := introspectCookieColumns(db)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if len(cols) == 0 {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("no cookies table in %s", cookiePath)
 	}
 	return &ChromeStore{db: db, encrypt: encrypt, cols: cols}, nil
@@ -148,7 +148,7 @@ func (s *ChromeStore) Apply(d cookie.Diff) error {
 				args = append(args, zeroForType(typ))
 			}
 		}
-		q := fmt.Sprintf("INSERT OR REPLACE INTO cookies(%s) VALUES(%s)",
+		q := fmt.Sprintf("INSERT OR REPLACE INTO cookies(%s) VALUES(%s)", // #nosec G201 -- values are parameterized; identifiers are quoted from SQLite schema introspection.
 			strings.Join(colNames, ","), strings.Join(placeholders, ","))
 		if _, err := tx.Exec(q, args...); err != nil {
 			return err

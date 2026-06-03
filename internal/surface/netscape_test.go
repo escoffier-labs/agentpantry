@@ -11,6 +11,9 @@ import (
 
 func TestNetscapeWriteDeleteAndPerms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	n, err := NewNetscape(path)
 	if err != nil {
 		t.Fatal(err)
@@ -49,6 +52,9 @@ func TestNetscapeWriteDeleteAndPerms(t *testing.T) {
 
 func TestNetscapeSeedsFromExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	// Pre-existing file (simulating a sink that restarted).
 	os.WriteFile(path, []byte("# Netscape HTTP Cookie File\nexample.com\tFALSE\t/\tFALSE\t0\told\tval\n"), 0o600)
 	n, err := NewNetscape(path)
@@ -63,5 +69,44 @@ func TestNetscapeSeedsFromExistingFile(t *testing.T) {
 	body, _ := os.ReadFile(path)
 	if !strings.Contains(string(body), "old") || !strings.Contains(string(body), "new.com") {
 		t.Fatalf("seed lost on restart: %q", body)
+	}
+}
+
+func TestNetscapeTightensExistingPerms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cookies.txt")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("# Netscape HTTP Cookie File\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := NewNetscape(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "v"}
+	if err := n.Apply(cookie.Diff{Upserts: []cookie.Cookie{c}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("cookies file must be tightened to 0600, got %v", info.Mode().Perm())
+	}
+}
+
+func TestNetscapeRejectsWorldWritableParent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := NewNetscape(filepath.Join(dir, "cookies.txt")); err == nil {
+		t.Fatal("world-writable adapter parent must be rejected")
 	}
 }

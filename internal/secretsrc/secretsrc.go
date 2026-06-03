@@ -22,14 +22,18 @@ func (r *DirReader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 	}
 	var out []secret.Secret
 	for _, e := range entries {
-		if e.IsDir() {
+		info, err := e.Info()
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 		name := e.Name()
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(r.Dir, name))
+		data, err := os.ReadFile(filepath.Join(r.Dir, name)) // #nosec G304 -- name came from ReadDir under the configured directory and symlinks are skipped.
 		if err != nil {
 			return nil, err
 		}

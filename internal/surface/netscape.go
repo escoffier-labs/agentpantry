@@ -29,7 +29,7 @@ type Netscape struct {
 }
 
 func NewNetscape(path string) (*Netscape, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := ensureSafeOutputDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	n := &Netscape{path: path, rows: map[string]netscapeRow{}}
@@ -120,7 +120,7 @@ func (n *Netscape) write() error {
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			r.domain, boolTF(r.includeSub), r.path, boolTF(r.secure), r.expiry, r.name, r.value)
 	}
-	return os.WriteFile(n.path, []byte(b.String()), 0o600)
+	return writePrivateFile(n.path, []byte(b.String()))
 }
 
 func boolTF(b bool) string {

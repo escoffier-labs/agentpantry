@@ -231,3 +231,15 @@ func TestCDPBrowserReachabilityCheck(t *testing.T) {
 		t.Fatal("unreachable cdp endpoint must Fail")
 	}
 }
+
+func TestCDPBrowserNonLoopbackFails(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "source", Peer: "127.0.0.1:8787", KeyPath: key,
+		Browsers: []config.BrowserRef{{Kind: "cdp", Profile: "p", URL: "http://198.51.100.10:9222"}},
+	}
+	if find(Run(c), "cdp:p").Status != Fail {
+		t.Fatal("non-loopback cdp endpoint must Fail")
+	}
+}

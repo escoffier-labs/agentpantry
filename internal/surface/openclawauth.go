@@ -20,7 +20,7 @@ func NewOpenClawAuth(path string, profiles map[string]string) (*OpenClawAuth, er
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("openclaw adapter requires a profiles mapping")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := ensureSafeOutputDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	return &OpenClawAuth{path: path, profiles: profiles}, nil
@@ -80,5 +80,5 @@ func (o *OpenClawAuth) ApplySecrets(d secret.Diff) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(o.path, out, 0o600)
+	return writePrivateFile(o.path, out)
 }

@@ -32,3 +32,10 @@ func TestReadFrameRejectsOversized(t *testing.T) {
 		t.Fatal("oversized frame must be rejected")
 	}
 }
+
+func TestWriteFrameRejectsOversized(t *testing.T) {
+	payload := make([]byte, maxFrame+1)
+	if err := WriteFrame(&bytes.Buffer{}, payload); err == nil {
+		t.Fatal("oversized frame must be rejected")
+	}
+}

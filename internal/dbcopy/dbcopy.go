@@ -10,20 +10,23 @@ import (
 // cleanup closure that removes it. Used to read browser cookie stores without
 // contending with a running browser's lock.
 func ToTemp(src string) (string, func(), error) {
-	in, err := os.Open(src)
+	in, err := os.Open(src) // #nosec G304 -- browser cookie store path is intentionally operator-selected.
 	if err != nil {
 		return "", nil, err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	tmp, err := os.CreateTemp("", "agentpantry-db-*.sqlite")
 	if err != nil {
 		return "", nil, err
 	}
 	if _, err := io.Copy(tmp, in); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
 		return "", nil, err
 	}
-	tmp.Close()
-	return tmp.Name(), func() { os.Remove(tmp.Name()) }, nil
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return "", nil, err
+	}
+	return tmp.Name(), func() { _ = os.Remove(tmp.Name()) }, nil
 }

@@ -1,4 +1,4 @@
-.PHONY: build test vet windows vuln fuzz package clean-dist
+.PHONY: build test vet windows vuln gosec fuzz package clean-dist
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell if git rev-parse --git-dir >/dev/null 2>&1; then c=$$(git rev-parse --short HEAD); if git diff --quiet && git diff --cached --quiet; then echo $$c; else echo $$c-dirty; fi; else echo unknown; fi)
@@ -16,6 +16,8 @@ windows:
 	GOOS=windows go build -ldflags "$(LDFLAGS)" ./...
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+gosec:
+	go run github.com/securego/gosec/v2/cmd/gosec@latest ./...
 # Fuzz one package/target, e.g. make fuzz PKG=./internal/transport FUZZ=FuzzOpen
 PKG ?= ./internal/transport
 FUZZ ?= FuzzOpen

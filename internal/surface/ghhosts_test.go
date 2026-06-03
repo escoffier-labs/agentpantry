@@ -11,6 +11,9 @@ import (
 
 func TestGHHostsMergesPreservingOtherHosts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hosts.yml")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	// Pre-existing file with an unrelated host.
 	os.WriteFile(path, []byte("enterprise.example:\n    oauth_token: keep-me\n    user: someone\n"), 0o600)
 
@@ -35,8 +38,35 @@ func TestGHHostsMergesPreservingOtherHosts(t *testing.T) {
 	}
 }
 
+func TestGHHostsTightensExistingPerms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts.yml")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("github.com:\n    oauth_token: old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := NewGHHosts(path, "gh_token", "github.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh_token", Value: "ghp_new"}}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("hosts file must be tightened to 0600, got %v", info.Mode().Perm())
+	}
+}
+
 func TestGHHostsUpsertOnly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hosts.yml")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	g, _ := NewGHHosts(path, "gh_token", "github.com", "")
 	// A delete (or unrelated secret) must not write anything.
 	if err := g.ApplySecrets(secret.Diff{Deletes: []string{"gh_token"}}); err != nil {
@@ -52,6 +82,9 @@ func TestGHHostsRefusesToClobberUnreadableFile(t *testing.T) {
 		t.Skip("root bypasses file permissions")
 	}
 	path := filepath.Join(t.TempDir(), "hosts.yml")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(path, []byte("enterprise.example:\n    oauth_token: keep-me\n"), 0o600)
 	os.Chmod(path, 0o000)
 	t.Cleanup(func() { os.Chmod(path, 0o600) })

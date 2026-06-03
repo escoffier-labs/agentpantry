@@ -24,7 +24,7 @@ func NewGHHosts(path, secretName, host, user string) (*GHHosts, error) {
 	if host == "" {
 		host = "github.com"
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := ensureSafeOutputDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	return &GHHosts{path: path, secretName: secretName, host: host, user: user}, nil
@@ -69,5 +69,5 @@ func (g *GHHosts) ApplySecrets(d secret.Diff) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(g.path, out, 0o600)
+	return writePrivateFile(g.path, out)
 }

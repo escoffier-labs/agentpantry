@@ -321,6 +321,9 @@ func (discard) Write(p []byte) (int, error) { return len(p), nil }
 
 func TestEndToEndNetscapeAdapter(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	nsPath := filepath.Join(dir, "cookies.txt")
 	ns, err := surface.NewNetscape(nsPath)
 	if err != nil {
@@ -354,6 +357,9 @@ func TestEndToEndNetscapeAdapter(t *testing.T) {
 
 func TestEndToEndGHAdapter(t *testing.T) {
 	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	srcSecrets := filepath.Join(dir, "secrets")
 	os.MkdirAll(srcSecrets, 0o700)
 	os.WriteFile(filepath.Join(srcSecrets, "gh_token"), []byte("ghp_live"), 0o600)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -24,6 +25,23 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if len(out.Domains.Allow) != 1 || out.Domains.Allow[0] != "github.com" {
 		t.Fatalf("domains lost: %+v", out.Domains)
+	}
+}
+
+func TestSaveTightensExistingPerms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("role = \"source\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default("source")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config file must be tightened to 0600, got %v", info.Mode().Perm())
 	}
 }
 

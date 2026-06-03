@@ -26,6 +26,26 @@ func TestDirReaderReadsFilesSkipsDirsAndDotfiles(t *testing.T) {
 	}
 }
 
+func TestDirReaderSkipsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("do-not-read"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "linked_secret")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	r := &DirReader{Dir: dir}
+	secs, err := r.ReadSecrets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secs) != 0 {
+		t.Fatalf("symlink must be skipped, got %+v", secs)
+	}
+}
+
 func TestDirReaderMissingDirErrors(t *testing.T) {
 	r := &DirReader{Dir: filepath.Join(t.TempDir(), "nope")}
 	_, err := r.ReadSecrets(context.Background())

@@ -3,6 +3,7 @@ package surface
 import (
 	"database/sql"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -15,12 +16,17 @@ type Sidecar struct {
 }
 
 func NewSidecar(path string) (*Sidecar, error) {
+	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	// Ensure the file exists with 0600 before the driver opens it.
-	f, err := os.OpenFile(path, os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE, 0o600) // #nosec G304 -- sidecar path is an application-managed config path.
 	if err != nil {
 		return nil, err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		return nil, err
 	}
@@ -34,7 +40,7 @@ func NewSidecar(path string) (*Sidecar, error) {
 		expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER,
 		PRIMARY KEY(host, name, path))`)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return &Sidecar{db: db}, nil

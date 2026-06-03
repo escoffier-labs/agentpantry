@@ -75,7 +75,9 @@ func usage() {
 func cmdVersion(args []string) error {
 	fs := flag.NewFlagSet("version", flag.ExitOnError)
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	payload := map[string]string{
 		"version":    version,
@@ -103,7 +105,9 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	role := fs.String("role", "source", "source or sink")
 	out := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	if *role != "source" && *role != "sink" {
 		return fmt.Errorf("role must be source or sink")
 	}
@@ -117,7 +121,9 @@ func cmdInit(args []string) error {
 func cmdKeygen(args []string) error {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	out := fs.String("out", filepath.Join(config.Dir(), "psk.key"), "key path")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	if err := keyfile.Generate(*out); err != nil {
 		return err
 	}
@@ -128,7 +134,9 @@ func cmdKeygen(args []string) error {
 func loadConfig(args []string) (config.Config, error) {
 	fs := flag.NewFlagSet("cfg", flag.ExitOnError)
 	path := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return config.Config{}, err
+	}
 	return config.Load(*path)
 }
 
@@ -148,6 +156,9 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 		case "firefox":
 			vs = append(vs, &ffvault.Firefox{Profile: b.Profile, CookiePath: b.CookiePath})
 		case "cdp":
+			if err := cdpvault.ValidateLoopbackURL(b.URL, "http", "https"); err != nil {
+				return nil, nil, fmt.Errorf("cdp browser %q must use a loopback URL: %w", b.Profile, err)
+			}
 			vs = append(vs, &cdpvault.CDP{BaseURL: b.URL})
 		default:
 			return nil, nil, fmt.Errorf("unsupported browser kind %q (supported: chromium, firefox, cdp)", b.Kind)
@@ -165,7 +176,9 @@ func cmdSource(args []string) error {
 	fs := flag.NewFlagSet("source", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	stdio := fs.Bool("stdio", false, "stream frames to stdout instead of dialing the peer")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	c, err := config.Load(*cfgPath)
 	if err != nil {
@@ -252,20 +265,26 @@ func cmdSource(args []string) error {
 			attempt++
 			continue
 		}
-		conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		if err := conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			_ = conn.Close()
+			return err
+		}
 		salt, herr := transport.RecvSalt(conn)
 		if herr != nil {
-			conn.Close()
+			_ = conn.Close()
 			if !sleepCtx(ctx, source.Backoff(attempt)) {
 				return nil
 			}
 			attempt++
 			continue
 		}
-		conn.SetReadDeadline(time.Time{})
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			_ = conn.Close()
+			return err
+		}
 		sealer, serr := transport.NewSealer(key, salt)
 		if serr != nil {
-			conn.Close()
+			_ = conn.Close()
 			return serr
 		}
 		syncer.Sealer = sealer
@@ -273,7 +292,7 @@ func cmdSource(args []string) error {
 		syncer.Reset()
 		attempt = 0
 		werr := syncer.Watch(ctx, paths, 500*time.Millisecond, resync)
-		conn.Close()
+		_ = conn.Close()
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -305,7 +324,9 @@ func cmdSink(args []string) error {
 	fs := flag.NewFlagSet("sink", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	stdio := fs.Bool("stdio", false, "read frames from stdin instead of listening on a port")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	c, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
@@ -377,7 +398,9 @@ func cmdSink(args []string) error {
 	}
 	defer func() {
 		for _, cl := range closers {
-			cl()
+			if err := cl(); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: close failed:", err)
+			}
 		}
 	}()
 
@@ -387,7 +410,7 @@ func cmdSink(args []string) error {
 		// Close stdin on signal so a blocking read (handshake or frame) unblocks.
 		go func() {
 			<-ctx.Done()
-			os.Stdin.Close()
+			_ = os.Stdin.Close()
 		}()
 		// One-way pipe: the source issued the salt as the first frame.
 		salt, herr := transport.RecvSalt(os.Stdin)
@@ -407,12 +430,12 @@ func cmdSink(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	fmt.Printf("sink: listening on %s, surfaces %v\n", c.Peer, c.Surfaces)
 
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		_ = ln.Close()
 	}()
 
 	for {
@@ -426,24 +449,31 @@ func cmdSink(args []string) error {
 		// Issue a fresh per-connection salt so frames from one session cannot be
 		// replayed into another, and so a reconnecting source is not rejected.
 		// Bound the handshake write so one stuck peer cannot wedge the listener.
-		conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+		if err := conn.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			_ = conn.Close()
+			fmt.Fprintln(os.Stderr, "handshake deadline failed:", err)
+			continue
+		}
 		salt, herr := transport.SendSalt(conn)
 		if herr != nil {
 			fmt.Fprintln(os.Stderr, "handshake failed:", herr)
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
-		conn.SetWriteDeadline(time.Time{}) // clear; Serve is a long-lived stream
+		if err := conn.SetWriteDeadline(time.Time{}); err != nil { // clear; Serve is a long-lived stream
+			_ = conn.Close()
+			return err
+		}
 		opener, oerr := transport.NewOpener(key, salt)
 		if oerr != nil {
-			conn.Close()
+			_ = conn.Close()
 			return oerr
 		}
 		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
 		if err := srv.Serve(ctx, conn); err != nil {
 			fmt.Fprintln(os.Stderr, "connection ended:", err)
 		}
-		conn.Close()
+		_ = conn.Close()
 	}
 }
 
@@ -452,8 +482,14 @@ func cmdInstallService(args []string) error {
 	if err != nil {
 		return err
 	}
+	if c.Role != "source" && c.Role != "sink" {
+		return fmt.Errorf("role must be source or sink")
+	}
 	if runtime.GOOS == "windows" {
-		bin, _ := os.Executable()
+		bin, err := os.Executable()
+		if err != nil {
+			return err
+		}
 		cfgPath := filepath.Join(config.Dir(), "config.toml")
 		fmt.Println("Register a Scheduled Task by running:")
 		fmt.Println(service.WindowsTaskCommand(c.Role, bin, cfgPath))
@@ -464,12 +500,16 @@ func cmdInstallService(args []string) error {
 		return err
 	}
 	cfgPath := filepath.Join(config.Dir(), "config.toml")
-	unitDir := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
-	if err := os.MkdirAll(unitDir, 0o700); err != nil {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	unitDir := filepath.Join(home, ".config", "systemd", "user")
+	if err := os.MkdirAll(unitDir, 0o700); err != nil { // #nosec G703 -- unitDir is fixed under the current user's home directory.
 		return err
 	}
 	unitPath := filepath.Join(unitDir, service.UnitFileName(c.Role))
-	if err := os.WriteFile(unitPath, []byte(service.SystemdUnit(c.Role, bin, cfgPath)), 0o644); err != nil {
+	if err := os.WriteFile(unitPath, []byte(service.SystemdUnit(c.Role, bin, cfgPath)), 0o600); err != nil { // #nosec G703 -- role is validated and UnitFileName returns a fixed basename.
 		return err
 	}
 	fmt.Printf("wrote %s\nenable with:\n  systemctl --user daemon-reload\n  systemctl --user enable --now %s\n",
@@ -483,7 +523,9 @@ func cmdDoctor(args []string) error {
 	timeout := fs.Duration("timeout", 3*time.Second, "peer reachability dial timeout")
 	skipNet := fs.Bool("no-net", false, "skip the peer reachability check")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if _, statErr := os.Stat(*cfgPath); errors.Is(statErr, os.ErrNotExist) {
 		if *jsonOut {
@@ -597,7 +639,9 @@ func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	if _, statErr := os.Stat(*cfgPath); errors.Is(statErr, os.ErrNotExist) {
 		fmt.Fprintln(os.Stderr, "unwired: no config at", *cfgPath)

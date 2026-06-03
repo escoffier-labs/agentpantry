@@ -11,6 +11,9 @@ import (
 
 func TestOpenClawAuthMergesProfileObject(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth-profiles.json")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	// Existing file with another profile that must survive.
 	os.WriteFile(path, []byte(`{"profiles":{"openai-codex:default":{"type":"oauth"}}}`), 0o600)
 
@@ -41,8 +44,35 @@ func TestOpenClawAuthMergesProfileObject(t *testing.T) {
 	}
 }
 
+func TestOpenClawAuthTightensExistingPerms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth-profiles.json")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"profiles":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o, err := NewOpenClawAuth(path, map[string]string{"anthropic_secret": "anthropic:default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := o.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "anthropic_secret", Value: `{"type":"oauth"}`}}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("auth file must be tightened to 0600, got %v", info.Mode().Perm())
+	}
+}
+
 func TestOpenClawAuthSkipsInvalidJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "auth-profiles.json")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	o, _ := NewOpenClawAuth(path, map[string]string{"bad": "x:default"})
 	if err := o.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "bad", Value: "not json"}}}); err != nil {
 		t.Fatal(err)
@@ -57,6 +87,9 @@ func TestOpenClawAuthRefusesToClobberUnreadableFile(t *testing.T) {
 		t.Skip("root bypasses file permissions")
 	}
 	path := filepath.Join(t.TempDir(), "auth-profiles.json")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	os.WriteFile(path, []byte(`{"profiles":{"openai-codex:default":{"type":"oauth"}}}`), 0o600)
 	os.Chmod(path, 0o000)
 	t.Cleanup(func() { os.Chmod(path, 0o600) })

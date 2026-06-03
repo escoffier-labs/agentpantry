@@ -11,8 +11,12 @@ const maxFrame = 64 << 20 // 64 MiB
 
 // WriteFrame writes a uint32 big-endian length prefix then the payload.
 func WriteFrame(w io.Writer, payload []byte) error {
+	if len(payload) > maxFrame {
+		return fmt.Errorf("frame size %d exceeds max %d", len(payload), maxFrame)
+	}
+	n := uint32(len(payload)) // #nosec G115 -- len is bounded by maxFrame well below uint32 max.
 	var hdr [4]byte
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(payload)))
+	binary.BigEndian.PutUint32(hdr[:], n)
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}

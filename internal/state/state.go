@@ -30,7 +30,7 @@ func (RealClock) Now() time.Time { return time.Now() }
 // Load reads state from path. A missing file is the zero value, not an error.
 func Load(path string) (State, error) {
 	var s State
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- state path is derived from the operator-selected config path.
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return State{}, nil

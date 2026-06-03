@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/gorilla/websocket"
@@ -18,12 +20,47 @@ type CDP struct {
 
 func (c *CDP) Name() string { return "cdp:" + c.BaseURL }
 
+// ValidateLoopbackURL requires CDP HTTP/WebSocket endpoints to stay on loopback.
+// A DevTools port grants full browser control, so remote CDP is intentionally
+// not supported.
+func ValidateLoopbackURL(raw string, allowedSchemes ...string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	schemeOK := false
+	for _, s := range allowedSchemes {
+		if u.Scheme == s {
+			schemeOK = true
+			break
+		}
+	}
+	if !schemeOK {
+		return fmt.Errorf("scheme %q is not allowed", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("host %q is not loopback", host)
+	}
+	return nil
+}
+
 type cdpTarget struct {
 	Type                 string `json:"type"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
 func (c *CDP) wsURL(ctx context.Context) (string, error) {
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return "", fmt.Errorf("invalid CDP base URL: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json", nil)
 	if err != nil {
 		return "", err
@@ -42,11 +79,17 @@ func (c *CDP) wsURL(ctx context.Context) (string, error) {
 	}
 	for _, t := range targets {
 		if t.WebSocketDebuggerURL != "" && (t.Type == "page" || t.Type == "") {
+			if err := ValidateLoopbackURL(t.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+				return "", fmt.Errorf("invalid CDP websocket URL: %w", err)
+			}
 			return t.WebSocketDebuggerURL, nil
 		}
 	}
 	for _, t := range targets {
 		if t.WebSocketDebuggerURL != "" {
+			if err := ValidateLoopbackURL(t.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+				return "", fmt.Errorf("invalid CDP websocket URL: %w", err)
+			}
 			return t.WebSocketDebuggerURL, nil
 		}
 	}

@@ -88,6 +88,26 @@ func TestCDPNoEndpointErrors(t *testing.T) {
 	}
 }
 
+func TestCDPRejectsNonLoopbackBaseURL(t *testing.T) {
+	c := &CDP{BaseURL: "http://198.51.100.10:9222"}
+	if _, err := c.ReadCookies(context.Background()); err == nil {
+		t.Fatal("non-loopback CDP base URL must error")
+	}
+}
+
+func TestCDPRejectsNonLoopbackWebSocketURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"type": "page", "webSocketDebuggerUrl": "ws://198.51.100.10/devtools/page/ABC"},
+		})
+	}))
+	defer srv.Close()
+	c := &CDP{BaseURL: srv.URL}
+	if _, err := c.ReadCookies(context.Background()); err == nil {
+		t.Fatal("non-loopback CDP websocket URL must error")
+	}
+}
+
 func TestCDPRejectsNonOK(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusInternalServerError)
