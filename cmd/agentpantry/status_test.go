@@ -20,10 +20,10 @@ func buildBin(t *testing.T) string {
 	return bin
 }
 
-// runStatus runs the binary and returns (exitCode, stdout, stderr).
-func runStatus(t *testing.T, bin string, args ...string) (int, string, string) {
+// runCmd runs the binary and returns (exitCode, stdout, stderr).
+func runCmd(t *testing.T, bin string, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.Command(bin, append([]string{"status"}, args...)...)
+	cmd := exec.Command(bin, args...)
 	stdout, err := cmd.Output()
 	if ee, ok := err.(*exec.ExitError); ok {
 		return ee.ExitCode(), string(stdout), string(ee.Stderr)
@@ -34,17 +34,19 @@ func runStatus(t *testing.T, bin string, args ...string) (int, string, string) {
 	return 0, string(stdout), ""
 }
 
+func runStatus(t *testing.T, bin string, args ...string) (int, string, string) {
+	t.Helper()
+	return runCmd(t, bin, append([]string{"status"}, args...)...)
+}
+
 func runDoctor(t *testing.T, bin string, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.Command(bin, append([]string{"doctor"}, args...)...)
-	stdout, err := cmd.Output()
-	if ee, ok := err.(*exec.ExitError); ok {
-		return ee.ExitCode(), string(stdout), string(ee.Stderr)
-	}
-	if err != nil {
-		t.Fatalf("run error: %v", err)
-	}
-	return 0, string(stdout), ""
+	return runCmd(t, bin, append([]string{"doctor"}, args...)...)
+}
+
+func runVersion(t *testing.T, bin string, args ...string) (int, string, string) {
+	t.Helper()
+	return runCmd(t, bin, append([]string{"version"}, args...)...)
 }
 
 func TestStatusJSONUnwired(t *testing.T) {
@@ -128,6 +130,23 @@ func TestStatusJSONConfigured(t *testing.T) {
 		t.Fatalf("want key_present=false (no key file written), got %v", payload["key_present"])
 	}
 	for _, k := range []string{"role", "configured", "peer", "key_present", "surfaces", "browsers", "allow", "deny"} {
+		if _, ok := payload[k]; !ok {
+			t.Errorf("JSON payload missing required contract key %q", k)
+		}
+	}
+}
+
+func TestVersionJSON(t *testing.T) {
+	bin := buildBin(t)
+	code, stdout, stderr := runVersion(t, bin, "--json")
+	if code != 0 {
+		t.Fatalf("want exit 0, got %d (stderr=%s)", code, stderr)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout)
+	}
+	for _, k := range []string{"version", "commit", "build_date", "go_version", "os", "arch"} {
 		if _, ok := payload[k]; !ok {
 			t.Errorf("JSON payload missing required contract key %q", k)
 		}

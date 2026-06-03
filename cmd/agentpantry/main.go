@@ -28,6 +28,12 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 )
 
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -50,6 +56,8 @@ func main() {
 		err = cmdDoctor(args)
 	case "status":
 		err = cmdStatus(args)
+	case "version":
+		err = cmdVersion(args)
 	default:
 		usage()
 	}
@@ -60,8 +68,35 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agentpantry <init|keygen|source|sink|doctor|status|install-service> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: agentpantry <init|keygen|source|sink|doctor|status|install-service|version> [flags]")
 	os.Exit(2)
+}
+
+func cmdVersion(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ExitOnError)
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
+	fs.Parse(args)
+
+	payload := map[string]string{
+		"version":    version,
+		"commit":     commit,
+		"build_date": buildDate,
+		"go_version": runtime.Version(),
+		"os":         runtime.GOOS,
+		"arch":       runtime.GOARCH,
+	}
+	if *jsonOut {
+		b, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+
+	fmt.Printf("agentpantry %s\ncommit: %s\nbuilt:  %s\ngo:     %s\nos/arch: %s/%s\n",
+		version, commit, buildDate, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	return nil
 }
 
 func cmdInit(args []string) error {

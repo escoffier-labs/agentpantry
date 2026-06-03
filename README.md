@@ -12,6 +12,21 @@ both ends.
 
     go install github.com/escoffier-labs/agentpantry/cmd/agentpantry@latest
 
+Confirm the installed binary:
+
+    agentpantry version
+
+## Release packaging
+
+Local release archives can be built into `dist/`:
+
+    make package VERSION=v0.2.0
+
+The package target runs `go test ./...` and `go vet ./...`, then cross-builds
+Linux, macOS, and Windows archives with build metadata stamped into the
+`agentpantry version` output. `dist/checksums.txt` contains SHA-256 checksums
+for the generated archives.
+
 ## How it works
 
 agentpantry is a single binary that takes on one of two roles, chosen by

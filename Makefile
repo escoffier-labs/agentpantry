@@ -1,12 +1,19 @@
-.PHONY: build test vet windows vuln fuzz
+.PHONY: build test vet windows vuln fuzz package clean-dist
+
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell if git rev-parse --git-dir >/dev/null 2>&1; then c=$$(git rev-parse --short HEAD); if git diff --quiet && git diff --cached --quiet; then echo $$c; else echo $$c-dirty; fi; else echo unknown; fi)
+DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(DATE)
+PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+
 build:
-	go build ./...
+	go build -ldflags "$(LDFLAGS)" ./...
 test:
 	go test ./...
 vet:
 	go vet ./...
 windows:
-	GOOS=windows go build ./...
+	GOOS=windows go build -ldflags "$(LDFLAGS)" ./...
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 # Fuzz one package/target, e.g. make fuzz PKG=./internal/transport FUZZ=FuzzOpen
@@ -14,3 +21,24 @@ PKG ?= ./internal/transport
 FUZZ ?= FuzzOpen
 fuzz:
 	go test $(PKG) -run '^$$' -fuzz $(FUZZ) -fuzztime 20s
+clean-dist:
+	rm -rf dist
+package: clean-dist test vet
+	mkdir -p dist/tmp
+	for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; \
+		arch=$${platform#*/}; \
+		ext=""; \
+		if [ "$$os" = "windows" ]; then ext=".exe"; fi; \
+		pkg="agentpantry_$(VERSION)_$${os}_$${arch}"; \
+		out="dist/tmp/$$pkg"; \
+		mkdir -p "$$out"; \
+		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o "$$out/agentpantry$$ext" ./cmd/agentpantry; \
+		cp README.md CHANGELOG.md LICENSE "$$out/"; \
+		chmod 755 "$$out" "$$out/agentpantry$$ext"; \
+		chmod 644 "$$out/README.md" "$$out/CHANGELOG.md" "$$out/LICENSE"; \
+		tar -C dist/tmp -czf "dist/$$pkg.tar.gz" "$$pkg"; \
+	done
+	cd dist && sha256sum *.tar.gz > checksums.txt
+	chmod 644 dist/*.tar.gz dist/checksums.txt
+	rm -rf dist/tmp
