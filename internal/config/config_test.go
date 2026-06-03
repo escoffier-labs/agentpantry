@@ -78,6 +78,7 @@ func TestAdaptersRoundTrip(t *testing.T) {
 		{Type: "netscape", Path: "/tmp/cookies.txt"},
 		{Type: "gh", Path: "/tmp/hosts.yml", Secret: "gh_token", Host: "github.com", User: "octocat"},
 		{Type: "openclaw", Path: "/tmp/auth.json", Profiles: map[string]string{"anthropic_secret": "anthropic:default"}},
+		{Type: "hermes", Path: "/tmp/.hermes/agentpantry"},
 	}
 	if err := Save(path, in); err != nil {
 		t.Fatal(err)
@@ -86,10 +87,10 @@ func TestAdaptersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Adapters) != 3 {
-		t.Fatalf("want 3 adapters, got %d", len(out.Adapters))
+	if len(out.Adapters) != 4 {
+		t.Fatalf("want 4 adapters, got %d", len(out.Adapters))
 	}
-	if out.Adapters[1].Secret != "gh_token" || out.Adapters[2].Profiles["anthropic_secret"] != "anthropic:default" {
+	if out.Adapters[1].Secret != "gh_token" || out.Adapters[2].Profiles["anthropic_secret"] != "anthropic:default" || out.Adapters[3].Path != "/tmp/.hermes/agentpantry" {
 		t.Fatalf("adapter fields lost: %+v", out.Adapters)
 	}
 }

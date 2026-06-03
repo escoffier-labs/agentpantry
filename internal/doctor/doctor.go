@@ -81,15 +81,26 @@ func writable(dir string) bool {
 }
 
 // writableOrCreatable reports whether dir is writable, or does not yet exist but
-// its parent is writable (so it will be created on first run).
+// its nearest existing ancestor is writable (so it will be created on first
+// run).
 func writableOrCreatable(dir string) bool {
 	if writable(dir) {
 		return true
 	}
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return writable(filepath.Dir(dir))
+	for {
+		info, err := os.Stat(dir)
+		if err == nil {
+			return info.IsDir() && writable(dir)
+		}
+		if !os.IsNotExist(err) {
+			return false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
 	}
-	return false
 }
 
 // Run executes the role-appropriate non-network checks.
@@ -206,6 +217,14 @@ func Run(c config.Config) []Check {
 					checks = append(checks, Check{name, Fail, "gh adapter needs a secret name"})
 				} else if a.Type == "openclaw" && len(a.Profiles) == 0 {
 					checks = append(checks, Check{name, Fail, "openclaw adapter needs a profiles mapping"})
+				} else {
+					checks = append(checks, Check{name, OK, a.Path})
+				}
+			case "hermes":
+				if a.Path == "" {
+					checks = append(checks, Check{name, Fail, "hermes adapter needs a bundle directory path"})
+				} else if !writableOrCreatable(a.Path) {
+					checks = append(checks, Check{name, Fail, "hermes bundle dir not writable: " + a.Path})
 				} else {
 					checks = append(checks, Check{name, OK, a.Path})
 				}

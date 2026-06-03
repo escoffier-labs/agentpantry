@@ -16,10 +16,10 @@ type BrowserRef struct {
 	URL        string `toml:"url"` // cdp: DevTools base URL, e.g. http://127.0.0.1:9222
 }
 
-// AdapterRef declares a per-CLI adapter sink surface.
+// AdapterRef declares a per-CLI or per-harness adapter sink surface.
 type AdapterRef struct {
-	Type     string            `toml:"type"`     // "netscape" | "gh" | "openclaw"
-	Path     string            `toml:"path"`     // target file
+	Type     string            `toml:"type"`     // "netscape" | "gh" | "openclaw" | "hermes"
+	Path     string            `toml:"path"`     // target file, or hermes bundle directory
 	Secret   string            `toml:"secret"`   // gh: secret Name holding the token
 	Host     string            `toml:"host"`     // gh: default "github.com"
 	User     string            `toml:"user"`     // gh: optional user field

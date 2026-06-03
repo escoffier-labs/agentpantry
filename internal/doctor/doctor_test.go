@@ -186,6 +186,30 @@ func TestAdapterWritableParentOK(t *testing.T) {
 	}
 }
 
+func TestHermesAdapterWritableBundleDirOK(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"},
+		Adapters: []config.AdapterRef{{Type: "hermes", Path: filepath.Join(dir, ".hermes", "agentpantry")}},
+	}
+	if got := find(Run(c), "adapter:hermes"); got.Status != OK {
+		t.Fatalf("hermes adapter with creatable bundle dir must be OK, got %+v", got)
+	}
+}
+
+func TestHermesAdapterNeedsPath(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"},
+		Adapters: []config.AdapterRef{{Type: "hermes"}},
+	}
+	if got := find(Run(c), "adapter:hermes"); got.Status != Fail {
+		t.Fatalf("hermes adapter without path must fail, got %+v", got)
+	}
+}
+
 var errProbe = errProbeType("boom")
 
 type errProbeType string

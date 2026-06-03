@@ -393,6 +393,57 @@ func TestEndToEndGHAdapter(t *testing.T) {
 	}
 }
 
+func TestEndToEndHermesAdapter(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	srcSecrets := filepath.Join(dir, "source-secrets")
+	os.MkdirAll(srcSecrets, 0o700)
+	os.WriteFile(filepath.Join(srcSecrets, "api_token"), []byte("secret-live"), 0o600)
+	hermes, err := surface.NewHermesBundle(filepath.Join(dir, ".hermes", "agentpantry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Vaults:  []source.CookieReader{fixedCookie{c: cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "cookie-live", IsSecure: true}}},
+		Secrets: []source.SecretReader{&secretsrc.DirReader{Dir: srcSecrets}},
+		Policy:  policy.Domain{Allow: []string{"github.com"}},
+		Sealer:  sealer,
+		Out:     pw,
+	}
+	srv := &sink.Server{
+		Opener:         opener,
+		CookieSurfaces: []sink.CookieSurface{hermes},
+		SecretSurfaces: []sink.SecretSurface{hermes},
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), pr) }()
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	cookies, _ := os.ReadFile(filepath.Join(dir, ".hermes", "agentpantry", "cookies.txt"))
+	if !strings.Contains(string(cookies), "cookie-live") {
+		t.Fatalf("hermes adapter did not receive cookie: %q", cookies)
+	}
+	secretValue, _ := os.ReadFile(filepath.Join(dir, ".hermes", "agentpantry", "secrets", "api_token"))
+	if string(secretValue) != "secret-live" {
+		t.Fatalf("hermes adapter did not receive secret: %q", secretValue)
+	}
+	manifest, _ := os.ReadFile(filepath.Join(dir, ".hermes", "agentpantry", "agentpantry.json"))
+	if !strings.Contains(string(manifest), "agentpantry.hermes-bundle.v1") {
+		t.Fatalf("hermes manifest missing schema: %q", manifest)
+	}
+}
+
 func TestEndToEndFirefoxToSidecar(t *testing.T) {
 	dir := t.TempDir()
 	ffPath := filepath.Join(dir, "cookies.sqlite")

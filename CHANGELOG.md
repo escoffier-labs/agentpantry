@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- `hermes` adapter that writes an Agent Pantry-owned Hermes bundle directory with `cookies.txt`, `secrets/<name>`, and an `agentpantry.json` manifest for Hermes Agent launch wrappers or plugins.
+
 ## v0.2.1 - 2026-06-03
 
 ### Changed

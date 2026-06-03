@@ -392,6 +392,13 @@ func cmdSink(args []string) error {
 				return err
 			}
 			secretSurfaces = append(secretSurfaces, oc)
+		case "hermes":
+			h, err := surface.NewHermesBundle(a.Path)
+			if err != nil {
+				return err
+			}
+			cookieSurfaces = append(cookieSurfaces, h)
+			secretSurfaces = append(secretSurfaces, h)
 		default:
 			return fmt.Errorf("unknown adapter type %q", a.Type)
 		}

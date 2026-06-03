@@ -399,7 +399,7 @@
         "type": 3
       },
       "label": {
-        "text": "Surfaces + adapters\nsidecar SQLite / secrets\ncookies.txt / gh / OpenClaw\nChrome re-encrypt",
+        "text": "Surfaces + adapters\nsidecar SQLite / secrets\ncookies.txt / gh / OpenClaw\nHermes bundle\nChrome re-encrypt",
         "fontSize": 15,
         "strokeColor": "#1f2937",
         "textAlign": "center",

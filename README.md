@@ -64,8 +64,7 @@ whose counter is not strictly greater than the last accepted one, and applies
 the diff to its configured surfaces. The default sink surface is a plaintext
 sidecar SQLite database that holds the current cookie set; opt-in surfaces and
 adapters can also write secrets, browser stores, Netscape cookie files, GitHub
-CLI auth, OpenClaw provider profiles, and generic local files that Hermes Agent
-and other harnesses can consume.
+CLI auth, OpenClaw provider profiles, and a Hermes Agent bundle.
 
 ### Source-to-sink flow
 
@@ -239,11 +238,7 @@ without any agentpantry-aware glue. They are declared with an optional
 `[[adapters]]` block in the sink config, each entry chosen by `type`. An adapter
 is layered on top of the regular `surfaces` list; you can run both at once.
 
-Three native adapter types ship today (`netscape`, `gh`, and `openclaw`).
-Hermes Agent is covered through the generic sink surfaces, especially
-`secrets`, `sidecar`, and the `netscape` `cookies.txt` adapter; there is no
-separate `type = "hermes"` adapter until Hermes has a stable native auth-file
-target for Agent Pantry to write.
+Four adapter types ship:
 
 - `netscape`: a cookie surface that writes a Netscape `cookies.txt` (the format
   curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
@@ -261,8 +256,13 @@ target for Agent Pantry to write.
   JSON object; a value that is not valid JSON is skipped rather than written, so
   a malformed secret never corrupts a working gateway file. Like `gh` it is
   merge-only and upsert-only.
+- `hermes`: a cookie and secret surface that writes an Agent Pantry bundle under
+  a Hermes-readable directory, usually `~/.hermes/agentpantry`. The bundle
+  contains `cookies.txt`, `secrets/<name>`, and `agentpantry.json` describing the
+  relative paths. This is an Agent Pantry-owned subtree, so deletes remove the
+  corresponding bundled cookie or secret.
 
-Example sink config with all three adapters:
+Example sink config with the common adapters:
 
     role = "sink"
     peer = "127.0.0.1:8787"
@@ -286,17 +286,22 @@ Example sink config with all three adapters:
     [adapters.profiles]
     anthropic_secret = "anthropic:default"
 
+    [[adapters]]
+    type = "hermes"
+    path = "/home/agent/.hermes/agentpantry"
+
 `agentpantry doctor` checks each adapter: that its target directory is writable
 or creatable, that a `gh` adapter names a secret, and that an `openclaw` adapter
-carries a profiles mapping.
+carries a profiles mapping. For `hermes`, `path` is a bundle directory, not a
+single file.
 
 ## Status
 
 Current status: cookie sync to the plaintext sidecar remains the default path.
 Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
-`cookies.txt`, `gh`, and `openclaw`; Hermes Agent can use the generic sink
-outputs. Source support includes Linux Chromium, Firefox, Windows Chromium, and
-Chrome DevTools Protocol export for app-bound Chrome profiles.
+`cookies.txt`, `gh`, `openclaw`, and the Hermes Agent bundle. Source support
+includes Linux Chromium, Firefox, Windows Chromium, and Chrome DevTools Protocol
+export for app-bound Chrome profiles.
 
 ## Acknowledgements
 
