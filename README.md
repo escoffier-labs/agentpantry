@@ -115,7 +115,9 @@ not), and that each configured surface is satisfiable. On a source it also
 dials the peer to confirm reachability; pass `--no-net` to skip that or
 `--timeout` to change the dial timeout. Each check prints `OK`, `WARN`, or
 `FAIL`. doctor exits 0 when nothing failed and exits 1 when any check is a
-`FAIL` (warnings do not fail the run), so it can gate a startup script.
+`FAIL` (warnings do not fail the run), so it can gate a startup script. Pass
+`--json` for a machine-readable payload with check rows, fail/warn counts, and a
+safe config summary for operator dashboards such as Brigade.
 
 `agentpantry status` reports the active role, peer, key path, surfaces, and the
 configured allow/deny domains. It also reports the last sync: the time of the

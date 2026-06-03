@@ -447,7 +447,25 @@ func cmdDoctor(args []string) error {
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	timeout := fs.Duration("timeout", 3*time.Second, "peer reachability dial timeout")
 	skipNet := fs.Bool("no-net", false, "skip the peer reachability check")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
 	fs.Parse(args)
+
+	if _, statErr := os.Stat(*cfgPath); errors.Is(statErr, os.ErrNotExist) {
+		if *jsonOut {
+			printDoctorJSON(map[string]any{
+				"configured":  false,
+				"config_path": *cfgPath,
+				"checks": []any{
+					map[string]any{"name": "config", "status": "FAIL", "detail": "config missing: " + *cfgPath},
+				},
+				"fail_count":      1,
+				"warn_count":      0,
+				"skipped_network": *skipNet,
+			})
+			os.Exit(2)
+		}
+		return fmt.Errorf("load config: open %s: no such file or directory", *cfgPath)
+	}
 
 	c, err := config.Load(*cfgPath)
 	if err != nil {
@@ -457,6 +475,13 @@ func cmdDoctor(args []string) error {
 	if c.Role == "source" && !*skipNet {
 		checks = append(checks, doctor.PeerReachable(c.Peer, *timeout))
 	}
+	if *jsonOut {
+		printDoctorJSON(doctorPayload(*cfgPath, c, checks, *skipNet))
+		if doctor.HasFail(checks) {
+			return fmt.Errorf("doctor found problems")
+		}
+		return nil
+	}
 	for _, ck := range checks {
 		fmt.Printf("[%-4s] %s: %s\n", ck.Status, ck.Name, ck.Detail)
 	}
@@ -464,6 +489,72 @@ func cmdDoctor(args []string) error {
 		return fmt.Errorf("doctor found problems")
 	}
 	return nil
+}
+
+func doctorPayload(cfgPath string, c config.Config, checks []doctor.Check, skippedNetwork bool) map[string]any {
+	rows := make([]map[string]any, 0, len(checks))
+	failCount := 0
+	warnCount := 0
+	for _, ck := range checks {
+		status := ck.Status.String()
+		if ck.Status == doctor.Fail {
+			failCount++
+		} else if ck.Status == doctor.Warn {
+			warnCount++
+		}
+		rows = append(rows, map[string]any{
+			"name":   ck.Name,
+			"status": status,
+			"detail": ck.Detail,
+		})
+	}
+	surfaces := c.Surfaces
+	if surfaces == nil {
+		surfaces = []string{}
+	}
+	allow := c.Domains.Allow
+	if allow == nil {
+		allow = []string{}
+	}
+	deny := c.Domains.Deny
+	if deny == nil {
+		deny = []string{}
+	}
+	secretAllow := c.SecretNames.Allow
+	if secretAllow == nil {
+		secretAllow = []string{}
+	}
+	secretDeny := c.SecretNames.Deny
+	if secretDeny == nil {
+		secretDeny = []string{}
+	}
+	return map[string]any{
+		"configured":      true,
+		"config_path":     cfgPath,
+		"role":            c.Role,
+		"peer":            c.Peer,
+		"surfaces":        surfaces,
+		"browser_count":   len(c.Browsers),
+		"adapter_count":   len(c.Adapters),
+		"allow":           allow,
+		"deny":            deny,
+		"secret_allow":    secretAllow,
+		"secret_deny":     secretDeny,
+		"resync_seconds":  c.ResyncSeconds,
+		"checks":          rows,
+		"fail_count":      failCount,
+		"warn_count":      warnCount,
+		"skipped_network": skippedNetwork,
+	}
+}
+
+func printDoctorJSON(payload map[string]any) {
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(b))
 }
 
 func cmdStatus(args []string) error {
