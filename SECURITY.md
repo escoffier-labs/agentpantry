@@ -22,3 +22,16 @@ a password manager: secrets pass through and land on the sink in the surfaces yo
 enable. See [docs/threat-model.md](docs/threat-model.md) for what the design does
 and does not protect, and the operator responsibilities that the guarantees
 depend on.
+
+## Release artifacts
+
+Tagged GitHub releases include platform archives, SHA-256 checksums, a source
+SPDX SBOM, and GitHub artifact provenance attestations. Verify downloaded
+archives against `checksums.txt` before installing them.
+
+## Key rotation
+
+Stop both endpoints before rotating the pre-shared key. Run `agentpantry keygen`
+on one endpoint, copy the new key file to the peer over a secure channel, confirm
+both files are mode `0600`, then restart both endpoints. `keygen` backs up an
+existing key by default before replacing it.

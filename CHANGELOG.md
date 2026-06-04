@@ -4,6 +4,12 @@
 
 ### Added
 - `hermes` adapter that writes an Agent Pantry-owned Hermes bundle directory with `cookies.txt`, `secrets/<name>`, and an `agentpantry.json` manifest for Hermes Agent launch wrappers or plugins.
+- GitHub tag release workflow that builds platform archives, publishes checksums, generates a source SPDX SBOM, and requests artifact provenance attestations.
+- Copyable example configs for Chromium, Firefox, CDP, Hermes Agent, GitHub CLI, OpenClaw, and SSH stdio transport.
+- Contributor docs, issue templates, PR template, and Dependabot config for Go modules and GitHub Actions.
+
+### Changed
+- `agentpantry keygen` now backs up an existing key by default before replacing it, making pre-shared-key rotation safer.
 
 ## v0.2.1 - 2026-06-03
 

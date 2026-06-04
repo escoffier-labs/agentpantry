@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a source, sink surface, adapter, or operational improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow should Agent Pantry make easier or safer?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What behavior or interface would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Security or compatibility risks
+      description: Note any auth material, filesystem, browser, or agent-runtime concerns.

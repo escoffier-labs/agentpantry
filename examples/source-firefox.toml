@@ -1,0 +1,13 @@
+role = "source"
+peer = "sink.example:8787"
+key_path = "/home/alice/.config/agentpantry/psk.key"
+resync_seconds = 300
+
+[[browsers]]
+kind = "firefox"
+profile = "default-release"
+cookie_path = "/home/alice/.mozilla/firefox/default-release/cookies.sqlite"
+
+[domains]
+allow = ["github.com", ".example.com"]
+deny = []

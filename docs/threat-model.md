@@ -44,10 +44,11 @@ These are required for the guarantees above to hold:
   be cleartext on disk by design (tools need to read them).
 - **A compromised source or sink host** sees the synced sessions. agentpantry
   protects the link, not a compromised endpoint.
-- **No forward secrecy or key rotation.** The pre-shared key is long-lived; if it
-  leaks, past captured ciphertext from the same key is at risk (the session salt
-  separates sessions but is derived from the same long-lived key). Rotate the key
-  by regenerating it and redistributing to both ends.
+- **No forward secrecy or automatic key rotation.** The pre-shared key is
+  long-lived; if it leaks, past captured ciphertext from the same key is at risk
+  (the session salt separates sessions but is derived from the same long-lived
+  key). Rotate manually by stopping both endpoints, regenerating the key, and
+  redistributing it to both ends.
 - **`--stdio` replay protection relies on the underlying channel.** Over a one-way
   pipe the source issues the salt, which gives session-key separation but not
   standalone replay protection; run it inside an authenticated, integrity-

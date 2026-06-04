@@ -121,11 +121,16 @@ func cmdInit(args []string) error {
 func cmdKeygen(args []string) error {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	out := fs.String("out", filepath.Join(config.Dir(), "psk.key"), "key path")
+	backup := fs.Bool("backup", true, "back up an existing key before replacing it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if err := keyfile.Generate(*out); err != nil {
+	backupPath, err := keyfile.GenerateWithBackup(*out, *backup)
+	if err != nil {
 		return err
+	}
+	if backupPath != "" {
+		fmt.Printf("backed up previous PSK to %s\n", backupPath)
 	}
 	fmt.Printf("wrote 32-byte PSK to %s (copy this file to the peer)\n", *out)
 	return nil

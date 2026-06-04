@@ -34,6 +34,17 @@ Confirm the installed binary:
 
     agentpantry version
 
+Or install a release archive:
+
+    VERSION=v0.2.1
+    OS=linux
+    ARCH=amd64
+    curl -LO "https://github.com/escoffier-labs/agentpantry/releases/download/${VERSION}/agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"
+    curl -LO "https://github.com/escoffier-labs/agentpantry/releases/download/${VERSION}/checksums.txt"
+    sha256sum -c checksums.txt --ignore-missing
+    tar -xzf "agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"
+    install -m 0755 "agentpantry_${VERSION}_${OS}_${ARCH}/agentpantry" ~/.local/bin/agentpantry
+
 ## Release packaging
 
 Local release archives can be built into `dist/`:
@@ -44,6 +55,10 @@ The package target runs `go test ./...`, `go vet ./...`, `gosec`, and
 `govulncheck`, then cross-builds Linux, macOS, and Windows archives with build
 metadata stamped into the `agentpantry version` output. `dist/checksums.txt`
 contains SHA-256 checksums for the generated archives.
+
+Tagged releases (`v*`) are built by GitHub Actions. The release workflow uploads
+the platform archives, `checksums.txt`, a source SPDX SBOM, and GitHub artifact
+provenance attestations.
 
 ## How it works
 
@@ -125,6 +140,9 @@ configured allow/deny domains. To run the source or sink as a persistent
 background service, use `agentpantry install-service`, which writes a systemd
 user unit and prints the commands to enable it.
 
+The `examples/` directory has copyable source and sink configs for Chromium,
+Firefox, CDP, Hermes Agent, GitHub CLI, OpenClaw, and SSH stdio transport.
+
 ## Operating
 
 `agentpantry doctor` checks a configuration before you rely on it. It verifies
@@ -167,6 +185,12 @@ allow; an empty allow permits everything in the `secrets_dir`). `make gosec`
 runs the security scanner, `make vuln` runs govulncheck, and
 `make fuzz PKG=... FUZZ=...` runs the fuzz targets for the untrusted-input
 parsers.
+
+To rotate the pre-shared key, stop both endpoints, run `agentpantry keygen` on
+one machine, copy the new `psk.key` to the peer over a secure channel, confirm
+both files are mode `0600`, and start both endpoints again. By default `keygen`
+backs up an existing key beside it as `psk.key.bak.<timestamp>` before replacing
+it; pass `--backup=false` to skip that.
 
 ## Reliability
 

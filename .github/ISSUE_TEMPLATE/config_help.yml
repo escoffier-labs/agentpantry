@@ -1,0 +1,24 @@
+name: Configuration help
+description: Ask for help wiring a source, sink, surface, or adapter.
+title: "config: "
+labels: ["help wanted"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: Which source, sink, surfaces, and adapters are you trying to use?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Redacted config
+      description: Paste relevant config with tokens, cookie values, PSKs, and host-specific secrets removed.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `agentpantry doctor` output if available.

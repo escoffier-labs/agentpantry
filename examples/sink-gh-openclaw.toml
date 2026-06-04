@@ -1,0 +1,19 @@
+role = "sink"
+peer = "127.0.0.1:8787"
+key_path = "/home/agent/.config/agentpantry/psk.key"
+surfaces = ["sidecar", "secrets"]
+secrets_dir = "/home/agent/.config/agentpantry/secrets"
+
+[[adapters]]
+type = "gh"
+path = "/home/agent/.config/gh/hosts.yml"
+secret = "gh_token"
+host = "github.com"
+user = "octocat"
+
+[[adapters]]
+type = "openclaw"
+path = "/home/agent/.openclaw/auth-profiles.json"
+
+[adapters.profiles]
+anthropic_profile = "anthropic:default"

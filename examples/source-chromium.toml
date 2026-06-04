@@ -1,0 +1,20 @@
+role = "source"
+peer = "sink.example:8787"
+key_path = "/home/alice/.config/agentpantry/psk.key"
+resync_seconds = 300
+
+[[browsers]]
+kind = "chromium"
+profile = "Default"
+cookie_path = "/home/alice/.config/chromium/Default/Cookies"
+
+[domains]
+allow = ["github.com", ".example.com"]
+deny = ["billing.example.com"]
+
+# Optional: mirror a local source directory of named secret files.
+secrets_dir = "/home/alice/.config/agentpantry/source-secrets"
+
+[secret_names]
+allow = ["gh_token", "anthropic_profile"]
+deny = []

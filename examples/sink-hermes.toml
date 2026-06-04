@@ -1,0 +1,8 @@
+role = "sink"
+peer = "127.0.0.1:8787"
+key_path = "/home/agent/.config/agentpantry/psk.key"
+surfaces = ["sidecar"]
+
+[[adapters]]
+type = "hermes"
+path = "/home/agent/.hermes/agentpantry"

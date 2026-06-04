@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.11"
+
+      - name: Build release archives
+        run: make package VERSION="${GITHUB_REF_NAME}"
+
+      - name: Generate source SBOM
+        run: |
+          go run github.com/anchore/syft/cmd/syft@latest dir:. -o spdx-json="dist/agentpantry_${GITHUB_REF_NAME}_source.spdx.json"
+          cd dist
+          sha256sum "agentpantry_${GITHUB_REF_NAME}_source.spdx.json" >> checksums.txt
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "dist/*"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "Agent Pantry ${GITHUB_REF_NAME}" \
+            --generate-notes

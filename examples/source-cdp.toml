@@ -1,0 +1,17 @@
+role = "source"
+peer = "sink.example:8787"
+key_path = "/home/alice/.config/agentpantry/psk.key"
+
+# Launch Chrome separately with a loopback debugging port, ideally on a
+# dedicated automation profile:
+#
+#   chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+#
+[[browsers]]
+kind = "cdp"
+profile = "automation"
+url = "http://127.0.0.1:9222"
+
+[domains]
+allow = ["github.com", ".example.com"]
+deny = []
