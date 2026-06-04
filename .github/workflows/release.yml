@@ -32,7 +32,7 @@ jobs:
           sha256sum "agentpantry_${GITHUB_REF_NAME}_source.spdx.json" >> checksums.txt
 
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*"
 
