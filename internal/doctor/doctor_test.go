@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,9 @@ func TestHealthySinkConfigPasses(t *testing.T) {
 }
 
 func TestBadKeyPermFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix key modes are not enforced on windows")
+	}
 	dir := t.TempDir()
 	key := writeKey(t, dir, 0o644)
 	c := config.Config{Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"}}
@@ -145,6 +149,9 @@ func TestSidecarSurfaceWritable(t *testing.T) {
 }
 
 func TestSidecarSurfaceUnwritableFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("0000 directory modes do not block access on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
 	}
@@ -231,6 +238,9 @@ func TestPureFirefoxSourceHasNoKeyringCheck(t *testing.T) {
 }
 
 func TestChromiumSourceStillHasKeyringCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chromium keys use DPAPI on windows; no keyring check is emitted")
+	}
 	dir := t.TempDir()
 	key := writeKey(t, dir, 0o600)
 	cp := filepath.Join(dir, "Cookies")

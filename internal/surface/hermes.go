@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
@@ -73,5 +74,5 @@ func (h *HermesBundle) writeManifest() error {
 		return err
 	}
 	out = append(out, '\n')
-	return writePrivateFile(filepath.Join(h.root, "agentpantry.json"), out)
+	return privfile.Write(filepath.Join(h.root, "agentpantry.json"), out)
 }

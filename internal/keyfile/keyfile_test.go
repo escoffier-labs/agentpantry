@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,12 +15,14 @@ func TestGenerateThenLoad(t *testing.T) {
 	if err := Generate(path); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("key file must be 0600, got %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("key file must be 0600, got %v", info.Mode().Perm())
+		}
 	}
 	key, err := Load(path)
 	if err != nil {
@@ -38,12 +41,14 @@ func TestGenerateTightensExistingPerms(t *testing.T) {
 	if err := Generate(path); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("key file must be tightened to 0600, got %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("key file must be tightened to 0600, got %v", info.Mode().Perm())
+		}
 	}
 }
 
@@ -68,12 +73,14 @@ func TestGenerateWithBackupCopiesExistingKey(t *testing.T) {
 	if string(body) != oldKey {
 		t.Fatalf("backup did not preserve previous key: %q", body)
 	}
-	info, err := os.Stat(backupPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("backup file must be 0600, got %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(backupPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("backup file must be 0600, got %v", info.Mode().Perm())
+		}
 	}
 	newBody, err := os.ReadFile(path)
 	if err != nil {
@@ -131,5 +138,40 @@ func TestLoadRejectsTooOpenPerms(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("must reject group/world-readable key")
+	}
+}
+
+func TestGenerateRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("orig"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "psk.key")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := Generate(path); err == nil {
+		t.Fatal("must refuse to write the key through a symlink")
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "orig" {
+		t.Fatalf("symlink target was overwritten: %q", body)
+	}
+}
+
+func TestLoadRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "huge.key")
+	// 64 valid hex chars, whitespace-padded to 4096 bytes, then trailing junk:
+	// a truncating read would silently accept this as a valid key.
+	body := strings.Repeat("a1", 32) + strings.Repeat("\n", 4096-64) + "trailing junk"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("must reject an oversized key file instead of silently truncating")
 	}
 }

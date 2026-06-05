@@ -3,6 +3,7 @@ package surface
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -99,6 +100,9 @@ func TestHermesBundleRejectsEmptyPath(t *testing.T) {
 
 func assertPerm(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		return // Go synthesizes 0666/0777 modes on Windows; ACLs govern access there.
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)

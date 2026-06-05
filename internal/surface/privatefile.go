@@ -3,6 +3,7 @@ package surface
 import (
 	"fmt"
 	"os"
+	"runtime"
 )
 
 func ensureDirNotSymlink(path string) error {
@@ -33,6 +34,12 @@ func ensureSafeOutputDir(path string) error {
 	if err := ensureDirNotSymlink(path); err != nil {
 		return err
 	}
+	if runtime.GOOS == "windows" {
+		// Go synthesizes 0777 for any writable directory on Windows, so the
+		// Unix group/world-writable check below would reject every output dir.
+		// Access control is ACL-based there; skip the mode check.
+		return nil
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -41,16 +48,4 @@ func ensureSafeOutputDir(path string) error {
 		return fmt.Errorf("refusing group/world-writable output directory %s", path)
 	}
 	return nil
-}
-
-func writePrivateFile(path string, data []byte) error {
-	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to write symlink %s", path)
-	} else if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
 }

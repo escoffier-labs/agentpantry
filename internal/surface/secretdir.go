@@ -1,11 +1,13 @@
 package surface
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
@@ -39,15 +41,22 @@ func safeName(name string) bool {
 }
 
 func (s *SecretDir) ApplySecrets(d secret.Diff) error {
+	// Unsafe names and planted symlinks are skipped (one hostile entry must not
+	// stall the whole sync), but real I/O failures are reported so the sink
+	// never claims success while secrets are stale or missing.
 	skipped := 0
+	var errs []error
 	for _, sec := range d.Upserts {
 		if !safeName(sec.Name) {
 			skipped++
 			continue
 		}
-		if err := writePrivateFile(filepath.Join(s.Dir, sec.Name), []byte(sec.Value)); err != nil {
-			skipped++
-			continue
+		if err := privfile.Write(filepath.Join(s.Dir, sec.Name), []byte(sec.Value)); err != nil {
+			if errors.Is(err, privfile.ErrSymlink) {
+				skipped++
+				continue
+			}
+			errs = append(errs, err)
 		}
 	}
 	for _, name := range d.Deletes {
@@ -56,12 +65,11 @@ func (s *SecretDir) ApplySecrets(d secret.Diff) error {
 			continue
 		}
 		if err := os.Remove(filepath.Join(s.Dir, name)); err != nil && !os.IsNotExist(err) {
-			skipped++
-			continue
+			errs = append(errs, err)
 		}
 	}
 	if skipped > 0 {
-		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d secret(s) with unsafe names\n", skipped)
+		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d secret(s) with unsafe names or symlinked targets\n", skipped)
 	}
-	return nil
+	return errors.Join(errs...)
 }

@@ -3,6 +3,7 @@ package surface
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -24,10 +25,7 @@ func TestGHHostsMergesPreservingOtherHosts(t *testing.T) {
 	if err := g.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh_token", Value: "ghp_new"}}}); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("want 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, path, 0o600)
 	body, _ := os.ReadFile(path)
 	s := string(body)
 	if !strings.Contains(s, "ghp_new") || !strings.Contains(s, "github.com") {
@@ -53,13 +51,7 @@ func TestGHHostsTightensExistingPerms(t *testing.T) {
 	if err := g.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh_token", Value: "ghp_new"}}}); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("hosts file must be tightened to 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, path, 0o600)
 }
 
 func TestGHHostsUpsertOnly(t *testing.T) {
@@ -78,6 +70,9 @@ func TestGHHostsUpsertOnly(t *testing.T) {
 }
 
 func TestGHHostsRefusesToClobberUnreadableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0000 does not make files unreadable on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses file permissions")
 	}
@@ -89,8 +84,11 @@ func TestGHHostsRefusesToClobberUnreadableFile(t *testing.T) {
 	os.Chmod(path, 0o000)
 	t.Cleanup(func() { os.Chmod(path, 0o600) })
 
-	g, _ := NewGHHosts(path, "gh_token", "github.com", "")
-	err := g.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh_token", Value: "ghp_new"}}})
+	g, err := NewGHHosts(path, "gh_token", "github.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = g.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh_token", Value: "ghp_new"}}})
 	if err == nil {
 		t.Fatal("must error on an unreadable existing file rather than clobber it")
 	}

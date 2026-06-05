@@ -39,3 +39,12 @@ func TestWriteFrameRejectsOversized(t *testing.T) {
 		t.Fatal("oversized frame must be rejected")
 	}
 }
+
+func TestFrameCapIsRealisticForDiffPayloads(t *testing.T) {
+	// The cap bounds the allocation an unauthenticated peer can force per
+	// frame; it must stay far below the old 64 MiB.
+	payload := make([]byte, 8<<20+1)
+	if err := WriteFrame(&bytes.Buffer{}, payload); err == nil {
+		t.Fatal("frames above 8 MiB must be rejected")
+	}
+}

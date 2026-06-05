@@ -2,6 +2,7 @@ package surface
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -53,5 +54,20 @@ func TestSidecarApplyUpsertThenDelete(t *testing.T) {
 	}
 	if n := countRows(t, path); n != 0 {
 		t.Fatalf("after delete want 0 rows, got %d", n)
+	}
+}
+
+func TestNewSidecarRefusesSymlinkPath(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere.db")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "sidecar.db")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := NewSidecar(path); err == nil {
+		t.Fatal("must refuse to open the sidecar DB through a symlink")
 	}
 }

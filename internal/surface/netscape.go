@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 )
 
 type netscapeRow struct {
@@ -120,7 +121,7 @@ func (n *Netscape) write() error {
 		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
 			r.domain, boolTF(r.includeSub), r.path, boolTF(r.secure), r.expiry, r.name, r.value)
 	}
-	return writePrivateFile(n.path, []byte(b.String()))
+	return privfile.Write(n.path, []byte(b.String()))
 }
 
 func boolTF(b bool) string {

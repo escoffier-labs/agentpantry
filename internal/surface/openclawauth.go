@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 )
 
@@ -80,5 +81,5 @@ func (o *OpenClawAuth) ApplySecrets(d secret.Diff) error {
 	if err != nil {
 		return err
 	}
-	return writePrivateFile(o.path, out)
+	return privfile.Write(o.path, out)
 }

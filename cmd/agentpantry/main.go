@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -325,6 +326,14 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // malicious peer cannot wedge the sink's accept loop.
 const handshakeTimeout = 10 * time.Second
 
+// authTimeout bounds the wait for a connection's first authenticated frame.
+// The source syncs immediately after connecting, so a legitimate peer
+// authenticates well within this; anyone else is reaped.
+const authTimeout = 30 * time.Second
+
+// maxSinkConns caps concurrently served sink connections.
+const maxSinkConns = 32
+
 func cmdSink(args []string) error {
 	fs := flag.NewFlagSet("sink", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
@@ -450,42 +459,63 @@ func cmdSink(args []string) error {
 		_ = ln.Close()
 	}()
 
+	// Serve each connection in its own goroutine so one stalled peer cannot
+	// block new sources, bounded by a semaphore so an accept flood cannot spawn
+	// unbounded goroutines. Surface application stays serialized via a shared
+	// mutex: surfaces are not safe for concurrent use.
+	var applyMu sync.Mutex
+	sem := make(chan struct{}, maxSinkConns)
 	for {
+		// Acquire a slot before accepting so a just-accepted connection is never
+		// parked without deadlines waiting for capacity, and shutdown is not
+		// blocked behind a full semaphore.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return nil
+		}
 		conn, err := ln.Accept()
 		if err != nil {
+			<-sem
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
-		// Issue a fresh per-connection salt so frames from one session cannot be
-		// replayed into another, and so a reconnecting source is not rejected.
-		// Bound the handshake write so one stuck peer cannot wedge the listener.
-		if err := conn.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
-			_ = conn.Close()
-			fmt.Fprintln(os.Stderr, "handshake deadline failed:", err)
-			continue
-		}
-		salt, herr := transport.SendSalt(conn)
-		if herr != nil {
-			fmt.Fprintln(os.Stderr, "handshake failed:", herr)
-			_ = conn.Close()
-			continue
-		}
-		if err := conn.SetWriteDeadline(time.Time{}); err != nil { // clear; Serve is a long-lived stream
-			_ = conn.Close()
-			return err
-		}
-		opener, oerr := transport.NewOpener(key, salt)
-		if oerr != nil {
-			_ = conn.Close()
-			return oerr
-		}
-		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
-		if err := srv.Serve(ctx, conn); err != nil {
-			fmt.Fprintln(os.Stderr, "connection ended:", err)
-		}
-		_ = conn.Close()
+		go func(conn net.Conn) {
+			defer func() { <-sem }()
+			defer func() { _ = conn.Close() }()
+			// Issue a fresh per-connection salt so frames from one session cannot
+			// be replayed into another, and so a reconnecting source is not
+			// rejected. Bound the handshake write so a stuck peer is reaped.
+			if err := conn.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+				fmt.Fprintln(os.Stderr, "handshake deadline failed:", err)
+				return
+			}
+			salt, herr := transport.SendSalt(conn)
+			if herr != nil {
+				fmt.Fprintln(os.Stderr, "handshake failed:", herr)
+				return
+			}
+			if err := conn.SetWriteDeadline(time.Time{}); err != nil { // clear; Serve is a long-lived stream
+				return
+			}
+			opener, oerr := transport.NewOpener(key, salt)
+			if oerr != nil {
+				fmt.Fprintln(os.Stderr, "session setup failed:", oerr)
+				return
+			}
+			srv := &sink.Server{
+				Opener:         opener,
+				CookieSurfaces: cookieSurfaces,
+				SecretSurfaces: secretSurfaces,
+				AuthTimeout:    authTimeout,
+				ApplyMu:        &applyMu,
+			}
+			if err := srv.Serve(ctx, conn); err != nil {
+				fmt.Fprintln(os.Stderr, "connection ended:", err)
+			}
+		}(conn)
 	}
 }
 

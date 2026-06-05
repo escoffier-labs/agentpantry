@@ -3,6 +3,7 @@ package surface
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/secret"
@@ -22,10 +23,7 @@ func TestSecretDirWriteDeleteAndPerms(t *testing.T) {
 	if err != nil || string(data) != "tok" {
 		t.Fatalf("secret not written: %v / %q", err, data)
 	}
-	info, _ := os.Stat(p)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("secret file must be 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, p, 0o600)
 	if err := s.ApplySecrets(secret.Diff{Deletes: []string{"gh"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -50,13 +48,7 @@ func TestSecretDirTightensExistingPerms(t *testing.T) {
 	if err := s.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh", Value: "tok"}}}); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("secret file must be tightened to 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, p, 0o600)
 }
 
 func TestSecretDirTightensExistingDirPerms(t *testing.T) {
@@ -67,13 +59,7 @@ func TestSecretDirTightensExistingDirPerms(t *testing.T) {
 	if _, err := NewSecretDir(dir); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o700 {
-		t.Fatalf("secret dir must be tightened to 0700, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, dir, 0o700)
 }
 
 func TestSecretDirRefusesExistingSymlink(t *testing.T) {
@@ -141,5 +127,52 @@ func TestSecretDirSkipsNulNameWithoutError(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Fatalf("only the valid secret should be written, found %d", len(entries))
+	}
+}
+
+func TestSecretDirReturnsWriteErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory modes do not block writes on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "secrets")
+	s, err := NewSecretDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	err = s.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "gh", Value: "tok"}}})
+	if err == nil {
+		t.Fatal("a real write failure must be reported, not silently skipped")
+	}
+}
+
+func TestSecretDirReturnsDeleteErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only directory modes do not block deletes on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	dir := filepath.Join(t.TempDir(), "secrets")
+	s, err := NewSecretDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	err = s.ApplySecrets(secret.Diff{Deletes: []string{"gh"}})
+	if err == nil {
+		t.Fatal("a real delete failure must be reported, not silently skipped")
 	}
 }

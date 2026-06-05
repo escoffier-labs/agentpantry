@@ -10,6 +10,16 @@
 
 ### Changed
 - `agentpantry keygen` now backs up an existing key by default before replacing it, making pre-shared-key rotation safer.
+- Private file writes (adapter outputs, secrets, state, config, key) are now atomic: staged in a same-directory 0600 temp file, fsynced, and renamed into place, so a crash mid-write can no longer truncate or destroy merged credential files, and a freshly written secret never inherits a pre-existing file's looser mode.
+- Transport frame cap lowered from 64 MiB to 8 MiB, bounding the allocation an unauthenticated peer can force per frame.
+- The TCP sink now serves connections concurrently (bounded at 32, surface writes serialized) and drops peers that fail to send an authenticated frame within 30 seconds, so one stalled or unauthenticated connection can no longer block all other sources.
+- Key handling hardened: generation refuses symlinked key paths (before any backup copy is taken), loading checks permissions on the opened descriptor instead of a separate stat, rejects oversized key files instead of silently truncating them, and rejects non-regular files (a FIFO at the key path previously hung the process).
+- `doctor` now delegates key validation to the same loader the runtime uses, so its verdict can no longer diverge from runtime behavior.
+- Secret-directory sink writes now report real I/O failures (disk full, permissions) instead of silently counting them as skipped; unsafe names and planted symlinks are still skipped without failing the sync.
+- The sidecar surface refuses a symlinked database path.
+
+### Fixed
+- Windows: sink adapters and `doctor` no longer reject every output directory and key file due to Unix permission checks that are meaningless on Windows (Go reports synthesized 0777/0666 modes there). The full test suite now passes on Windows.
 
 ## v0.2.1 - 2026-06-03
 

@@ -7,7 +7,10 @@ import (
 )
 
 // maxFrame caps a single frame to guard against malicious length prefixes.
-const maxFrame = 64 << 20 // 64 MiB
+// The length prefix is read before the frame authenticates, so this bounds
+// the allocation an unauthenticated peer can force; 8 MiB is far above any
+// realistic cookie/secret diff while keeping that exposure small.
+const maxFrame = 8 << 20 // 8 MiB
 
 // WriteFrame writes a uint32 big-endian length prefix then the payload.
 func WriteFrame(w io.Writer, payload []byte) error {

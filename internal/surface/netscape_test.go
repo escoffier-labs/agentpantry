@@ -3,6 +3,7 @@ package surface
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,10 +23,7 @@ func TestNetscapeWriteDeleteAndPerms(t *testing.T) {
 	if err := n.Apply(cookie.Diff{Upserts: []cookie.Cookie{c}}); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("want 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, path, 0o600)
 	body, _ := os.ReadFile(path)
 	line := ""
 	for _, l := range strings.Split(string(body), "\n") {
@@ -88,16 +86,13 @@ func TestNetscapeTightensExistingPerms(t *testing.T) {
 	if err := n.Apply(cookie.Diff{Upserts: []cookie.Cookie{c}}); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("cookies file must be tightened to 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, path, 0o600)
 }
 
 func TestNetscapeRejectsWorldWritableParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the world-writable dir check is unix-only; ACLs govern access on windows")
+	}
 	dir := filepath.Join(t.TempDir(), "shared")
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		t.Fatal(err)

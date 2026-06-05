@@ -25,10 +25,7 @@ func TestOpenClawAuthMergesProfileObject(t *testing.T) {
 	if err := o.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "anthropic_secret", Value: val}}}); err != nil {
 		t.Fatal(err)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("want 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, path, 0o600)
 	b, _ := os.ReadFile(path)
 	var doc struct {
 		Profiles map[string]json.RawMessage `json:"profiles"`
@@ -59,13 +56,7 @@ func TestOpenClawAuthTightensExistingPerms(t *testing.T) {
 	if err := o.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "anthropic_secret", Value: `{"type":"oauth"}`}}}); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("auth file must be tightened to 0600, got %v", info.Mode().Perm())
-	}
+	assertPerm(t, path, 0o600)
 }
 
 func TestOpenClawAuthSkipsInvalidJSON(t *testing.T) {

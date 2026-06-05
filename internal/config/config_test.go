@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/policy"
@@ -36,12 +37,14 @@ func TestSaveTightensExistingPerms(t *testing.T) {
 	if err := Save(path, Default("source")); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("config file must be tightened to 0600, got %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("config file must be tightened to 0600, got %v", info.Mode().Perm())
+		}
 	}
 }
 
@@ -140,5 +143,27 @@ func TestResyncSecondsRoundTrip(t *testing.T) {
 	}
 	if out.ResyncSeconds != 90 {
 		t.Fatalf("resync_seconds lost: %d", out.ResyncSeconds)
+	}
+}
+
+func TestSaveRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("orig"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := Save(path, Config{Role: "sink"}); err == nil {
+		t.Fatal("must refuse to write config through a symlink")
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "orig" {
+		t.Fatalf("symlink target was overwritten: %q", body)
 	}
 }

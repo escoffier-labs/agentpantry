@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 )
 
 const keyLen = 32
@@ -28,6 +30,13 @@ func GenerateWithBackup(path string, backup bool) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
+	// Refuse a symlinked key path up front, before backupExisting can copy the
+	// symlink's target into a backup file.
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing symlinked key path %s", path)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
 	backupPath := ""
 	if backup {
 		var err error
@@ -40,10 +49,13 @@ func GenerateWithBackup(path string, backup bool) (string, error) {
 	if _, err := rand.Read(key); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+	// Atomic, symlink-refusing write: the key is 0600 from birth (no window
+	// where it inherits a pre-existing file's looser mode) and a crash cannot
+	// leave a truncated key file.
+	if err := privfile.Write(path, []byte(hex.EncodeToString(key))); err != nil {
 		return "", err
 	}
-	return backupPath, os.Chmod(path, 0o600)
+	return backupPath, nil
 }
 
 func backupExisting(path string, now time.Time) (string, error) {
@@ -101,8 +113,23 @@ func createBackup(path string, now time.Time) (string, *os.File, error) {
 
 // Load reads and decodes the hex key, validating its length.
 func Load(path string) ([]byte, error) {
+	// Stat (not open) first: opening a FIFO blocks until a writer appears, so a
+	// non-regular file at the key path would hang instead of erroring. Symlinks
+	// to a regular file are allowed on read; only the write path refuses them.
+	if info, err := os.Stat(path); err != nil {
+		return nil, err
+	} else if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("key path %s is not a regular file", path)
+	}
+	f, err := os.Open(path) // #nosec G304 -- key path is intentionally operator-selected.
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
 	if runtime.GOOS != "windows" {
-		info, err := os.Stat(path)
+		// Check permissions on the open descriptor so the file we validated is
+		// provably the file we read (no stat-then-open race).
+		info, err := f.Stat()
 		if err != nil {
 			return nil, err
 		}
@@ -110,9 +137,15 @@ func Load(path string) ([]byte, error) {
 			return nil, fmt.Errorf("key perms %v are too open, want 0600", info.Mode().Perm())
 		}
 	}
-	raw, err := os.ReadFile(path) // #nosec G304 -- key path is intentionally operator-selected and permissions were checked above.
+	// A valid key file is 64 hex chars plus whitespace. Reject anything larger
+	// instead of silently truncating it into a plausible-looking key.
+	const maxKeyFile = 4096
+	raw, err := io.ReadAll(io.LimitReader(f, maxKeyFile+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > maxKeyFile {
+		return nil, fmt.Errorf("key file %s is larger than %d bytes", path, maxKeyFile)
 	}
 	key, err := hex.DecodeString(strings.TrimSpace(string(raw)))
 	if err != nil {

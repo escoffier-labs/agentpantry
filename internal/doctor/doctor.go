@@ -108,14 +108,14 @@ func Run(c config.Config) []Check {
 	var checks []Check
 
 	// key
-	if info, err := os.Stat(c.KeyPath); err != nil {
+	// keyfile.Load is the single authority on key validity (perms, length,
+	// encoding), so doctor's verdict always matches what the runtime will do.
+	if _, err := os.Stat(c.KeyPath); err != nil {
 		checks = append(checks, Check{"key", Fail, fmt.Sprintf("PSK not found at %s", c.KeyPath)})
-	} else if info.Mode().Perm()&0o077 != 0 {
-		checks = append(checks, Check{"key", Fail, fmt.Sprintf("PSK perms %v are too open, want 0600", info.Mode().Perm())})
 	} else if _, err := keyfile.Load(c.KeyPath); err != nil {
-		checks = append(checks, Check{"key", Fail, "PSK unreadable or not 32 bytes: " + err.Error()})
+		checks = append(checks, Check{"key", Fail, "PSK invalid: " + err.Error()})
 	} else {
-		checks = append(checks, Check{"key", OK, "0600, 32 bytes"})
+		checks = append(checks, Check{"key", OK, "private, 32 bytes"})
 	}
 
 	// config

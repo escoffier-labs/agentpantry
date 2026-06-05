@@ -1,11 +1,13 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 )
 
 // BrowserRef names a browser profile and its cookie store path.
@@ -71,13 +73,9 @@ func Save(path string, c Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) // #nosec G304 -- config path is intentionally operator-selected.
-	if err != nil {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(c); err != nil {
 		return err
 	}
-	defer f.Close()
-	if err := toml.NewEncoder(f).Encode(c); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
+	return privfile.Write(path, buf.Bytes())
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"gopkg.in/yaml.v3"
 )
@@ -69,5 +70,5 @@ func (g *GHHosts) ApplySecrets(d secret.Diff) error {
 	if err != nil {
 		return err
 	}
-	return writePrivateFile(g.path, out)
+	return privfile.Write(g.path, out)
 }

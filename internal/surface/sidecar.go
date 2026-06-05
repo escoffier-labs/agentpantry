@@ -2,6 +2,7 @@ package surface
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,11 @@ type Sidecar struct {
 
 func NewSidecar(path string) (*Sidecar, error) {
 	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("refusing to open sidecar symlink %s", path)
+	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	// Ensure the file exists with 0600 before the driver opens it.

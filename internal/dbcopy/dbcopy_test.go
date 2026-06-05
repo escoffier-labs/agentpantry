@@ -3,6 +3,7 @@ package dbcopy
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -21,9 +22,11 @@ func TestToTempCopiesAnd0600(t *testing.T) {
 	if err != nil || string(b) != "hello" {
 		t.Fatalf("copy mismatch: %q / %v", b, err)
 	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("temp copy must be 0600, got %v", info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, _ := os.Stat(path)
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("temp copy must be 0600, got %v", info.Mode().Perm())
+		}
 	}
 	cleanup()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

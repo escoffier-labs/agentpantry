@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -12,6 +13,9 @@ import (
 func buildBin(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "agentpantry")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -82,7 +86,7 @@ func TestDoctorJSONConfigured(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.toml")
 	body := "role = \"sink\"\npeer = \"127.0.0.1:8787\"\nkey_path = \"" +
-		filepath.Join(dir, "missing.key") + "\"\nsurfaces = [\"sidecar\"]\n"
+		filepath.ToSlash(filepath.Join(dir, "missing.key")) + "\"\nsurfaces = [\"sidecar\"]\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +115,7 @@ func TestStatusJSONConfigured(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "config.toml")
 	body := "role = \"source\"\npeer = \"127.0.0.1:8787\"\nkey_path = \"" +
-		filepath.Join(dir, "psk.key") + "\"\nsurfaces = [\"sidecar\"]\n"
+		filepath.ToSlash(filepath.Join(dir, "psk.key")) + "\"\nsurfaces = [\"sidecar\"]\n"
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

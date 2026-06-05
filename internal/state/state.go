@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 )
 
 // State records what the source last did, for `status` to report.
@@ -55,5 +57,5 @@ func Save(path string, s State) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o600)
+	return privfile.Write(path, b)
 }
