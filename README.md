@@ -20,6 +20,9 @@ to the machine your agent runs on (sink), whether that is Codex, Claude Code,
 OpenClaw, Hermes Agent, or a custom runner. Everything moves encrypted over any
 reachable byte stream, so automation can use tools that expect local auth state.
 
+In kitchen terms: the pantry is where the chef stores the cookies and the
+secret recipes.
+
 Agent Pantry is part of the [Brigade](https://github.com/escoffier-labs/brigade)
 fleet from Escoffier Labs: small, composable agent-ops tools that help agent
 runtimes work with real local environments. It is still a standalone
