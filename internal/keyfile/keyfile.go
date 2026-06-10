@@ -111,6 +111,48 @@ func createBackup(path string, now time.Time) (string, *os.File, error) {
 	return "", nil, fmt.Errorf("could not create unique backup path for %s", path)
 }
 
+// OldKeyPath returns the well-known grace-window path holding path's
+// previous key during a rotation.
+func OldKeyPath(path string) string {
+	return path + ".old"
+}
+
+// Rotate preserves the current key at OldKeyPath(path) and writes a fresh key
+// to path. The sink accepts both keys until FinishRotation removes the old
+// one. A second rotation is refused while one is in progress. If the process
+// dies between the two writes, the old-key file equals the current key and
+// the grace window is a harmless no-op.
+func Rotate(path string) (string, error) {
+	current, err := Load(path)
+	if err != nil {
+		return "", fmt.Errorf("load current key: %w", err)
+	}
+	oldPath := OldKeyPath(path)
+	if _, err := os.Lstat(oldPath); err == nil {
+		return "", fmt.Errorf("rotation already in progress: old key exists at %s (run rotate-key --finish first)", oldPath)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if err := privfile.Write(oldPath, []byte(hex.EncodeToString(current))); err != nil {
+		return "", fmt.Errorf("preserve old key: %w", err)
+	}
+	if err := Generate(path); err != nil {
+		return "", fmt.Errorf("write new key: %w", err)
+	}
+	return oldPath, nil
+}
+
+// FinishRotation removes OldKeyPath(path), ending the grace window.
+func FinishRotation(path string) error {
+	oldPath := OldKeyPath(path)
+	if _, err := os.Lstat(oldPath); os.IsNotExist(err) {
+		return fmt.Errorf("no rotation in progress: no old key at %s", oldPath)
+	} else if err != nil {
+		return err
+	}
+	return os.Remove(oldPath)
+}
+
 // Load reads and decodes the hex key, validating its length.
 func Load(path string) ([]byte, error) {
 	// Stat (not open) first: opening a FIFO blocks until a writer appears, so a

@@ -175,3 +175,90 @@ func TestLoadRejectsOversizedFile(t *testing.T) {
 		t.Fatal("must reject an oversized key file instead of silently truncating")
 	}
 }
+
+func TestRotatePreservesOldKeyAndWritesFresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "psk.key")
+	if err := Generate(path); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath, err := Rotate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldPath != OldKeyPath(path) {
+		t.Fatalf("rotate must report the old-key path, got %q want %q", oldPath, OldKeyPath(path))
+	}
+	oldKey, err := Load(oldPath)
+	if err != nil {
+		t.Fatalf("old key must load: %v", err)
+	}
+	if hex.EncodeToString(oldKey) != hex.EncodeToString(orig) {
+		t.Fatal("old-key file must hold the pre-rotation key")
+	}
+	newKey, err := Load(path)
+	if err != nil {
+		t.Fatalf("new key must load: %v", err)
+	}
+	if hex.EncodeToString(newKey) == hex.EncodeToString(orig) {
+		t.Fatal("rotate must write a fresh key")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(oldPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("old-key file must be 0600, got %v", info.Mode().Perm())
+		}
+	}
+}
+
+func TestRotateRefusesWhileRotationInProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "psk.key")
+	if err := Generate(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rotate(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rotate(path); err == nil {
+		t.Fatal("second rotate without finish must fail")
+	}
+}
+
+func TestRotateRequiresValidCurrentKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "psk.key")
+	if _, err := Rotate(path); err == nil {
+		t.Fatal("rotate without an existing key must fail")
+	}
+}
+
+func TestFinishRotationRemovesOldKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "psk.key")
+	if err := Generate(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Rotate(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinishRotation(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(OldKeyPath(path)); !os.IsNotExist(err) {
+		t.Fatal("finish must remove the old-key file")
+	}
+}
+
+func TestFinishRotationWithoutRotationFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "psk.key")
+	if err := Generate(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinishRotation(path); err == nil {
+		t.Fatal("finish without a rotation in progress must fail")
+	}
+}
