@@ -2,6 +2,8 @@ module github.com/escoffier-labs/agentpantry
 
 go 1.25.0
 
+toolchain go1.25.11
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/fsnotify/fsnotify v1.10.1
