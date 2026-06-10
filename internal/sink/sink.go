@@ -24,9 +24,15 @@ type SecretSurface interface {
 	ApplySecrets(d secret.Diff) error
 }
 
+// FrameOpener decrypts one inbound frame. *transport.Opener satisfies it, as
+// does *transport.FallbackOpener during a key-rotation grace window.
+type FrameOpener interface {
+	Open(frame []byte) ([]byte, error)
+}
+
 // Server opens frames from a stream and routes payloads to surfaces.
 type Server struct {
-	Opener         *transport.Opener
+	Opener         FrameOpener
 	CookieSurfaces []CookieSurface
 	SecretSurfaces []SecretSurface
 

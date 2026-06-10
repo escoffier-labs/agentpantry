@@ -53,6 +53,11 @@ func HasFail(checks []Check) bool {
 	return false
 }
 
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 func isLoopbackBind(peer string) bool {
 	host, _, err := net.SplitHostPort(peer)
 	if err != nil {
@@ -116,6 +121,20 @@ func Run(c config.Config) []Check {
 		checks = append(checks, Check{"key", Fail, "PSK invalid: " + err.Error()})
 	} else {
 		checks = append(checks, Check{"key", OK, "private, 32 bytes"})
+	}
+
+	// key rotation grace window
+	if oldPath := keyfile.OldKeyPath(c.KeyPath); fileExists(oldPath) {
+		switch {
+		case c.Role == "source":
+			checks = append(checks, Check{"key-rotation", Warn, oldPath + " present but unused on a source"})
+		default:
+			if _, err := keyfile.Load(oldPath); err != nil {
+				checks = append(checks, Check{"key-rotation", Warn, "stale or invalid old key at " + oldPath + ": " + err.Error()})
+			} else {
+				checks = append(checks, Check{"key-rotation", Warn, "rotation in progress: old key still accepted at " + oldPath + "; run rotate-key -finish once the source uses the new key"})
+			}
+		}
 	}
 
 	// config

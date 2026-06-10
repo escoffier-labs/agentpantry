@@ -562,3 +562,95 @@ func TestEndToEndCDPToSidecar(t *testing.T) {
 		t.Fatalf("cdp cookie did not sync: %q / %v", got, err)
 	}
 }
+
+func TestEndToEndOldKeyGraceWindow(t *testing.T) {
+	dir := t.TempDir()
+	chromePath := filepath.Join(dir, "Cookies")
+	writeChromeDB(t, chromePath, "keyring")
+
+	newKey := make([]byte, 32)
+	newKey[0] = 1
+	oldKey := make([]byte, 32)
+	oldKey[0] = 2
+	salt := make([]byte, 16)
+
+	// Source still seals under the pre-rotation key; the sink holds both.
+	sealer, _ := transport.NewSealer(oldKey, salt)
+	opener, err := transport.NewFallbackOpener(newKey, oldKey, salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbacks := 0
+	opener.OnFallback = func() { fallbacks++ }
+
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	sc, err := surface.NewSidecar(sidecarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+
+	pr, pw := newPipe()
+	syncer := &source.Syncer{
+		Vaults: []source.CookieReader{&vault.LinuxChromium{
+			Profile: "test", CookiePath: chromePath, KeyProvider: staticKey{"keyring"},
+		}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    pw,
+	}
+	srv := &sink.Server{Opener: opener, CookieSurfaces: []sink.CookieSurface{sc}}
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), pr) }()
+
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("old-key session must apply during the grace window: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("sink did not finish")
+	}
+	if fallbacks != 1 {
+		t.Fatalf("OnFallback must fire once for an old-key session, fired %d times", fallbacks)
+	}
+
+	// A new-key session against the same construction applies cleanly with no
+	// fallback.
+	sealer2, _ := transport.NewSealer(newKey, salt)
+	opener2, _ := transport.NewFallbackOpener(newKey, oldKey, salt)
+	fallbacks2 := 0
+	opener2.OnFallback = func() { fallbacks2++ }
+	pr2, pw2 := newPipe()
+	syncer2 := &source.Syncer{
+		Vaults: []source.CookieReader{&vault.LinuxChromium{
+			Profile: "test", CookiePath: chromePath, KeyProvider: staticKey{"keyring"},
+		}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer2,
+		Out:    pw2,
+	}
+	srv2 := &sink.Server{Opener: opener2, CookieSurfaces: []sink.CookieSurface{sc}}
+	done2 := make(chan error, 1)
+	go func() { done2 <- srv2.Serve(context.Background(), pr2) }()
+	if err := syncer2.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pw2.Close()
+	select {
+	case err := <-done2:
+		if err != nil {
+			t.Fatalf("new-key session must apply: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("sink did not finish")
+	}
+	if fallbacks2 != 0 {
+		t.Fatalf("new-key session must not fire OnFallback, fired %d times", fallbacks2)
+	}
+}

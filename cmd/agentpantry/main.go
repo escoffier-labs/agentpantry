@@ -59,6 +59,8 @@ func main() {
 		err = cmdStatus(args)
 	case "version":
 		err = cmdVersion(args)
+	case "rotate-key":
+		err = cmdRotateKey(args)
 	case "help", "-h", "--help":
 		fmt.Print(usageText)
 	default:
@@ -78,6 +80,7 @@ usage: agentpantry <command> [flags]
 commands:
   init             write a commented starter config (-role source|sink)
   keygen           generate the pre-shared key both endpoints share
+  rotate-key       rotate the pre-shared key in place; -finish retires the old key
   source           run on the daily driver: watch browsers, push sealed diffs
   sink             run on the agent machine: receive diffs, apply to surfaces
   doctor           validate the config, key, and role-specific setup
@@ -163,6 +166,50 @@ func cmdKeygen(args []string) error {
 		fmt.Printf("backed up previous PSK to %s\n", backupPath)
 	}
 	fmt.Printf("wrote 32-byte PSK to %s (copy this file to the peer)\n", *out)
+	return nil
+}
+
+func cmdRotateKey(args []string) error {
+	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	finish := fs.Bool("finish", false, "retire the old key, ending the grace window")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Resolve the key path from the config when one exists; otherwise rotate
+	// the default key location, mirroring keygen's default.
+	keyPath := filepath.Join(config.Dir(), "psk.key")
+	if _, statErr := os.Stat(*cfgPath); statErr == nil {
+		c, err := loadConfigWarn(*cfgPath)
+		if err != nil {
+			return err
+		}
+		if c.KeyPath != "" {
+			keyPath = c.KeyPath
+		}
+		if c.Role == "source" {
+			fmt.Fprintln(os.Stderr, "warning: rotation is meant to run on the sink, which accepts both keys during the grace window; a source holds only one key")
+		}
+	}
+	if *finish {
+		if err := keyfile.FinishRotation(keyPath); err != nil {
+			return err
+		}
+		fmt.Printf("rotation finished: removed %s; only the current key is accepted now\n", keyfile.OldKeyPath(keyPath))
+		return nil
+	}
+	oldPath, err := keyfile.Rotate(keyPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(`rotated PSK at %s
+old key preserved at %s
+
+the sink accepts both keys for new connections, so sync keeps working:
+  1. copy the new %s to the source machine
+  2. restart the source (or let it reconnect)
+  3. run 'agentpantry rotate-key -finish' here to retire %s
+`, keyPath, oldPath, keyPath, oldPath)
 	return nil
 }
 
@@ -377,6 +424,35 @@ const authTimeout = 30 * time.Second
 // maxSinkConns caps concurrently served sink connections.
 const maxSinkConns = 32
 
+// newSinkOpener derives a per-session opener, re-reading the key files so a
+// key rotation takes effect for new connections without a sink restart.
+// During a rotation grace window (a psk.key.old beside the key) frames are
+// accepted under either key, new key first, and an old-key session logs a
+// reminder to finish the rotation.
+func newSinkOpener(keyPath string, salt []byte) (sink.FrameOpener, error) {
+	key, err := keyfile.Load(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load key: %w", err)
+	}
+	oldPath := keyfile.OldKeyPath(keyPath)
+	if _, statErr := os.Lstat(oldPath); statErr != nil {
+		return transport.NewOpener(key, salt)
+	}
+	oldKey, err := keyfile.Load(oldPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: rotation in progress but old key at %s is unusable (%v); accepting only the current key\n", oldPath, err)
+		return transport.NewOpener(key, salt)
+	}
+	fo, err := transport.NewFallbackOpener(key, oldKey, salt)
+	if err != nil {
+		return nil, err
+	}
+	fo.OnFallback = func() {
+		fmt.Fprintln(os.Stderr, "sink: WARN peer authenticated with the pre-rotation key; update the source's key, then run 'agentpantry rotate-key -finish'")
+	}
+	return fo, nil
+}
+
 func cmdSink(args []string) error {
 	fs := flag.NewFlagSet("sink", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
@@ -388,8 +464,9 @@ func cmdSink(args []string) error {
 	if err != nil {
 		return err
 	}
-	key, err := keyfile.Load(c.KeyPath)
-	if err != nil {
+	// Fail fast on an unusable key, but load per session below so rotation
+	// takes effect without a restart.
+	if _, err := keyfile.Load(c.KeyPath); err != nil {
 		return err
 	}
 
@@ -481,7 +558,7 @@ func cmdSink(args []string) error {
 		if herr != nil {
 			return fmt.Errorf("handshake: %w", herr)
 		}
-		opener, oerr := transport.NewOpener(key, salt)
+		opener, oerr := newSinkOpener(c.KeyPath, salt)
 		if oerr != nil {
 			return oerr
 		}
@@ -543,7 +620,7 @@ func cmdSink(args []string) error {
 			if err := conn.SetWriteDeadline(time.Time{}); err != nil { // clear; Serve is a long-lived stream
 				return
 			}
-			opener, oerr := transport.NewOpener(key, salt)
+			opener, oerr := newSinkOpener(c.KeyPath, salt)
 			if oerr != nil {
 				fmt.Fprintln(os.Stderr, "session setup failed:", oerr)
 				return
@@ -747,6 +824,8 @@ func cmdStatus(args []string) error {
 
 	_, keyErr := os.Stat(c.KeyPath)
 	keyPresent := keyErr == nil
+	_, oldKeyErr := os.Stat(keyfile.OldKeyPath(c.KeyPath))
+	rotationInProgress := oldKeyErr == nil
 
 	st, _ := state.Load(statePath(*cfgPath))
 	lastSync := "never"
@@ -768,17 +847,18 @@ func cmdStatus(args []string) error {
 			surfaces = []string{}
 		}
 		payload := map[string]any{
-			"role":         c.Role,
-			"configured":   true,
-			"peer":         c.Peer,
-			"key_present":  keyPresent,
-			"surfaces":     surfaces,
-			"browsers":     len(c.Browsers),
-			"allow":        allow,
-			"deny":         deny,
-			"last_sync":    lastSync,
-			"last_cookies": st.Cookies,
-			"last_secrets": st.Secrets,
+			"role":                 c.Role,
+			"configured":           true,
+			"peer":                 c.Peer,
+			"key_present":          keyPresent,
+			"surfaces":             surfaces,
+			"browsers":             len(c.Browsers),
+			"allow":                allow,
+			"deny":                 deny,
+			"last_sync":            lastSync,
+			"last_cookies":         st.Cookies,
+			"last_secrets":         st.Secrets,
+			"rotation_in_progress": rotationInProgress,
 		}
 		b, err := json.MarshalIndent(payload, "", "  ")
 		if err != nil {
@@ -790,6 +870,9 @@ func cmdStatus(args []string) error {
 
 	fmt.Printf("role:     %s\npeer:     %s\nkey:      %s\nsurfaces: %v\nbrowsers: %d\nallow:    %v\ndeny:     %v\n",
 		c.Role, c.Peer, c.KeyPath, c.Surfaces, len(c.Browsers), c.Domains.Allow, c.Domains.Deny)
+	if rotationInProgress {
+		fmt.Printf("rotation: in progress (old key at %s)\n", keyfile.OldKeyPath(c.KeyPath))
+	}
 	fmt.Printf("last sync: %s (cookies %d, secrets %d)\n", lastSync, st.Cookies, st.Secrets)
 	return nil
 }
