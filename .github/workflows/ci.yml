@@ -12,8 +12,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.11"
-      - run: go build ./...
-      - run: go vet ./...
+      # scripts/verify is the single local gate (build, vet, test); CI adds -race on top.
+      - run: ./scripts/verify
       - run: go test -race ./...
 
   test-windows:
@@ -23,8 +23,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.11"
-      - run: go build ./...
-      - run: go vet ./...
+      # scripts/verify is the single local gate (build, vet, test); CI adds -race on top.
+      - run: ./scripts/verify
+        shell: bash
       - run: go test -race ./...
 
   lint:
