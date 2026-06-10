@@ -26,8 +26,18 @@ jobs:
         run: make package VERSION="${GITHUB_REF_NAME}"
 
       - name: Generate source SBOM
+        # Prebuilt syft binary: `go run syft@latest` breaks whenever syft's
+        # minimum Go version passes the pinned toolchain (it did on v1.45.1).
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/agentpantry_${{ github.ref_name }}_source.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Checksum source SBOM
         run: |
-          go run github.com/anchore/syft/cmd/syft@latest dir:. -o spdx-json="dist/agentpantry_${GITHUB_REF_NAME}_source.spdx.json"
           cd dist
           sha256sum "agentpantry_${GITHUB_REF_NAME}_source.spdx.json" >> checksums.txt
 
