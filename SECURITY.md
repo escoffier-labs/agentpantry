@@ -31,7 +31,18 @@ archives against `checksums.txt` before installing them.
 
 ## Key rotation
 
-Stop both endpoints before rotating the pre-shared key. Run `agentpantry keygen`
-on one endpoint, copy the new key file to the peer over a secure channel, confirm
-both files are mode `0600`, then restart both endpoints. `keygen` backs up an
-existing key by default before replacing it.
+Rotate the pre-shared key with `agentpantry rotate-key`; no sync downtime is
+needed. Run it on the sink: it writes a fresh `psk.key`, keeps the previous key
+beside it as `psk.key.old`, and accepts connections under either key during the
+grace window (the new key is tried first, and old-key sessions are logged).
+Copy the new `psk.key` to the source over a secure channel, restart the source
+or let it reconnect, then run `agentpantry rotate-key -finish` on the sink to
+retire `psk.key.old`. Finish promptly: until `-finish`, a holder of the old key
+is still accepted. `doctor` and `status` both show a rotation in progress.
+
+`agentpantry keygen` remains the stop-the-world alternative (the sink accepts
+only the new key from that moment on, so stop both endpoints first); it backs
+up an existing key as `psk.key.bak.<timestamp>` by default. If a rotation was
+prompted by suspected key exposure, delete any `psk.key.bak.*` files on both
+machines once the rotation is complete: they are live PSK history.
+(`rotate-key -finish` already removes its own `psk.key.old`.)

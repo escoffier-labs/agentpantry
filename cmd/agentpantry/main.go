@@ -164,6 +164,7 @@ func cmdKeygen(args []string) error {
 	}
 	if backupPath != "" {
 		fmt.Printf("backed up previous PSK to %s\n", backupPath)
+		fmt.Println("delete the backup once the rotation is confirmed; it is live key history, especially if you rotated because the old key may have been exposed")
 	}
 	fmt.Printf("wrote 32-byte PSK to %s (copy this file to the peer)\n", *out)
 	return nil
