@@ -39,7 +39,7 @@ Confirm the installed binary:
 
 Or install a release archive:
 
-    VERSION=v0.2.1
+    VERSION=v0.4.0
     OS=linux
     ARCH=amd64
     curl -LO "https://github.com/escoffier-labs/agentpantry/releases/download/${VERSION}/agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"

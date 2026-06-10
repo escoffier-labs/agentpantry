@@ -125,8 +125,8 @@ func Run(c config.Config) []Check {
 
 	// key rotation grace window
 	if oldPath := keyfile.OldKeyPath(c.KeyPath); fileExists(oldPath) {
-		switch {
-		case c.Role == "source":
+		switch c.Role {
+		case "source":
 			checks = append(checks, Check{"key-rotation", Warn, oldPath + " present but unused on a source"})
 		default:
 			if _, err := keyfile.Load(oldPath); err != nil {
