@@ -235,11 +235,25 @@ runs the security scanner, `make vuln` runs govulncheck, and
 `make fuzz PKG=... FUZZ=...` runs the fuzz targets for the untrusted-input
 parsers.
 
-To rotate the pre-shared key, stop both endpoints, run `agentpantry keygen` on
-one machine, copy the new `psk.key` to the peer over a secure channel, confirm
-both files are mode `0600`, and start both endpoints again. By default `keygen`
-backs up an existing key beside it as `psk.key.bak.<timestamp>` before replacing
-it; pass `--backup=false` to skip that.
+### Rotating the pre-shared key
+
+`agentpantry rotate-key` rotates the key with no sync downtime. Run it on the
+sink: it writes a fresh `psk.key` and preserves the previous key beside it as
+`psk.key.old`. The sink accepts new connections under either key (and logs a
+warning when a peer still uses the old one), so the source keeps syncing while
+you distribute the new key:
+
+    agentpantry rotate-key            # on the sink
+    # copy the new psk.key to the source over a secure channel
+    # restart the source, or let it reconnect
+    agentpantry rotate-key -finish    # on the sink, retires psk.key.old
+
+`doctor` and `status` show a rotation in progress, and a running sink picks up
+the rotation without a restart. Finish promptly: until `-finish`, a holder of
+the old key is still accepted. `keygen` remains the blunt instrument; it backs
+up an existing key beside itself as `psk.key.bak.<timestamp>` before replacing
+it (pass `--backup=false` to skip that), but unlike `rotate-key` the sink
+accepts only the new key from that moment on.
 
 ## Reliability
 
