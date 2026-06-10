@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.0 - 2026-06-09
+
+### Added
+- `agentpantry rotate-key` rotates the pre-shared key with a dual-key grace window: the sink preserves the old key as `psk.key.old`, accepts new connections under either key (new key tried first, warning logged on old-key sessions), and `rotate-key -finish` retires the old key. A running sink picks the rotation up per connection, no restart needed. `doctor` shows the in-progress window as a WARN row and `status` reports `rotation_in_progress`.
+
+### Fixed
+- The release workflow installs syft as a prebuilt binary; `go run syft@latest` broke the v0.3.0 tag build when syft's minimum Go version passed the pinned toolchain.
+
 ## v0.3.0 - 2026-06-09
 
 ### Added
