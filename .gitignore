@@ -15,3 +15,6 @@ config.toml
 
 # Generated fuzz corpus
 testdata/fuzz/
+
+# Local brigade memory (cards are local-only, never committed)
+/memory/
