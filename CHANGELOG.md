@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `agentpantry sink` warns at startup when the bind address exposes the sink beyond loopback, mirroring the existing `doctor` check at the moment it matters.
+- `keygen` now tells the operator to delete the `psk.key.bak.<timestamp>` backup once a rotation is confirmed, since it holds retired key material.
+
+### Changed
+- go.mod now pins `toolchain go1.25.11`, so from-source installs (`go install ...@latest`) build with the patched standard library instead of whatever Go 1.25.x the machine happens to have. Release binaries were already built with 1.25.11.
+- SECURITY.md's key rotation guidance now describes the `rotate-key` dual-key grace-window flow introduced in v0.4.0, with `keygen` documented as the stop-the-world fallback.
+- CI's test jobs now run `scripts/verify` (plus `go test -race`) so the build/vet/test gate is defined in exactly one place.
+
 ## v0.4.0 - 2026-06-09
 
 ### Added
