@@ -59,7 +59,10 @@ func main() {
 		err = cmdStatus(args)
 	case "version":
 		err = cmdVersion(args)
+	case "help", "-h", "--help":
+		fmt.Print(usageText)
 	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
 		usage()
 	}
 	if err != nil {
@@ -68,8 +71,26 @@ func main() {
 	}
 }
 
+const usageText = `agentpantry - secure browser session and secret sync for AI agents
+
+usage: agentpantry <command> [flags]
+
+commands:
+  init             write a commented starter config (-role source|sink)
+  keygen           generate the pre-shared key both endpoints share
+  source           run on the daily driver: watch browsers, push sealed diffs
+  sink             run on the agent machine: receive diffs, apply to surfaces
+  doctor           validate the config, key, and role-specific setup
+  status           print the active role, peer, surfaces, and last sync
+  install-service  install a systemd user unit (Windows: print a task command)
+  version          print version and build metadata
+
+Run 'agentpantry <command> -h' for command flags.
+Quickstart: https://github.com/escoffier-labs/agentpantry#quickstart
+`
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: agentpantry <init|keygen|source|sink|doctor|status|install-service|version> [flags]")
+	fmt.Fprint(os.Stderr, usageText)
 	os.Exit(2)
 }
 
@@ -106,16 +127,24 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	role := fs.String("role", "source", "source or sink")
 	out := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	force := fs.Bool("force", false, "overwrite an existing config")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *role != "source" && *role != "sink" {
 		return fmt.Errorf("role must be source or sink")
 	}
-	if err := config.Save(*out, config.Default(*role)); err != nil {
+	if !*force {
+		// Stat-then-write is racy, but init is a single-operator command
+		// guarding against accidental overwrite, not a concurrent writer.
+		if _, err := os.Stat(*out); err == nil {
+			return fmt.Errorf("config already exists at %s (pass -force to overwrite)", *out)
+		}
+	}
+	if err := config.WriteTemplate(*out, *role); err != nil {
 		return err
 	}
-	fmt.Printf("wrote %s config to %s\n", *role, *out)
+	fmt.Printf("wrote %s config to %s\nedit it, then run `agentpantry doctor` to validate\n", *role, *out)
 	return nil
 }
 
@@ -143,7 +172,21 @@ func loadConfig(args []string) (config.Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return config.Config{}, err
 	}
-	return config.Load(*path)
+	return loadConfigWarn(*path)
+}
+
+// loadConfigWarn loads path and prints a stderr warning for each config key
+// the schema does not recognize, so a typo or a key placed under the wrong
+// section is not silently ignored.
+func loadConfigWarn(path string) (config.Config, error) {
+	c, unknown, err := config.LoadChecked(path)
+	if err != nil {
+		return c, err
+	}
+	for _, k := range unknown {
+		fmt.Fprintf(os.Stderr, "warning: unknown config key %q ignored (check spelling and section placement)\n", k)
+	}
+	return c, nil
 }
 
 // statePath puts state.json beside the resolved config file so two sources with
@@ -186,7 +229,7 @@ func cmdSource(args []string) error {
 		return err
 	}
 
-	c, err := config.Load(*cfgPath)
+	c, err := loadConfigWarn(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -341,7 +384,7 @@ func cmdSink(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	c, err := config.Load(*cfgPath)
+	c, err := loadConfigWarn(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -586,11 +629,18 @@ func cmdDoctor(args []string) error {
 		return fmt.Errorf("load config: open %s: no such file or directory", *cfgPath)
 	}
 
-	c, err := config.Load(*cfgPath)
+	c, unknown, err := config.LoadChecked(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 	checks := doctor.Run(c)
+	for _, k := range unknown {
+		checks = append(checks, doctor.Check{
+			Name:   "config-key",
+			Status: doctor.Warn,
+			Detail: fmt.Sprintf("unknown key %q ignored (check spelling and section placement)", k),
+		})
+	}
 	if c.Role == "source" && !*skipNet {
 		checks = append(checks, doctor.PeerReachable(c.Peer, *timeout))
 	}
@@ -690,7 +740,7 @@ func cmdStatus(args []string) error {
 		os.Exit(2)
 	}
 
-	c, err := config.Load(*cfgPath)
+	c, err := loadConfigWarn(*cfgPath)
 	if err != nil {
 		return err // -> main exits 1
 	}

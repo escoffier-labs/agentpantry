@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -137,6 +139,31 @@ func TestStatusJSONConfigured(t *testing.T) {
 		if _, ok := payload[k]; !ok {
 			t.Errorf("JSON payload missing required contract key %q", k)
 		}
+	}
+}
+
+func TestStatusJSONUnknownKeyKeepsStdoutPure(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	body := "role = \"source\"\npeer = \"127.0.0.1:8787\"\nkey_path = \"" +
+		filepath.ToSlash(filepath.Join(dir, "psk.key")) + "\"\nalow_typo = [\"github.com\"]\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, "status", "--json", "--config", cfg)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("want exit 0, got %v (stderr=%s)", err, stderr.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout must stay pure JSON when the config has an unknown key: %v\n%s", err, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown config key") {
+		t.Fatalf("unknown-key warning must land on stderr, got: %s", stderr.String())
 	}
 }
 

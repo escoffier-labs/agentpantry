@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -64,9 +65,103 @@ func Default(role string) Config {
 }
 
 func Load(path string) (Config, error) {
-	var c Config
-	_, err := toml.DecodeFile(path, &c)
+	c, _, err := LoadChecked(path)
 	return c, err
+}
+
+// LoadChecked parses path and also returns the names of any keys the config
+// schema does not recognize, so a misspelled or misplaced key (for example
+// secrets_dir landing under [domains]) surfaces instead of being silently
+// ignored.
+func LoadChecked(path string) (Config, []string, error) {
+	var c Config
+	md, err := toml.DecodeFile(path, &c)
+	if err != nil {
+		return c, nil, err
+	}
+	var unknown []string
+	for _, k := range md.Undecoded() {
+		unknown = append(unknown, k.String())
+	}
+	return c, unknown, nil
+}
+
+// WriteTemplate writes a commented starter config for role. The uncommented
+// values parse back to Default(role); the comments walk a new user through the
+// fields the quickstart tells them to fill in.
+func WriteTemplate(path, role string) error {
+	keyPath := filepath.Join(Dir(), "psk.key")
+	var body string
+	switch role {
+	case "source":
+		body = fmt.Sprintf(`# agentpantry source config (runs on your daily driver).
+# Edit the values below, then run `+"`agentpantry doctor`"+` to validate.
+
+role = "source"
+
+# Where to send sealed frames: the sink machine's host:port.
+peer = "127.0.0.1:8787"
+
+# Pre-shared key. Generate it on the sink with `+"`agentpantry keygen`"+` and
+# copy the file here over a secure channel. Both ends need the same 0600 file.
+key_path = %q
+
+# Optional: mirror a directory of named secret files (one file = one secret).
+#secrets_dir = "/home/you/.config/agentpantry/source-secrets"
+
+# Optional: periodic full re-sync in seconds, in addition to file events.
+#resync_seconds = 300
+
+# At least one browser to read cookies from.
+# kind: "chromium" (Chrome, Chromium, Brave, Edge), "firefox", or "cdp".
+#[[browsers]]
+#kind = "chromium"
+#profile = "Default"
+#cookie_path = "/home/you/.config/chromium/Default/Cookies"
+
+# Domains are opt-in: nothing syncs until it matches an allow entry.
+# A deny entry overrides any allow match.
+[domains]
+allow = []
+deny = []
+
+# Optional: restrict which secret names sync (empty allow permits all).
+[secret_names]
+allow = []
+deny = []
+`, keyPath)
+	case "sink":
+		body = fmt.Sprintf(`# agentpantry sink config (runs on the agent machine).
+# Edit the values below, then run `+"`agentpantry doctor`"+` to validate.
+
+role = "sink"
+
+# Address to listen on. Keep it loopback or a trusted VPN interface.
+peer = "127.0.0.1:8787"
+
+# Pre-shared key. Generate it here with `+"`agentpantry keygen`"+`, then copy
+# the file to the source machine over a secure channel.
+key_path = %q
+
+# Surfaces this sink writes to: "sidecar" (default), "secrets", "chrome".
+surfaces = ["sidecar"]
+
+# Required by the "secrets" surface: where synced secrets are written.
+#secrets_dir = "/home/agent/.config/agentpantry/secrets"
+
+# Optional adapters write synced data where existing tools already look.
+# See the examples/ directory for netscape, gh, openclaw, and hermes.
+#[[adapters]]
+#type = "netscape"
+#path = "/home/agent/.config/agentpantry/cookies.txt"
+`, keyPath)
+	default:
+		return fmt.Errorf("role must be source or sink")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return privfile.Write(path, []byte(body))
 }
 
 func Save(path string, c Config) error {

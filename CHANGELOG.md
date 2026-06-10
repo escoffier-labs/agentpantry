@@ -3,12 +3,15 @@
 ## Unreleased
 
 ### Added
+- `agentpantry help` (and `-h`/`--help`) prints a command list with one-line descriptions; an unknown subcommand is now named in the error instead of only printing the usage line.
+- Config loading now reports unknown or misplaced config keys: `doctor` shows them as WARN rows, and `source`, `sink`, and `status` print a stderr warning, so a typo like `alow` or a key placed under the wrong table no longer silently disables syncing.
 - `hermes` adapter that writes an Agent Pantry-owned Hermes bundle directory with `cookies.txt`, `secrets/<name>`, and an `agentpantry.json` manifest for Hermes Agent launch wrappers or plugins.
 - GitHub tag release workflow that builds platform archives, publishes checksums, generates a source SPDX SBOM, and requests artifact provenance attestations.
 - Copyable example configs for Chromium, Firefox, CDP, Hermes Agent, GitHub CLI, OpenClaw, and SSH stdio transport.
 - Contributor docs, issue templates, PR template, and Dependabot config for Go modules and GitHub Actions.
 
 ### Changed
+- `agentpantry init` now writes a commented starter config that walks through each field (including a `[[browsers]]` skeleton and the domain allow list), and refuses to overwrite an existing config unless `-force` is passed.
 - `agentpantry keygen` now backs up an existing key by default before replacing it, making pre-shared-key rotation safer.
 - Private file writes (adapter outputs, secrets, state, config, key) are now atomic: staged in a same-directory 0600 temp file, fsynced, and renamed into place, so a crash mid-write can no longer truncate or destroy merged credential files, and a freshly written secret never inherits a pre-existing file's looser mode.
 - Transport frame cap lowered from 64 MiB to 8 MiB, bounding the allocation an unauthenticated peer can force per frame.
@@ -19,6 +22,7 @@
 - The sidecar surface refuses a symlinked database path.
 
 ### Fixed
+- `examples/source-chromium.toml` placed `secrets_dir` after the `[domains]` table header, so TOML parsed it as `domains.secrets_dir` and secret syncing silently never started for anyone who copied the example. The key now sits at the top level where it belongs (and the new unknown-key warnings would have flagged it).
 - Windows: sink adapters and `doctor` no longer reject every output directory and key file due to Unix permission checks that are meaningless on Windows (Go reports synthesized 0777/0666 modes there). The full test suite now passes on Windows.
 
 ## v0.2.1 - 2026-06-03

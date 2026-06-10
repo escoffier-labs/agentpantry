@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -143,6 +144,108 @@ func TestResyncSecondsRoundTrip(t *testing.T) {
 	}
 	if out.ResyncSeconds != 90 {
 		t.Fatalf("resync_seconds lost: %d", out.ResyncSeconds)
+	}
+}
+
+func TestLoadCheckedReportsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `role = "source"
+peer = "127.0.0.1:8787"
+alow_typo = ["github.com"]
+
+[domains]
+allow = ["github.com"]
+secrets_dir = "/tmp/misplaced"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, unknown, err := LoadChecked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, k := range unknown {
+		found[k] = true
+	}
+	if len(unknown) != 2 || !found["alow_typo"] || !found["domains.secrets_dir"] {
+		t.Fatalf("unknown keys must name the typo and the misplaced key, got %v", unknown)
+	}
+}
+
+func TestLoadCheckedCleanConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(path, Default("sink")); err != nil {
+		t.Fatal(err)
+	}
+	_, unknown, err := LoadChecked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("clean config must report no unknown keys, got %v", unknown)
+	}
+}
+
+func TestWriteTemplateParsesToDefaults(t *testing.T) {
+	for _, role := range []string{"source", "sink"} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := WriteTemplate(path, role); err != nil {
+			t.Fatal(err)
+		}
+		got, unknown, err := LoadChecked(path)
+		if err != nil {
+			t.Fatalf("%s template must be valid TOML: %v", role, err)
+		}
+		if len(unknown) != 0 {
+			t.Fatalf("%s template has unknown keys: %v", role, unknown)
+		}
+		want := Default(role)
+		if got.Role != want.Role || got.Peer != want.Peer || got.KeyPath != want.KeyPath {
+			t.Fatalf("%s template mismatch: got %+v want %+v", role, got, want)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(body, []byte("#")) {
+			t.Fatalf("%s template must carry guidance comments", role)
+		}
+	}
+	srcPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteTemplate(srcPath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte("[[browsers]]")) || !bytes.Contains(body, []byte("allow")) {
+		t.Fatal("source template must show a [[browsers]] skeleton and the domain allow list")
+	}
+}
+
+func TestLoadCheckedInvalidTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("role = \"source\"\npeer = [unclosed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, unknown, err := LoadChecked(path)
+	if err == nil {
+		t.Fatal("invalid TOML must return an error")
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("invalid TOML must not report unknown keys, got %v", unknown)
+	}
+}
+
+func TestWriteTemplateInvalidRole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteTemplate(path, "gateway"); err == nil {
+		t.Fatal("invalid role must return an error")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatal("invalid role must not write a config file")
 	}
 }
 
