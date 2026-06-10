@@ -48,21 +48,6 @@ Or install a release archive:
     tar -xzf "agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"
     install -m 0755 "agentpantry_${VERSION}_${OS}_${ARCH}/agentpantry" ~/.local/bin/agentpantry
 
-## Release packaging
-
-Local release archives can be built into `dist/`:
-
-    make package VERSION=v0.2.1
-
-The package target runs `go test ./...`, `go vet ./...`, `gosec`, and
-`govulncheck`, then cross-builds Linux, macOS, and Windows archives with build
-metadata stamped into the `agentpantry version` output. `dist/checksums.txt`
-contains SHA-256 checksums for the generated archives.
-
-Tagged releases (`v*`) are built by GitHub Actions. The release workflow uploads
-the platform archives, `checksums.txt`, a source SPDX SBOM, and GitHub artifact
-provenance attestations.
-
 ## How it works
 
 agentpantry is a single binary that takes on one of two roles, chosen by
@@ -152,13 +137,20 @@ framing do not care which.
     agentpantry keygen
     # copy ~/.config/agentpantry/psk.key to the source machine
     # edit config.toml: set peer to the bind address, e.g. 0.0.0.0:8787 over your VPN
+    agentpantry doctor
     agentpantry sink
 
 ### On the source (daily driver)
     agentpantry init --role source
     # copy the psk.key from the sink into ~/.config/agentpantry/psk.key
     # edit config.toml: set peer to the sink address, add a [[browsers]] block and allow domains
+    agentpantry doctor
     agentpantry source
+
+`init` writes a commented config that walks through each field (it refuses to
+overwrite an existing config unless you pass `--force`), and `doctor` validates
+the result before you rely on it, warning about misspelled or misplaced config
+keys instead of ignoring them.
 
 A `[[browsers]]` entry takes a `kind`: `chromium` (Chrome, Chromium, Brave, Edge;
 decrypted via the Secret Service with a `peanuts` fallback) or `firefox` (reads
@@ -186,8 +178,9 @@ recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with
 profile) and set `url = "http://127.0.0.1:9222"` on the browser entry. agentpantry
 asks Chrome for the cookies over the DevTools Protocol, so Chrome performs its own
 authorized decryption. The debugging port grants full browser control, so keep it
-on loopback and treat it as sensitive. A `cdp` reader syncs at startup and on
-other browsers' file events; interval polling is a planned follow-on.
+on loopback and treat it as sensitive. A `cdp` reader syncs at startup, on
+other browsers' file events, and on the `resync_seconds` poll, which defaults
+to 60 seconds for a CDP source when unset.
 
 Both ends must hold the same pre-shared key. Generate it once on the sink with
 `agentpantry keygen` and copy the file to the source. Run `agentpantry status`
@@ -382,6 +375,21 @@ Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
 `cookies.txt`, `gh`, `openclaw`, and the Hermes Agent bundle. Source support
 includes Linux Chromium, Firefox, Windows Chromium, and Chrome DevTools Protocol
 export for app-bound Chrome profiles.
+
+## Release packaging
+
+Local release archives can be built into `dist/`:
+
+    make package VERSION=v0.2.1
+
+The package target runs `go test ./...`, `go vet ./...`, `gosec`, and
+`govulncheck`, then cross-builds Linux, macOS, and Windows archives with build
+metadata stamped into the `agentpantry version` output. `dist/checksums.txt`
+contains SHA-256 checksums for the generated archives.
+
+Tagged releases (`v*`) are built by GitHub Actions. The release workflow uploads
+the platform archives, `checksums.txt`, a source SPDX SBOM, and GitHub artifact
+provenance attestations.
 
 ## Acknowledgements
 
