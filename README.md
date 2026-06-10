@@ -276,6 +276,8 @@ is unset.
   frames on the wire, and in the sidecar.
 - Transport is AES-256-GCM with a shared key; run it over Tailscale, Twingate,
   a LAN you trust, or an SSH tunnel.
+- The sink defaults to loopback. Both `doctor` and `agentpantry sink` startup
+  warn when the bind address exposes the sink beyond loopback.
 
 ## Surfaces
 

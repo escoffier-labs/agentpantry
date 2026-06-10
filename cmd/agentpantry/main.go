@@ -567,6 +567,13 @@ func cmdSink(args []string) error {
 		return srv.Serve(ctx, os.Stdin)
 	}
 
+	// Mirror doctor's bind check at the moment it matters: a wide bind hands
+	// the network an unauthenticated pre-auth surface (connection slots, frame
+	// allocations, key probing) even though frames still require the PSK.
+	if !doctor.IsLoopbackBind(c.Peer) {
+		fmt.Fprintf(os.Stderr, "warning: binding %s exposes the sink beyond loopback\n", c.Peer)
+	}
+
 	ln, err := net.Listen("tcp", c.Peer)
 	if err != nil {
 		return err

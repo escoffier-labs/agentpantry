@@ -67,6 +67,27 @@ func TestNonLoopbackBindWarns(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackBind(t *testing.T) {
+	cases := []struct {
+		peer string
+		want bool
+	}{
+		{"127.0.0.1:8787", true},
+		{"[::1]:8787", true},
+		{"localhost:8787", true},
+		{":8787", true},
+		{"0.0.0.0:8787", false},
+		{"192.0.2.10:8787", false},
+		{"example.com:8787", false},
+		{"not-host-port", false},
+	}
+	for _, tc := range cases {
+		if got := IsLoopbackBind(tc.peer); got != tc.want {
+			t.Errorf("IsLoopbackBind(%q) = %v, want %v", tc.peer, got, tc.want)
+		}
+	}
+}
+
 func TestUnknownSurfaceFails(t *testing.T) {
 	dir := t.TempDir()
 	key := writeKey(t, dir, 0o600)

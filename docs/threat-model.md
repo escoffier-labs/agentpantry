@@ -29,7 +29,8 @@ These are required for the guarantees above to hold:
 
 - **Bind the sink to loopback** (`127.0.0.1`) or to a trusted private network
   (for example a VPN such as Tailscale/WireGuard or an SSH tunnel). The default
-  is loopback; `doctor` warns on a wider bind.
+  is loopback; `doctor` and `agentpantry sink` startup both warn on a wider
+  bind.
 - **Keep the pre-shared key secret.** Anyone with the key can send frames to the
   sink. Copy it over a secure channel and keep it `0600`.
 - **Treat a CDP debugging port as sensitive.** `kind = "cdp"` requires launching

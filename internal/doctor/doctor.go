@@ -58,7 +58,9 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func isLoopbackBind(peer string) bool {
+// IsLoopbackBind reports whether a sink peer address binds only to loopback.
+// Exported so the sink startup path can warn on wide binds, not just doctor.
+func IsLoopbackBind(peer string) bool {
 	host, _, err := net.SplitHostPort(peer)
 	if err != nil {
 		return false
@@ -189,7 +191,7 @@ func Run(c config.Config) []Check {
 			checks = append(checks, KeyringCheck(&vault.SecretServiceKey{Label: "Chrome Safe Storage"}))
 		}
 	case "sink":
-		if !isLoopbackBind(c.Peer) {
+		if !IsLoopbackBind(c.Peer) {
 			checks = append(checks, Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", c.Peer)})
 		} else {
 			checks = append(checks, Check{"bind", OK, "loopback"})
