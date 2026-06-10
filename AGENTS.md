@@ -3,10 +3,13 @@
 Go 1.25 single-module CLI (`agentpantry`) that syncs browser cookies and named secrets from a daily-driver machine (source role) to an agent machine (sink role) over an encrypted byte stream. Single binary, role chosen by subcommand. Default branch is `master`.
 
 ## Definition of Done
-Before reporting ANY change complete, run all of these and confirm they pass:
-- `make build`
-- `go vet ./...`
-- `go test ./...` (includes `test/` integration tests)
+Before reporting ANY change complete, run this and confirm it passes:
+```
+./scripts/verify
+```
+It runs `make build`, `go vet ./...`, and `go test ./...` (includes `test/` integration tests).
+
+Conditional gates not covered by the script:
 - `make windows` if you touched anything near a `_windows.go` / `_other.go` pair (`cmd/agentpantry/`, `internal/wincrypto`)
 - For security-relevant changes (parsers, framing, filesystem writes, cookie decoding): `make gosec`, `make vuln`, and the matching fuzz target, e.g. `make fuzz PKG=./internal/transport FUZZ=FuzzOpen`. Fuzz targets exist in `internal/{transport,surface,wire,vault,wincrypto}`.
 
