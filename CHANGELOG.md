@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-06-09
 
 ### Added
 - `agentpantry help` (and `-h`/`--help`) prints a command list with one-line descriptions; an unknown subcommand is now named in the error instead of only printing the usage line.
