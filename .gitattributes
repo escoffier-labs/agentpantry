@@ -1,0 +1,7 @@
+# Keep source files LF on every platform so the gofmt gate in scripts/verify
+# stays consistent (Windows checkouts would otherwise get CRLF and trip gofmt).
+*.go text eol=lf
+*.sh text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+Makefile text eol=lf
