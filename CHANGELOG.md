@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.4.1 - 2026-06-16
+
 ### Added
 - `agentpantry sink` warns at startup when the bind address exposes the sink beyond loopback, mirroring the existing `doctor` check at the moment it matters.
 - `keygen` now tells the operator to delete the `psk.key.bak.<timestamp>` backup once a rotation is confirmed, since it holds retired key material.
@@ -10,6 +12,11 @@
 - go.mod now pins `toolchain go1.25.11`, so from-source installs (`go install ...@latest`) build with the patched standard library instead of whatever Go 1.25.x the machine happens to have. Release binaries were already built with 1.25.11.
 - SECURITY.md's key rotation guidance now describes the `rotate-key` dual-key grace-window flow introduced in v0.4.0, with `keygen` documented as the stop-the-world fallback.
 - CI's test jobs now run `scripts/verify` (plus `go test -race`) so the build/vet/test gate is defined in exactly one place.
+- CI pins `govulncheck` and `gosec` to tagged versions instead of `@latest`, so the security and vuln gates are reproducible.
+- `scripts/verify` now gofmt-gates the tree, and a new `.gitattributes` forces LF on source files so the gate is consistent across platforms (including the Windows CI job).
+
+### Fixed
+- The CDP cookie reader sets a read deadline, so a hung or crashed DevTools target fails the sync cycle instead of wedging it.
 
 ## v0.4.0 - 2026-06-09
 
