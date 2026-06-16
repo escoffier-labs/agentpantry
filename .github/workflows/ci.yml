@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.11"
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
 
   security:
     runs-on: ubuntu-latest
@@ -55,4 +55,4 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.25.11"
-      - run: go run github.com/securego/gosec/v2/cmd/gosec@latest ./...
+      - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 ./...

@@ -9,7 +9,7 @@ func TestPermit(t *testing.T) {
 	}
 	cases := map[string]bool{
 		"github.com":         true,
-		"api.github.com":     true,  // subdomain of allowed
+		"api.github.com":     true, // subdomain of allowed
 		"example.com":        true,
 		"secret.example.com": false, // denied explicitly
 		"bank.com":           false, // not in allow

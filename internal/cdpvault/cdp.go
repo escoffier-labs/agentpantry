@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/gorilla/websocket"
@@ -131,6 +132,17 @@ func (c *CDP) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 
 	if err := conn.WriteJSON(map[string]any{"id": 1, "method": "Network.getAllCookies"}); err != nil {
 		return nil, err
+	}
+
+	// Bound the read loop so a hung or crashed DevTools target fails the sync
+	// cycle instead of wedging it forever. Honor the caller's deadline if set,
+	// otherwise fall back to a conservative default.
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set read deadline: %w", err)
 	}
 
 	for {
