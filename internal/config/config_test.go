@@ -147,6 +147,41 @@ func TestResyncSecondsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWarnExpiryDaysRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("source")
+	in.WarnExpiryDays = 14
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := LoadChecked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.WarnExpiryDays != 14 {
+		t.Fatalf("warn_expiry_days lost: %d", out.WarnExpiryDays)
+	}
+}
+
+func TestSidecarPathRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("sink")
+	in.SidecarPath = "/home/agent/.local/share/agentpantry/sidecar.db"
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, unknown, err := LoadChecked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("sidecar_path must be a known key, got unknown %v", unknown)
+	}
+	if out.SidecarPath != in.SidecarPath {
+		t.Fatalf("sidecar_path lost: %q", out.SidecarPath)
+	}
+}
+
 func TestLoadCheckedReportsUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	body := `role = "source"

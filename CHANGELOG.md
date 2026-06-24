@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+- The `source` role can warn on cookies nearing expiry: set `warn_expiry_days = N` to print a per-cookie stderr advisory (host, name, expiry date) on startup for any synced cookie expiring within N days. The sync stays read-only and never blocks; this only makes a looming re-auth visible. True auto-refresh is out of scope for read-only sync.
+- The sink sidecar surface path is configurable with `sidecar_path`. Set it to give each profile its own store instead of juggling `XDG_CONFIG_HOME` to avoid identity collisions. Symlinks are still rejected.
+
+### Fixed
+- The CDP source now reads cookies with `Storage.getCookies` instead of `Network.getAllCookies`, so partitioned (CHIPS, `Partitioned` attribute) cookies are included. The old method silently dropped them, which lost a real `claude.ai` session cookie.
+- The Linux Chromium disk reader no longer emits mis-decrypted garbage: a value that decrypts to non-printable bytes (a profile whose key lives in an unsupported keystore, e.g. an xdg portal) is excluded, and a single aggregated stderr warning suggests preferring a CDP source. Genuinely valid values are unaffected.
+
 ## v0.4.1 - 2026-06-16
 
 ### Added

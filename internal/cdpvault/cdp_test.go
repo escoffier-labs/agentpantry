@@ -34,6 +34,15 @@ func fakeCDPServer(t *testing.T) *httptest.Server {
 		if err := c.ReadJSON(&cmd); err != nil {
 			return
 		}
+		// The reader must call Storage.getCookies (not Network.getAllCookies),
+		// because only Storage.getCookies returns partitioned (CHIPS) cookies.
+		if cmd.Method != "Storage.getCookies" {
+			c.WriteJSON(map[string]any{
+				"id":    cmd.ID,
+				"error": map[string]any{"message": "unexpected method " + cmd.Method},
+			})
+			return
+		}
 		resp := map[string]any{
 			"id": cmd.ID,
 			"result": map[string]any{
@@ -42,6 +51,12 @@ func fakeCDPServer(t *testing.T) *httptest.Server {
 						"expires": 1637000000.0, "secure": true, "httpOnly": true, "sameSite": "Lax"},
 					{"name": "s", "value": "sess", "domain": "x.com", "path": "/",
 						"expires": -1.0, "secure": false, "httpOnly": false, "sameSite": "None"},
+					// Partitioned (CHIPS) httpOnly cookie: Network.getAllCookies
+					// drops these; Storage.getCookies returns them with a
+					// partitionKey field.
+					{"name": "sessionKey", "value": "chips-token", "domain": ".claude.ai", "path": "/",
+						"expires": 1637000000.0, "secure": true, "httpOnly": true, "sameSite": "None",
+						"partitionKey": map[string]any{"topLevelSite": "https://claude.ai", "hasCrossSiteAncestor": false}},
 				},
 			},
 		}
@@ -59,8 +74,8 @@ func TestCDPReadCookies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cs) != 2 {
-		t.Fatalf("want 2 cookies, got %d", len(cs))
+	if len(cs) != 3 {
+		t.Fatalf("want 3 cookies, got %d", len(cs))
 	}
 	var sid cookie.Cookie
 	for _, ck := range cs {
@@ -78,6 +93,34 @@ func TestCDPReadCookies(t *testing.T) {
 		if ck.Name == "s" && ck.ExpiresUTC != 0 {
 			t.Fatalf("session cookie expiry should be 0, got %d", ck.ExpiresUTC)
 		}
+	}
+}
+
+// TestCDPReadCookiesIncludesPartitioned guards the CHIPS regression: the reader
+// must surface partitioned, httpOnly cookies (e.g. a claude.ai sessionKey) that
+// Network.getAllCookies silently drops but Storage.getCookies returns.
+func TestCDPReadCookiesIncludesPartitioned(t *testing.T) {
+	srv := fakeCDPServer(t)
+	defer srv.Close()
+
+	c := &CDP{BaseURL: srv.URL}
+	cs, err := c.ReadCookies(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session cookie.Cookie
+	found := false
+	for _, ck := range cs {
+		if ck.Name == "sessionKey" {
+			session = ck
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("partitioned cookie was dropped; got %+v", cs)
+	}
+	if session.Host != ".claude.ai" || session.Value != "chips-token" || !session.IsSecure || !session.IsHTTPOnly {
+		t.Fatalf("unexpected partitioned cookie: %+v", session)
 	}
 }
 

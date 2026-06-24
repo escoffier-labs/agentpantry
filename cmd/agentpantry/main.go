@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -17,9 +18,11 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/cdpvault"
 	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/doctor"
 	"github.com/escoffier-labs/agentpantry/internal/ffvault"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 	"github.com/escoffier-labs/agentpantry/internal/service"
 	"github.com/escoffier-labs/agentpantry/internal/sink"
@@ -289,6 +292,12 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Advisory near-expiry check on startup. Read-only sync cannot renew a
+	// session; this only surfaces a looming re-auth and never blocks syncing.
+	if c.WarnExpiryDays > 0 {
+		within := time.Duration(c.WarnExpiryDays) * 24 * time.Hour
+		warnSourceExpiry(context.Background(), vs, c.Domains, within, time.Now())
+	}
 	var secretReaders []source.SecretReader
 	if c.SecretsDir != "" {
 		secretReaders = append(secretReaders, &secretsrc.DirReader{Dir: c.SecretsDir})
@@ -401,6 +410,41 @@ func cmdSource(args []string) error {
 	}
 }
 
+// warnNearExpiry writes one advisory line per cookie expiring within the window
+// and returns how many it named. The sync is read-only and cannot renew a
+// session, so this only makes a looming re-auth visible; true auto-refresh
+// (re-navigating the site to renew the cookie) is a future feature outside the
+// read-only sync scope. Returns 0 and writes nothing when nothing is due.
+func warnNearExpiry(w io.Writer, cookies []cookie.Cookie, within time.Duration, now time.Time) int {
+	due := cookie.NearExpiry(cookies, within, now)
+	days := int(within / (24 * time.Hour))
+	for _, c := range due {
+		when := time.Unix(cookie.ExpiresUnix(c.ExpiresUTC), 0).UTC().Format("2006-01-02")
+		fmt.Fprintf(w, "warning: cookie %s@%s expires %s (within %dd); re-auth needed\n", c.Name, c.Host, when, days)
+	}
+	return len(due)
+}
+
+// warnSourceExpiry does a one-shot read of the source vaults and warns about any
+// cookies expiring within the configured window. It is advisory and never blocks
+// syncing: read errors are reported and skipped.
+func warnSourceExpiry(ctx context.Context, vaults []source.CookieReader, p policy.Domain, within time.Duration, now time.Time) {
+	for _, v := range vaults {
+		cs, err := v.ReadCookies(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not read cookies for expiry check:", err)
+			continue
+		}
+		var permitted []cookie.Cookie
+		for _, c := range cs {
+			if p.Permit(c.Host) {
+				permitted = append(permitted, c)
+			}
+		}
+		warnNearExpiry(os.Stderr, permitted, within, now)
+	}
+}
+
 // sleepCtx waits d or until ctx is done; returns false if ctx was cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
@@ -454,6 +498,17 @@ func newSinkOpener(keyPath string, salt []byte) (sink.FrameOpener, error) {
 	return fo, nil
 }
 
+// sidecarDBPath returns the sidecar surface DB path: the configured override
+// when set, otherwise sidecar.db in the config dir. Letting each sink pin its
+// own store avoids the per-profile XDG_CONFIG_HOME juggling that otherwise
+// collides identities.
+func sidecarDBPath(c config.Config) string {
+	if c.SidecarPath != "" {
+		return c.SidecarPath
+	}
+	return filepath.Join(config.Dir(), "sidecar.db")
+}
+
 func cmdSink(args []string) error {
 	fs := flag.NewFlagSet("sink", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
@@ -478,7 +533,7 @@ func cmdSink(args []string) error {
 	for _, name := range c.Surfaces {
 		switch name {
 		case "sidecar":
-			sc, err := surface.NewSidecar(filepath.Join(config.Dir(), "sidecar.db"))
+			sc, err := surface.NewSidecar(sidecarDBPath(c))
 			if err != nil {
 				return err
 			}

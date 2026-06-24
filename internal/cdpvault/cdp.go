@@ -106,6 +106,10 @@ type cdpCookie struct {
 	Secure   bool    `json:"secure"`
 	HTTPOnly bool    `json:"httpOnly"`
 	SameSite string  `json:"sameSite"`
+	// PartitionKey is present on partitioned (CHIPS) cookies. We do not
+	// propagate it into the cookie model, but decoding it keeps the field
+	// from being lost and documents that Storage.getCookies returns it.
+	PartitionKey json.RawMessage `json:"partitionKey"`
 }
 
 func sameSiteCode(s string) int {
@@ -130,7 +134,11 @@ func (c *CDP) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	}
 	defer conn.Close()
 
-	if err := conn.WriteJSON(map[string]any{"id": 1, "method": "Network.getAllCookies"}); err != nil {
+	// Storage.getCookies (not Network.getAllCookies) is the only method that
+	// returns partitioned (CHIPS) cookies. With no browserContextId param it
+	// targets the default context. Network.getAllCookies silently dropped a
+	// real claude.ai sessionKey during dogfooding.
+	if err := conn.WriteJSON(map[string]any{"id": 1, "method": "Storage.getCookies"}); err != nil {
 		return nil, err
 	}
 

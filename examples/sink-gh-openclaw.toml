@@ -4,6 +4,10 @@ key_path = "/home/agent/.config/agentpantry/psk.key"
 surfaces = ["sidecar", "secrets"]
 secrets_dir = "/home/agent/.config/agentpantry/secrets"
 
+# Optional: override where the sidecar surface writes its DB. Defaults to
+# sidecar.db in the config dir; set this to give each profile its own store.
+# sidecar_path = "/path/to/sidecar.db"
+
 [[adapters]]
 type = "gh"
 path = "/home/agent/.config/gh/hosts.yml"

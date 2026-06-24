@@ -79,3 +79,25 @@ func TestEncryptForTestStillMatchesDecrypt(t *testing.T) {
 		t.Fatalf("v10 fixture broke: got %q err %v", got, err)
 	}
 }
+
+func TestLooksDecrypted(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []byte
+		want bool
+	}{
+		{"clean ascii", []byte("session-token-123"), true},
+		{"base64url token", []byte("AQEDAQ0bwowBY-AGAAABnvWtN3s_kQxZ9pLrStUvGhJiNoPq"), true},
+		{"utf8 text", []byte("café-niño-日本語"), true},
+		{"empty allowed", []byte{}, true},
+		{"replacement-char garbage", []byte{0xEF, 0xBF, 0xBD, 0xEF, 0xBF, 0xBD, 'l', 'i'}, false},
+		{"random binary", []byte{0x00, 0x01, 0xFE, 0xFF, 0x80, 0x9A, 0x12, 0xAB, 0x03, 0x04}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := looksDecrypted(tc.in); got != tc.want {
+				t.Fatalf("looksDecrypted(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
