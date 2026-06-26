@@ -31,16 +31,18 @@ type AdapterRef struct {
 
 // Config is the on-disk configuration for either role.
 type Config struct {
-	Role          string        `toml:"role"` // "source" | "sink"
-	Peer          string        `toml:"peer"` // dial target (source) or bind addr (sink)
-	KeyPath       string        `toml:"key_path"`
-	Surfaces      []string      `toml:"surfaces"`
-	Browsers      []BrowserRef  `toml:"browsers"`
-	SecretsDir    string        `toml:"secrets_dir"` // source: read from; sink: write to
-	Adapters      []AdapterRef  `toml:"adapters"`
-	Domains       policy.Domain `toml:"domains"`
-	SecretNames   policy.Names  `toml:"secret_names"`
-	ResyncSeconds int           `toml:"resync_seconds"` // source: periodic resync (0 = off)
+	Role           string        `toml:"role"` // "source" | "sink"
+	Peer           string        `toml:"peer"` // dial target (source) or bind addr (sink)
+	KeyPath        string        `toml:"key_path"`
+	Surfaces       []string      `toml:"surfaces"`
+	Browsers       []BrowserRef  `toml:"browsers"`
+	SecretsDir     string        `toml:"secrets_dir"` // source: read from; sink: write to
+	Adapters       []AdapterRef  `toml:"adapters"`
+	Domains        policy.Domain `toml:"domains"`
+	SecretNames    policy.Names  `toml:"secret_names"`
+	ResyncSeconds  int           `toml:"resync_seconds"`   // source: periodic resync (0 = off)
+	WarnExpiryDays int           `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
+	SidecarPath    string        `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
 }
 
 // Dir returns the config directory, honoring XDG_CONFIG_HOME.
@@ -112,6 +114,11 @@ key_path = %q
 # Optional: periodic full re-sync in seconds, in addition to file events.
 #resync_seconds = 300
 
+# Optional: warn on stderr when a synced cookie expires within this many days
+# (0 = off). The sync is read-only and cannot renew a session; this just makes a
+# looming re-auth visible.
+#warn_expiry_days = 7
+
 # At least one browser to read cookies from.
 # kind: "chromium" (Chrome, Chromium, Brave, Edge), "firefox", or "cdp".
 #[[browsers]]
@@ -145,6 +152,11 @@ key_path = %q
 
 # Surfaces this sink writes to: "sidecar" (default), "secrets", "chrome".
 surfaces = ["sidecar"]
+
+# Optional: override where the sidecar surface writes its DB. Defaults to
+# sidecar.db in the config dir. Set this to give each profile its own store
+# without juggling XDG_CONFIG_HOME.
+#sidecar_path = "/home/agent/.local/share/agentpantry/sidecar.db"
 
 # Required by the "secrets" surface: where synced secrets are written.
 #secrets_dir = "/home/agent/.config/agentpantry/secrets"

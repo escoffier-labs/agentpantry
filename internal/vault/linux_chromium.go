@@ -47,6 +47,7 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 
 	var out []cookie.Cookie
 	var skipped int
+	var garbage int
 	for rows.Next() {
 		var (
 			host, name, plain, path    string
@@ -67,6 +68,14 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 				skipped++
 				continue
 			}
+			if !looksDecrypted([]byte(value)) {
+				// The value decrypted without error but is non-printable,
+				// which means the offline key did not actually match (e.g. an
+				// xdg portal keystore the reader cannot reach). Exclude it
+				// rather than ship garbage downstream. Never log the value.
+				garbage++
+				continue
+			}
 		}
 		out = append(out, cookie.Cookie{
 			Host: host, Name: name, Value: value, Path: path,
@@ -79,6 +88,9 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 	}
 	if skipped > 0 {
 		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d cookie(s) that failed to decrypt (wrong keyring passphrase or foreign rows)\n", skipped)
+	}
+	if garbage > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %d cookie value(s) decrypted to non-printable bytes; the profile may use an unsupported keystore (e.g. xdg portal). Prefer a CDP source.\n", garbage)
 	}
 	return out, nil
 }

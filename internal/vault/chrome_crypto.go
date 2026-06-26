@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/sha1" // #nosec G505 -- Chromium Linux cookie encryption derives keys with PBKDF2-HMAC-SHA1 for compatibility.
 	"errors"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -58,6 +59,35 @@ func DecryptValue(enc []byte, keyringPass string) (string, error) {
 		return "", err
 	}
 	return string(pt), nil
+}
+
+// looksDecrypted reports whether b plausibly is a real, correctly decrypted
+// cookie value rather than garbage from a key that did not actually match (for
+// example a profile whose Local State os_crypt key is "portal" and whose true
+// key lives in an unsupported keystore). It is false when b is not valid UTF-8
+// or when more than 30% of its runes are non-printable, where U+FFFD (the
+// replacement character emitted on a botched decode) counts as non-printable.
+// Empty input is allowed: an empty cookie value is legitimate.
+func looksDecrypted(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	if !utf8.Valid(b) {
+		return false
+	}
+	total, bad := 0, 0
+	for _, r := range string(b) {
+		total++
+		switch {
+		case r == utf8.RuneError: // U+FFFD: signature of a failed decode
+			bad++
+		case r == '\t' || r == '\n' || r == '\r':
+		case r >= 0x20 && r != 0x7f: // printable, including multi-byte runes
+		default: // C0/C1 control bytes and DEL
+			bad++
+		}
+	}
+	return bad*100 <= total*30
 }
 
 func pkcs7Pad(b []byte) []byte {
