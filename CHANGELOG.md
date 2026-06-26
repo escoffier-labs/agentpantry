@@ -10,6 +10,9 @@
 - The CDP source now reads cookies with `Storage.getCookies` instead of `Network.getAllCookies`, so partitioned (CHIPS, `Partitioned` attribute) cookies are included. The old method silently dropped them, which lost a real `claude.ai` session cookie.
 - The Linux Chromium disk reader no longer emits mis-decrypted garbage: a value that decrypts to non-printable bytes (a profile whose key lives in an unsupported keystore, e.g. an xdg portal) is excluded, and a single aggregated stderr warning suggests preferring a CDP source. Genuinely valid values are unaffected.
 
+### Changed
+- README now leads with a recorded terminal demo (`docs/assets/agentpantry-setup.svg`, reproducible from `agentpantry-setup.cast`) of the four-command agent-machine setup (init, keygen, doctor, status), and adds `CODE_OF_CONDUCT.md`.
+
 ## v0.4.1 - 2026-06-16
 
 ### Added
