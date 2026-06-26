@@ -7,9 +7,14 @@
 
   <p>
     <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/agentpantry/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
+    <img src="https://img.shields.io/github/v/release/escoffier-labs/agentpantry?style=for-the-badge&label=release" alt="Latest release">
     <img src="https://img.shields.io/badge/go-1.25%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.25+">
     <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155?style=for-the-badge" alt="Platform: Linux, macOS, Windows">
     <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+  </p>
+
+  <p>
+    <strong>Website:</strong> <a href="https://agentpantry.escoffierlabs.dev">agentpantry.escoffierlabs.dev</a>
   </p>
 </div>
 
@@ -17,8 +22,11 @@ Keep your agent's machine authenticated. Agent Pantry (`agentpantry`) is a
 secure browser session and secret sync CLI for AI agents. It mirrors selected
 cookies, browser auth state, and named secrets from your daily-driver (source)
 to the machine your agent runs on (sink), whether that is Codex, Claude Code,
-OpenClaw, Hermes Agent, or a custom runner. Everything moves encrypted over any
-reachable byte stream, so automation can use tools that expect local auth state.
+OpenClaw, Hermes Agent, or a custom runner. Unlike a password manager or a
+hosted secret store, it is a single local Go binary that moves nothing until you
+allow a domain, seals every diff in an AES-256-GCM frame with replay protection,
+and writes only to the surfaces you turn on, so automation can use tools that
+expect local auth state.
 
 In kitchen terms: the pantry is where the chef stores the cookies and the
 secret recipes.
@@ -34,6 +42,21 @@ fleet from Escoffier Labs: small, composable agent-ops tools that help agent
 runtimes work with real local environments. It is still a standalone
 MIT-licensed CLI; you can use it without Brigade or any other Escoffier Labs
 tool.
+
+## What it does
+
+Agent Pantry keeps an AI agent's machine authenticated by syncing browser
+cookies, browser auth state, and named secrets from your daily driver to the
+agent's machine over an encrypted link. You run the `source` role on the machine
+where you actually log in and the `sink` role on the agent's machine. The source
+watches the browser cookie store, decrypts and normalizes the cookies, filters
+them through a domain allow/deny policy, diffs against the last snapshot so only
+changes move, and seals each diff in an AES-256-GCM frame carrying a monotonic
+replay counter. The sink rejects any stale frame and applies the diff to the
+surfaces you enable: a default plaintext sidecar SQLite store, opt-in secrets and
+browser stores, or native adapters for Netscape `cookies.txt`, the GitHub CLI,
+OpenClaw provider profiles, and a Hermes Agent bundle. Nothing syncs until you
+add a domain to the allow list, and cookie and secret values are never logged.
 
 ## Install
 
@@ -399,6 +422,46 @@ Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
 `cookies.txt`, `gh`, `openclaw`, and the Hermes Agent bundle. Source support
 includes Linux Chromium, Firefox, Windows Chromium, and Chrome DevTools Protocol
 export for app-bound Chrome profiles.
+
+## Why not something else?
+
+- **A password manager or secret vault** (1Password, Bitwarden, Vault) stores
+  credentials and hands them out on request. Agent Pantry does not store your
+  logins; it mirrors live browser session state and named secrets from a machine
+  where you are already logged in to the machine your agent runs on, so tools
+  that read local cookie stores and config files wake up authenticated.
+- **A hosted session or cookie service** runs in someone else's cloud and asks
+  you to trust their storage. Agent Pantry is a single local Go binary with no
+  daemon and no server: it moves bytes between two machines you control over a
+  link you choose, and the encryption and framing do not care whether that link
+  is a LAN socket, a VPN, or stdio piped over SSH.
+- **Committing cookies and tokens into dotfiles** (or pasting a token into an
+  agent's config) drifts the moment a session refreshes and tends to leak the
+  value into git history, logs, and shell history. Agent Pantry re-syncs on file
+  events and a timer, sends only the diff, never logs values, and seals every
+  frame with a replay counter so a captured frame cannot be replayed into another
+  session.
+- **Each agent harness reinventing auth** means every runtime grows its own
+  glue. Agent Pantry writes the native files Codex, Claude Code, OpenClaw,
+  Hermes Agent, the GitHub CLI, and curl-family tools already read, so the
+  harness needs no Agent Pantry awareness.
+
+## What agentpantry is not
+
+Agent Pantry is not a password manager, a hosted service, a daemon, or a
+credential-harvesting tool.
+
+It does not:
+
+- store or generate your passwords, or hand out credentials on request
+- sync anything until you add a domain to `domains.allow`
+- run in the background as a system service unless you install one yourself
+- log cookie values, token values, pre-shared keys, or secret contents
+- reach out to any network it was not configured to dial
+- pull sessions off machines you do not control
+
+It moves your own authenticated state between your own machines, and only the
+state you explicitly allow.
 
 ## Release packaging
 
