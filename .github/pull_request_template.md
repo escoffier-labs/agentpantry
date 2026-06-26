@@ -8,6 +8,7 @@
 - [ ] `go vet ./...`
 - [ ] `make gosec`
 - [ ] `make vuln`
+- [ ] No PII, secrets, real private IPs, or machine-specific paths in the diff (content-guard clean)
 
 ## Security notes
 

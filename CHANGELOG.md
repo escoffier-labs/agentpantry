@@ -12,6 +12,7 @@
 
 ### Changed
 - README now leads with a recorded terminal demo (`docs/assets/agentpantry-setup.svg`, reproducible from `agentpantry-setup.cast`) of the four-command agent-machine setup (init, keygen, doctor, status), and adds `CODE_OF_CONDUCT.md`.
+- README adoption pass: a "What it does" overview, "Why not something else?" and "What agentpantry is not" sections, a website link and release badge in the header, an issue-template chooser config, and a no-PII checklist item in the PR template.
 
 ## v0.4.1 - 2026-06-16
 

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Agent Pantry website
+    url: https://agentpantry.escoffierlabs.dev
+    about: Project overview, install, and usage docs.
+  - name: Report a security vulnerability
+    url: https://github.com/escoffier-labs/agentpantry/security/policy
+    about: Do not file public issues for security reports. Follow the security policy instead.
