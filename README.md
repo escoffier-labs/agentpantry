@@ -23,6 +23,12 @@ reachable byte stream, so automation can use tools that expect local auth state.
 In kitchen terms: the pantry is where the chef stores the cookies and the
 secret recipes.
 
+<div align="center">
+  <img src="docs/assets/agentpantry-setup.svg" alt="Recording: agentpantry init, keygen, doctor, and status configuring an agent machine to receive sealed sessions" width="760">
+</div>
+
+Set up the agent machine in four commands: write a config, generate the pre-shared key, validate, and check status. Nothing secret reaches the terminal: `keygen` reports only that a 32-byte key was written, and `status` shows counts and `key_present`, never values. From there `source` and `sink` stream cookie and secret diffs sealed with AES-256-GCM.
+
 Agent Pantry is part of the [Brigade](https://github.com/escoffier-labs/brigade)
 fleet from Escoffier Labs: small, composable agent-ops tools that help agent
 runtimes work with real local environments. It is still a standalone
