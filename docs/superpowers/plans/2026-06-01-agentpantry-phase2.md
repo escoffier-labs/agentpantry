@@ -1305,7 +1305,7 @@ Append to `internal/config/config_test.go`:
 func TestSecretsDirRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	in := Default("source")
-	in.SecretsDir = "/home/u/.config/agentpantry/secrets"
+	in.SecretsDir = "/etc/agentpantry/secrets"
 	if err := Save(path, in); err != nil {
 		t.Fatal(err)
 	}

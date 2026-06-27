@@ -35,18 +35,18 @@ Example:
 ```toml
 [[adapters]]
 type = "netscape"
-path = "/home/u/.cache/agentpantry/cookies.txt"
+path = "/var/lib/agentpantry/cookies.txt"
 
 [[adapters]]
 type = "gh"
-path = "/home/u/.config/gh/hosts.yml"
+path = "/etc/agentpantry/gh-hosts.yml"
 secret = "gh_token"
 host = "github.com"
 user = "octocat"
 
 [[adapters]]
 type = "openclaw"
-path = "/home/u/.openclaw/agents/main/agent/auth-profiles.json"
+path = "/var/lib/agentpantry/openclaw-auth-profiles.json"
 [adapters.profiles]
 anthropic_profile = "anthropic:default"   # secretName = profileKey
 ```

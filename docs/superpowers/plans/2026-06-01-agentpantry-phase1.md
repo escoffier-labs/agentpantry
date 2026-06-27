@@ -2140,10 +2140,10 @@ import (
 )
 
 func TestSystemdUnitContents(t *testing.T) {
-	unit := SystemdUnit("source", "/usr/local/bin/agentpantry", "/home/u/.config/agentpantry/config.toml")
+	unit := SystemdUnit("source", "/usr/local/bin/agentpantry", "/etc/agentpantry/config.toml")
 	for _, want := range []string{
 		"Description=agentpantry source",
-		"ExecStart=/usr/local/bin/agentpantry source --config /home/u/.config/agentpantry/config.toml",
+		"ExecStart=/usr/local/bin/agentpantry source --config /etc/agentpantry/config.toml",
 		"Restart=on-failure",
 		"WantedBy=default.target",
 	} {
