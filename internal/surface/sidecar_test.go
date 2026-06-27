@@ -107,9 +107,11 @@ func TestOpenSidecarReadOnly(t *testing.T) {
 func TestOpenSidecarReadOnlyRefusesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "elsewhere.db")
-	if _, err := NewSidecar(target); err != nil { // a real store behind the link
+	s, err := NewSidecar(target) // a real store behind the link
+	if err != nil {
 		t.Fatal(err)
 	}
+	s.Close() // release the handle so Windows can clean up the temp dir
 	link := filepath.Join(dir, "link.db")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
