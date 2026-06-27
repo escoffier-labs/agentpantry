@@ -57,6 +57,68 @@ func TestSidecarApplyUpsertThenDelete(t *testing.T) {
 	}
 }
 
+func TestOpenSidecarReadOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sidecar.db")
+
+	// Missing store: a not-exist error the caller can detect.
+	if _, err := OpenSidecarReadOnly(path); !os.IsNotExist(err) {
+		t.Fatalf("missing store want IsNotExist, got %v", err)
+	}
+
+	// Seed a real store, then read it back read-only.
+	w, err := NewSidecar(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cookie.Cookie{Host: "a.com", Name: "x", Path: "/", Value: "1", ExpiresUTC: 0}
+	if err := w.Apply(cookie.Diff{Upserts: []cookie.Cookie{c}}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	r, err := OpenSidecarReadOnly(path)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer r.Close()
+	got, err := r.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Host != "a.com" || got[0].Name != "x" {
+		t.Fatalf("List returned %+v, want one a.com/x cookie", got)
+	}
+
+	// A regular SQLite file without a cookies table is not a sidecar store, and
+	// opening it must not create the schema (read-only).
+	other := filepath.Join(dir, "other.db")
+	if err := os.WriteFile(other, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenSidecarReadOnly(other); err == nil {
+		t.Fatal("want error opening a non-sidecar file")
+	}
+	if info, _ := os.Stat(other); info.Size() != 0 {
+		t.Fatalf("read-only open mutated a non-store file: size %d", info.Size())
+	}
+}
+
+func TestOpenSidecarReadOnlyRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere.db")
+	if _, err := NewSidecar(target); err != nil { // a real store behind the link
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.db")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := OpenSidecarReadOnly(link); err == nil {
+		t.Fatal("must refuse to open a sidecar through a symlink")
+	}
+}
+
 func TestNewSidecarRefusesSymlinkPath(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "elsewhere.db")
