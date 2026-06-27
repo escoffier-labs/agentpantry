@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -60,6 +61,8 @@ func main() {
 		err = cmdDoctor(args)
 	case "status":
 		err = cmdStatus(args)
+	case "inventory":
+		err = cmdInventory(args)
 	case "version":
 		err = cmdVersion(args)
 	case "rotate-key":
@@ -88,6 +91,7 @@ commands:
   sink             run on the agent machine: receive diffs, apply to surfaces
   doctor           validate the config, key, and role-specific setup
   status           print the active role, peer, surfaces, and last sync
+  inventory        summarize a backup store: per-host counts and near-expiry
   install-service  install a systemd user unit (Windows: print a task command)
   version          print version and build metadata
 
@@ -937,6 +941,115 @@ func cmdStatus(args []string) error {
 		fmt.Printf("rotation: in progress (old key at %s)\n", keyfile.OldKeyPath(c.KeyPath))
 	}
 	fmt.Printf("last sync: %s (cookies %d, secrets %d)\n", lastSync, st.Cookies, st.Secrets)
+	return nil
+}
+
+// cmdInventory summarizes the contents of a sidecar backup store: how many
+// cookies it holds, the per-host breakdown, the session vs persistent split,
+// and which auth cookies are near expiry. status reports config and a last-sync
+// count; this reads the actual store so you can see what a backup contains
+// without poking the SQLite schema by hand.
+func cmdInventory(args []string) error {
+	fs := flag.NewFlagSet("inventory", flag.ExitOnError)
+	defStore := filepath.Join(config.Dir(), "sidecar.db")
+	store := fs.String("store", defStore, "path to a sidecar.db store")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
+	expiryDays := fs.Int("expiry-days", 14, "near-expiry window in days")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *expiryDays < 0 {
+		return fmt.Errorf("-expiry-days must not be negative")
+	}
+
+	// Read-only: inventory reports on existing backups and must not create a
+	// store on a typo or mutate an operator-supplied file.
+	sc, err := surface.OpenSidecarReadOnly(*store)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "no sidecar store at", *store)
+			os.Exit(2)
+		}
+		return err
+	}
+	defer sc.Close()
+	cookies, err := sc.List()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	within := time.Duration(*expiryDays) * 24 * time.Hour
+	sessionOnly := 0
+	hostCount := map[string]int{}
+	for _, c := range cookies {
+		if c.ExpiresUTC <= 0 {
+			sessionOnly++
+		}
+		hostCount[c.Host]++
+	}
+	near := cookie.NearExpiry(cookies, within, now)
+
+	type hostStat struct {
+		Host  string
+		Count int
+	}
+	hosts := make([]hostStat, 0, len(hostCount))
+	for h, n := range hostCount {
+		hosts = append(hosts, hostStat{h, n})
+	}
+	sort.Slice(hosts, func(i, j int) bool {
+		if hosts[i].Count != hosts[j].Count {
+			return hosts[i].Count > hosts[j].Count
+		}
+		return hosts[i].Host < hosts[j].Host
+	})
+
+	if *jsonOut {
+		hostList := make([]map[string]any, 0, len(hosts))
+		for _, h := range hosts {
+			hostList = append(hostList, map[string]any{"host": h.Host, "count": h.Count})
+		}
+		nearList := make([]map[string]any, 0, len(near))
+		for _, c := range near {
+			nearList = append(nearList, map[string]any{
+				"host":    c.Host,
+				"name":    c.Name,
+				"expires": time.Unix(cookie.ExpiresUnix(c.ExpiresUTC), 0).UTC().Format(time.RFC3339),
+			})
+		}
+		payload := map[string]any{
+			"store":            *store,
+			"total":            len(cookies),
+			"persistent":       len(cookies) - sessionOnly,
+			"session_only":     sessionOnly,
+			"hosts":            hostList,
+			"near_expiry_days": *expiryDays,
+			"near_expiry":      nearList,
+		}
+		b, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+
+	fmt.Printf("store:    %s\ncookies:  %d (%d persistent, %d session)\nhosts:    %d\n",
+		*store, len(cookies), len(cookies)-sessionOnly, sessionOnly, len(hosts))
+	for _, h := range hosts {
+		fmt.Printf("  %5d  %s\n", h.Count, h.Host)
+	}
+	if len(near) == 0 {
+		fmt.Printf("near-expiry (within %dd): none\n", *expiryDays)
+	} else {
+		fmt.Printf("near-expiry (within %dd):\n", *expiryDays)
+		for _, c := range near {
+			fmt.Printf("  %s  %s @ %s\n",
+				time.Unix(cookie.ExpiresUnix(c.ExpiresUTC), 0).UTC().Format("2006-01-02"),
+				c.Name, c.Host)
+		}
+	}
 	return nil
 }
 

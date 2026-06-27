@@ -242,6 +242,17 @@ most recent successful source cycle and the cookie and secret counts in the
 last frame that was sent, or `never` if the source has not run yet. Pass
 `--json` for machine-readable output.
 
+`agentpantry inventory` reads a sidecar backup store and summarizes what it
+holds: the total cookie count, the persistent vs session-only split, a per-host
+breakdown sorted by count, and the auth cookies that are near expiry. Where
+`status` reports config and a last-sync count, `inventory` reads the store
+itself, so you can see what a backup actually contains without querying the
+SQLite schema by hand. Point it at a store with `--store` (default
+`<config dir>/sidecar.db`), set the near-expiry window with `--expiry-days`
+(default 14), and pass `--json` for a payload that downstream tools and
+dashboards can consume. It reports on existing stores only: if the path does not
+exist it exits 2 rather than create an empty one.
+
 The transport can ride an SSH channel instead of a TCP listener. Run the source
 with `--stdio` to stream sealed frames to stdout, and the sink with `--stdio` to
 read them from stdin, then connect the two over SSH:
