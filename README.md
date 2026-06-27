@@ -1,22 +1,22 @@
-<div align="center">
+<p align="center">
   <img src="docs/assets/agentpantry-social-preview.jpg" alt="Agent Pantry secure browser session sync for AI agents" width="900">
+</p>
 
-  <h1>Agent Pantry</h1>
+<h1 align="center">Agent Pantry</h1>
 
-  <p><strong>Authenticated sessions for agent machines.</strong></p>
+<p align="center"><strong>Authenticated sessions for agent machines.</strong></p>
 
-  <p>
-    <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/agentpantry/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
-    <img src="https://img.shields.io/github/v/release/escoffier-labs/agentpantry?style=for-the-badge&label=release" alt="Latest release">
-    <img src="https://img.shields.io/badge/go-1.25%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.25+">
-    <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155?style=for-the-badge" alt="Platform: Linux, macOS, Windows">
-    <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
-  </p>
+<p align="center">
+  <strong>Website:</strong> <a href="https://agentpantry.escoffierlabs.dev">agentpantry.escoffierlabs.dev</a>
+</p>
 
-  <p>
-    <strong>Website:</strong> <a href="https://agentpantry.escoffierlabs.dev">agentpantry.escoffierlabs.dev</a>
-  </p>
-</div>
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/agentpantry/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
+  <img src="https://img.shields.io/github/v/release/escoffier-labs/agentpantry?style=for-the-badge&label=release" alt="Latest release">
+  <img src="https://img.shields.io/badge/go-1.25%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.25+">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155?style=for-the-badge" alt="Platform: Linux, macOS, Windows">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+</p>
 
 Keep your agent's machine authenticated. Agent Pantry (`agentpantry`) is a
 secure browser session and secret sync CLI for AI agents. It mirrors selected
@@ -31,11 +31,11 @@ expect local auth state.
 In kitchen terms: the pantry is where the chef stores the cookies and the
 secret recipes.
 
-<div align="center">
+<p align="center">
   <img src="docs/assets/agentpantry-setup.svg" alt="Recording: agentpantry init, keygen, doctor, and status configuring an agent machine to receive sealed sessions" width="760">
-</div>
+</p>
 
-Set up the agent machine in four commands: write a config, generate the pre-shared key, validate, and check status. Nothing secret reaches the terminal: `keygen` reports only that a 32-byte key was written, and `status` shows counts and `key_present`, never values. From there `source` and `sink` stream cookie and secret diffs sealed with AES-256-GCM.
+<p align="center"><em>Set up the agent machine in four commands: write a config, generate the pre-shared key, validate, and check status. Nothing secret reaches the terminal: `keygen` reports only that a 32-byte key was written, and `status` shows counts and `key_present`, never values. From there `source` and `sink` stream cookie and secret diffs sealed with AES-256-GCM.</em></p>
 
 Agent Pantry is part of the [Brigade](https://github.com/escoffier-labs/brigade)
 fleet from Escoffier Labs: small, composable agent-ops tools that help agent
@@ -76,6 +76,68 @@ Or install a release archive:
     sha256sum -c checksums.txt --ignore-missing
     tar -xzf "agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"
     install -m 0755 "agentpantry_${VERSION}_${OS}_${ARCH}/agentpantry" ~/.local/bin/agentpantry
+
+## Quickstart
+
+### On the sink (agent machine)
+    agentpantry init --role sink
+    agentpantry keygen
+    # copy ~/.config/agentpantry/psk.key to the source machine
+    # edit config.toml: set peer to the bind address, e.g. 0.0.0.0:8787 over your VPN
+    agentpantry doctor
+    agentpantry sink
+
+### On the source (daily driver)
+    agentpantry init --role source
+    # copy the psk.key from the sink into ~/.config/agentpantry/psk.key
+    # edit config.toml: set peer to the sink address, add a [[browsers]] block and allow domains
+    agentpantry doctor
+    agentpantry source
+
+`init` writes a commented config that walks through each field (it refuses to
+overwrite an existing config unless you pass `--force`), and `doctor` validates
+the result before you rely on it, warning about misspelled or misplaced config
+keys instead of ignoring them.
+
+A `[[browsers]]` entry takes a `kind`: `chromium` (Chrome, Chromium, Brave, Edge;
+decrypted via the Secret Service with a `peanuts` fallback) or `firefox` (reads
+plaintext cookies from the profile's `cookies.sqlite`, so no keyring is needed).
+Point `cookie_path` at the profile's cookie store. A source configured with only
+Firefox browsers skips the keyring check in `agentpantry doctor`.
+
+On Windows, `kind = "chromium"` decrypts `v10` cookies using the DPAPI-unwrapped
+key from the profile's `Local State`. `agentpantry install-service` on Windows
+prints a Scheduled Task command (agentpantry is a console app, so it runs as a
+logon task rather than an SCM service). A Windows sink supports the sidecar,
+secrets, and adapter surfaces, plus the real-Chrome re-encrypt surface described
+next.
+
+A Windows sink can also use the real-Chrome re-encrypt surface (`chrome`): it
+writes synced cookies into the target Chrome Cookies store as `v10` AES-256-GCM,
+encrypted with the sink's own DPAPI-unwrapped key. Use it against a not-running,
+pre-app-bound, or dedicated automation profile; an app-bound (version 127+)
+profile may prefer `v20`, so v10 writes are best treated as a legacy/automation
+path.
+
+For app-bound Chrome (version 127+, `v20` cookies) where the key is no longer
+recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with
+`--remote-debugging-port=9222` (bound to loopback, ideally a dedicated automation
+profile) and set `url = "http://127.0.0.1:9222"` on the browser entry. agentpantry
+asks Chrome for the cookies over the DevTools Protocol, so Chrome performs its own
+authorized decryption. The debugging port grants full browser control, so keep it
+on loopback and treat it as sensitive. A `cdp` reader syncs at startup, on
+other browsers' file events, and on the `resync_seconds` poll, which defaults
+to 60 seconds for a CDP source when unset.
+
+Both ends must hold the same pre-shared key. Generate it once on the sink with
+`agentpantry keygen` and copy the file to the source. Run `agentpantry status`
+on either machine to print the active role, peer, key path, surfaces, and the
+configured allow/deny domains. To run the source or sink as a persistent
+background service, use `agentpantry install-service`, which writes a systemd
+user unit and prints the commands to enable it.
+
+The `examples/` directory has copyable source and sink configs for Chromium,
+Firefox, CDP, Hermes Agent, GitHub CLI, OpenClaw, and SSH stdio transport.
 
 ## How it works
 
@@ -159,68 +221,6 @@ The transport is just a byte stream, so the link can be a TCP connection over a
 trusted network or a piped stdio channel through a tunnel. The encryption and
 framing do not care which.
 
-## Quickstart
-
-### On the sink (agent machine)
-    agentpantry init --role sink
-    agentpantry keygen
-    # copy ~/.config/agentpantry/psk.key to the source machine
-    # edit config.toml: set peer to the bind address, e.g. 0.0.0.0:8787 over your VPN
-    agentpantry doctor
-    agentpantry sink
-
-### On the source (daily driver)
-    agentpantry init --role source
-    # copy the psk.key from the sink into ~/.config/agentpantry/psk.key
-    # edit config.toml: set peer to the sink address, add a [[browsers]] block and allow domains
-    agentpantry doctor
-    agentpantry source
-
-`init` writes a commented config that walks through each field (it refuses to
-overwrite an existing config unless you pass `--force`), and `doctor` validates
-the result before you rely on it, warning about misspelled or misplaced config
-keys instead of ignoring them.
-
-A `[[browsers]]` entry takes a `kind`: `chromium` (Chrome, Chromium, Brave, Edge;
-decrypted via the Secret Service with a `peanuts` fallback) or `firefox` (reads
-plaintext cookies from the profile's `cookies.sqlite`, so no keyring is needed).
-Point `cookie_path` at the profile's cookie store. A source configured with only
-Firefox browsers skips the keyring check in `agentpantry doctor`.
-
-On Windows, `kind = "chromium"` decrypts `v10` cookies using the DPAPI-unwrapped
-key from the profile's `Local State`. `agentpantry install-service` on Windows
-prints a Scheduled Task command (agentpantry is a console app, so it runs as a
-logon task rather than an SCM service). A Windows sink supports the sidecar,
-secrets, and adapter surfaces, plus the real-Chrome re-encrypt surface described
-next.
-
-A Windows sink can also use the real-Chrome re-encrypt surface (`chrome`): it
-writes synced cookies into the target Chrome Cookies store as `v10` AES-256-GCM,
-encrypted with the sink's own DPAPI-unwrapped key. Use it against a not-running,
-pre-app-bound, or dedicated automation profile; an app-bound (version 127+)
-profile may prefer `v20`, so v10 writes are best treated as a legacy/automation
-path.
-
-For app-bound Chrome (version 127+, `v20` cookies) where the key is no longer
-recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with
-`--remote-debugging-port=9222` (bound to loopback, ideally a dedicated automation
-profile) and set `url = "http://127.0.0.1:9222"` on the browser entry. agentpantry
-asks Chrome for the cookies over the DevTools Protocol, so Chrome performs its own
-authorized decryption. The debugging port grants full browser control, so keep it
-on loopback and treat it as sensitive. A `cdp` reader syncs at startup, on
-other browsers' file events, and on the `resync_seconds` poll, which defaults
-to 60 seconds for a CDP source when unset.
-
-Both ends must hold the same pre-shared key. Generate it once on the sink with
-`agentpantry keygen` and copy the file to the source. Run `agentpantry status`
-on either machine to print the active role, peer, key path, surfaces, and the
-configured allow/deny domains. To run the source or sink as a persistent
-background service, use `agentpantry install-service`, which writes a systemd
-user unit and prints the commands to enable it.
-
-The `examples/` directory has copyable source and sink configs for Chromium,
-Firefox, CDP, Hermes Agent, GitHub CLI, OpenClaw, and SSH stdio transport.
-
 ## Operating
 
 `agentpantry doctor` checks a configuration before you rely on it. It verifies
@@ -294,21 +294,6 @@ reconnect. Set `resync_seconds` to have the source periodically re-sync on a
 timer in addition to filesystem events (covers any missed event); a `kind=cdp`
 source, which has no file to watch, defaults to a 60s poll when `resync_seconds`
 is unset.
-
-## Security
-
-- Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An
-  empty allow list permits nothing, and a `domains.deny` entry overrides any
-  allow match.
-- The sidecar SQLite is plaintext, mode 0600. Treat the sink like a secret
-  store: anyone who can read that file can impersonate the synced sessions.
-- The pre-shared key file is written 0600 and must be kept off shared storage.
-- Cookie values are never logged. They live only in memory, in the encrypted
-  frames on the wire, and in the sidecar.
-- Transport is AES-256-GCM with a shared key; run it over Tailscale, Twingate,
-  a LAN you trust, or an SSH tunnel.
-- The sink defaults to loopback. Both `doctor` and `agentpantry sink` startup
-  warn when the bind address exposes the sink beyond loopback.
 
 ## Surfaces
 
@@ -477,6 +462,21 @@ contains SHA-256 checksums for the generated archives.
 Tagged releases (`v*`) are built by GitHub Actions. The release workflow uploads
 the platform archives, `checksums.txt`, a source SPDX SBOM, and GitHub artifact
 provenance attestations.
+
+## Security
+
+- Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An
+  empty allow list permits nothing, and a `domains.deny` entry overrides any
+  allow match.
+- The sidecar SQLite is plaintext, mode 0600. Treat the sink like a secret
+  store: anyone who can read that file can impersonate the synced sessions.
+- The pre-shared key file is written 0600 and must be kept off shared storage.
+- Cookie values are never logged. They live only in memory, in the encrypted
+  frames on the wire, and in the sidecar.
+- Transport is AES-256-GCM with a shared key; run it over Tailscale, Twingate,
+  a LAN you trust, or an SSH tunnel.
+- The sink defaults to loopback. Both `doctor` and `agentpantry sink` startup
+  warn when the bind address exposes the sink beyond loopback.
 
 ## Acknowledgements
 
