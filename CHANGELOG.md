@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 - 2026-06-27
 
 ### Added
+- `agentpantry inventory` reads a sidecar backup store and summarizes what it actually contains, including total cookies, persistent vs session-only counts, per-host counts, near-expiry auth cookies, `--store`, `--expiry-days`, and `--json` output for downstream tools and dashboards.
 - The `source` role can warn on cookies nearing expiry: set `warn_expiry_days = N` to print a per-cookie stderr advisory (host, name, expiry date) on startup for any synced cookie expiring within N days. The sync stays read-only and never blocks; this only makes a looming re-auth visible. True auto-refresh is out of scope for read-only sync.
 - The sink sidecar surface path is configurable with `sidecar_path`. Set it to give each profile its own store instead of juggling `XDG_CONFIG_HOME` to avoid identity collisions. Symlinks are still rejected.
 
