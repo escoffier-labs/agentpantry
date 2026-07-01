@@ -11,11 +11,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/escoffier-labs/agentpantry/ci.yml?branch=master&style=for-the-badge&label=ci" alt="CI status">
-  <img src="https://img.shields.io/github/v/release/escoffier-labs/agentpantry?style=for-the-badge&label=release" alt="Latest release">
-  <img src="https://img.shields.io/badge/go-1.25%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.25+">
-  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155?style=for-the-badge" alt="Platform: Linux, macOS, Windows">
-  <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="MIT license">
+  <img src="https://shieldcn.dev/github/ci/escoffier-labs/agentpantry.svg?branch=master&workflow=ci.yml" alt="CI status">
+  <img src="https://shieldcn.dev/github/release/escoffier-labs/agentpantry.svg" alt="Latest release">
+  <img src="https://shieldcn.dev/badge/go-1.25%2B-00ADD8.svg?logo=go&logoColor=white" alt="Go 1.25+">
+  <img src="https://shieldcn.dev/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155.svg" alt="Platform: Linux, macOS, Windows">
+  <img src="https://shieldcn.dev/badge/license-MIT-green.svg" alt="MIT license">
 </p>
 
 Keep your agent's machine authenticated. Agent Pantry (`agentpantry`) is a
