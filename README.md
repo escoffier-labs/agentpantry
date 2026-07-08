@@ -337,6 +337,24 @@ sink in the same encrypted frame. On the source, set `secrets_dir` to a
 directory and each regular file becomes one secret (the file name is the secret
 name, the file contents are the value). Dotfiles and subdirectories are skipped.
 
+Instead of (or alongside) a plaintext directory, the source can read named
+secrets straight from an encrypted KeePass vault:
+
+    keepass_path = "/home/you/vault.kdbx"
+    keepass_keyfile = "/home/you/.config/agentpantry/vault.key"
+    # keepass_pass_file = "..."   # only for password+keyfile vaults
+    # keepass_tag = "agentpantry" # the default
+
+Only entries carrying the `keepass_tag` tag are exported (entry Title becomes
+the secret name, Password the value), so tagging is the opt-in: the rest of
+the vault never leaves the machine. `[secret_names]` still applies on top.
+Untagging an entry propagates as a delete on the sink. Unlock is
+non-interactive via a 0600 key file (add one in KeePassXC under Database
+Security), so the source runs headless. If the same name comes from both
+`secrets_dir` and the vault, pick one source per name; the merge order is
+otherwise unspecified. A vault that is temporarily unreadable leaves
+already-synced secrets on the sink untouched for that cycle.
+
 On the sink, enable the `secrets` surface and set `secrets_dir` to the
 destination. Each secret is written as a 0600 file named after the secret.
 Secret names are sanitized on the sink: any name containing a path separator,
