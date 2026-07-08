@@ -261,6 +261,45 @@ SQLite schema by hand. Point it at a store with `--store` (default
 dashboards can consume. It reports on existing stores only: if the path does not
 exist it exits 2 rather than create an empty one.
 
+`agentpantry restore` materializes cookies from an existing sidecar backup into
+one explicit target. This is the capture-once-materialize-anywhere path: keep a
+sidecar as the portable capture, then write it into the format a local tool or
+browser target needs. Restore reads cookies only from the sidecar, applies the
+same suffix-style domain narrowing, skips already-expired persistent cookies,
+and reports counts without printing cookie values.
+
+Examples:
+
+    agentpantry restore -sidecar ~/.config/agentpantry/sidecar.db \
+      --to netscape=/tmp/cookies.txt --domains example.com --dry-run
+
+    agentpantry restore -config ./sink.toml \
+      --to chromium=/tmp/agent-chrome-profile
+
+    agentpantry restore -sidecar ./sidecar.db \
+      --to cdp=http://127.0.0.1:9222 --verify
+
+Use `-sidecar` to name the store directly, or `-config` to derive the sidecar
+path the same way `sink` does. Targets are `netscape=<path>` for curl-family
+`cookies.txt`, `chromium=<profile-dir>` for a not-running Chrome-compatible
+profile directory, and `cdp=<http://127.0.0.1:PORT>` for a running Chromium
+DevTools endpoint on loopback. `--verify` is CDP-only: after writing, it reads
+back through `Storage.getCookies` and prints per-domain expected and present
+counts plus cookie names. It exits nonzero if any expected cookie is absent.
+
+Restore limitations:
+
+| Limit | What happens |
+| --- | --- |
+| Encrypted or app-bound profile state | `chromium=<profile-dir>` writes a local cookie DB and cannot recreate another browser's encrypted profile state. Use CDP for a running browser that must encrypt its own cookies. |
+| Partitioned or CHIPS cookies | The sidecar model does not preserve the partition key, so restore cannot recreate partitioned identity exactly. |
+| Session storage | Restore handles cookies only. `localStorage`, `sessionStorage`, IndexedDB, service worker state, and cache data are out of scope. |
+| `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
+| Unreachable CDP | `cdp=` targets must be loopback HTTP(S) endpoints with a reachable DevTools websocket. Remote DevTools URLs are rejected. |
+| Missing sidecar | Restore opens the sidecar read-only and exits 2 if the store is missing. It does not create an empty backup by accident. |
+| Unwritable target | Netscape, Chromium, and CDP writes fail rather than silently dropping cookies when the target cannot be written. |
+| Non-representable cookies | Cookies that CDP or a file format cannot represent may fail the restore. Expired cookies are skipped and counted. |
+
 The transport can ride an SSH channel instead of a TCP listener. Run the source
 with `--stdio` to stream sealed frames to stdout, and the sink with `--stdio` to
 read them from stdin, then connect the two over SSH:

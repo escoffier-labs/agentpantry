@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -64,6 +65,8 @@ func main() {
 		err = cmdStatus(args)
 	case "inventory":
 		err = cmdInventory(args)
+	case "restore":
+		err = cmdRestore(args)
 	case "version":
 		err = cmdVersion(args)
 	case "rotate-key":
@@ -93,6 +96,7 @@ commands:
   doctor           validate the config, key, and role-specific setup
   status           print the active role, peer, surfaces, and last sync
   inventory        summarize a backup store: per-host counts and near-expiry
+  restore          materialize cookies from a sidecar backup to one target
   install-service  install a systemd user unit (Windows: print a task command)
   version          print version and build metadata
 
@@ -1102,6 +1106,368 @@ func cmdInventory(args []string) error {
 			fmt.Printf("  %s  %s @ %s\n",
 				time.Unix(cookie.ExpiresUnix(c.ExpiresUTC), 0).UTC().Format("2006-01-02"),
 				c.Name, c.Host)
+		}
+	}
+	return nil
+}
+
+type restoreTargetKind string
+
+const (
+	restoreTargetNetscape restoreTargetKind = "netscape"
+	restoreTargetChromium restoreTargetKind = "chromium"
+	restoreTargetCDP      restoreTargetKind = "cdp"
+)
+
+type restoreTarget struct {
+	kind       restoreTargetKind
+	path       string
+	profileDir string
+}
+
+func parseRestoreTarget(spec string) (restoreTarget, error) {
+	kind, value, ok := strings.Cut(spec, "=")
+	if !ok || value == "" {
+		return restoreTarget{}, fmt.Errorf("-to must be netscape=<path>, chromium=<profile-dir>, or cdp=<loopback-http-url>")
+	}
+	switch restoreTargetKind(kind) {
+	case restoreTargetNetscape:
+		return restoreTarget{kind: restoreTargetNetscape, path: value}, nil
+	case restoreTargetChromium:
+		return restoreTarget{kind: restoreTargetChromium, profileDir: value}, nil
+	case restoreTargetCDP:
+		if err := cdpvault.ValidateLoopbackURL(value, "http", "https"); err != nil {
+			return restoreTarget{}, fmt.Errorf("invalid CDP restore target: %w", err)
+		}
+		return restoreTarget{kind: restoreTargetCDP, path: value}, nil
+	default:
+		return restoreTarget{}, fmt.Errorf("unsupported restore target %q (supported: netscape, chromium, cdp)", kind)
+	}
+}
+
+func (t restoreTarget) String() string {
+	switch t.kind {
+	case restoreTargetNetscape:
+		return string(t.kind) + "=" + t.path
+	case restoreTargetChromium:
+		return string(t.kind) + "=" + t.profileDir
+	case restoreTargetCDP:
+		return string(t.kind) + "=" + t.path
+	default:
+		return string(t.kind)
+	}
+}
+
+func (t restoreTarget) chromeCookiePath() string {
+	return filepath.Join(t.profileDir, "Cookies")
+}
+
+func parseRestoreDomains(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return nil, fmt.Errorf("-domains contains an empty domain")
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func narrowRestoreCookies(cookies []cookie.Cookie, domains []string, configured policy.Domain) []cookie.Cookie {
+	requested := policy.Domain{Allow: domains}
+	out := make([]cookie.Cookie, 0, len(cookies))
+	for _, c := range cookies {
+		if len(configured.Allow) > 0 && !configured.Permit(c.Host) {
+			continue
+		}
+		if len(configured.Allow) == 0 && len(configured.Deny) > 0 {
+			hostOnly := policy.Domain{Allow: []string{c.Host}, Deny: configured.Deny}
+			if !hostOnly.Permit(c.Host) {
+				continue
+			}
+		}
+		if len(domains) > 0 && !requested.Permit(c.Host) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func skipExpiredRestoreCookies(cookies []cookie.Cookie, now time.Time) ([]cookie.Cookie, int) {
+	out := make([]cookie.Cookie, 0, len(cookies))
+	skipped := 0
+	nowUnix := now.Unix()
+	for _, c := range cookies {
+		if c.ExpiresUTC > 0 && cookie.ExpiresUnix(c.ExpiresUTC) <= nowUnix {
+			skipped++
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, skipped
+}
+
+type restoreCountRow struct {
+	Name   string `json:"name,omitempty"`
+	Host   string `json:"host,omitempty"`
+	Domain string `json:"domain,omitempty"`
+	Count  int    `json:"count"`
+}
+
+func restoreSummary(cookies []cookie.Cookie) ([]restoreCountRow, []restoreCountRow) {
+	nameHostCounts := map[string]restoreCountRow{}
+	domainCounts := map[string]int{}
+	for _, c := range cookies {
+		key := c.Name + "\x00" + c.Host
+		row := nameHostCounts[key]
+		row.Name = c.Name
+		row.Host = c.Host
+		row.Count++
+		nameHostCounts[key] = row
+		domainCounts[c.Host]++
+	}
+	nameHosts := make([]restoreCountRow, 0, len(nameHostCounts))
+	for _, row := range nameHostCounts {
+		nameHosts = append(nameHosts, row)
+	}
+	sort.Slice(nameHosts, func(i, j int) bool {
+		if nameHosts[i].Count != nameHosts[j].Count {
+			return nameHosts[i].Count > nameHosts[j].Count
+		}
+		if nameHosts[i].Host != nameHosts[j].Host {
+			return nameHosts[i].Host < nameHosts[j].Host
+		}
+		return nameHosts[i].Name < nameHosts[j].Name
+	})
+
+	domains := make([]restoreCountRow, 0, len(domainCounts))
+	for domain, count := range domainCounts {
+		domains = append(domains, restoreCountRow{Domain: domain, Count: count})
+	}
+	sort.Slice(domains, func(i, j int) bool {
+		if domains[i].Count != domains[j].Count {
+			return domains[i].Count > domains[j].Count
+		}
+		return domains[i].Domain < domains[j].Domain
+	})
+	return nameHosts, domains
+}
+
+func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cookie.Cookie, skippedExpired int, jsonOut bool) error {
+	nameHosts, domains := restoreSummary(cookies)
+	if jsonOut {
+		payload := map[string]any{
+			"dry_run":         true,
+			"sidecar":         sidecarPath,
+			"target":          target.String(),
+			"total":           len(cookies),
+			"skipped_expired": skippedExpired,
+			"name_hosts":      nameHosts,
+			"domains":         domains,
+		}
+		b, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+
+	fmt.Printf("sidecar: %s\nrestore target: %s\ncookies: %d\n", sidecarPath, target.String(), len(cookies))
+	fmt.Printf("skipped expired: %d\n", skippedExpired)
+	fmt.Println("name@host:")
+	if len(nameHosts) == 0 {
+		fmt.Println("  none")
+	} else {
+		for _, row := range nameHosts {
+			fmt.Printf("  %5d  %s@%s\n", row.Count, row.Name, row.Host)
+		}
+	}
+	fmt.Println("domains:")
+	if len(domains) == 0 {
+		fmt.Println("  none")
+	} else {
+		for _, row := range domains {
+			fmt.Printf("  %5d  %s\n", row.Count, row.Domain)
+		}
+	}
+	return nil
+}
+
+func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie) (int, error) {
+	d := cookie.Diff{Upserts: cookies}
+	switch target.kind {
+	case restoreTargetNetscape:
+		ns, err := surface.NewNetscape(target.path)
+		if err != nil {
+			return 0, err
+		}
+		return 0, ns.Apply(d)
+	case restoreTargetChromium:
+		cs, closeFn, err := newChromeSurface(target.chromeCookiePath())
+		if err != nil {
+			return 0, err
+		}
+		defer func() {
+			if err := closeFn(); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: close failed:", err)
+			}
+		}()
+		return 0, cs.Apply(d)
+	case restoreTargetCDP:
+		return (&cdpvault.CDP{BaseURL: target.path}).WriteCookies(ctx, cookies)
+	default:
+		return 0, fmt.Errorf("unsupported restore target %q", target.kind)
+	}
+}
+
+type restoreVerifyRow struct {
+	Domain   string   `json:"domain"`
+	Expected int      `json:"expected"`
+	Present  int      `json:"present"`
+	Names    []string `json:"names"`
+}
+
+func restoreVerifyRows(expected, present []cookie.Cookie) ([]restoreVerifyRow, int) {
+	presentKeys := make(map[string]struct{}, len(present))
+	for _, c := range present {
+		presentKeys[cookie.Key(c)] = struct{}{}
+	}
+	byDomain := map[string]*restoreVerifyRow{}
+	nameSets := map[string]map[string]struct{}{}
+	missing := 0
+	for _, c := range expected {
+		row := byDomain[c.Host]
+		if row == nil {
+			row = &restoreVerifyRow{Domain: c.Host}
+			byDomain[c.Host] = row
+			nameSets[c.Host] = map[string]struct{}{}
+		}
+		row.Expected++
+		nameSets[c.Host][c.Name] = struct{}{}
+		if _, ok := presentKeys[cookie.Key(c)]; ok {
+			row.Present++
+		} else {
+			missing++
+		}
+	}
+	rows := make([]restoreVerifyRow, 0, len(byDomain))
+	for domain, row := range byDomain {
+		for name := range nameSets[domain] {
+			row.Names = append(row.Names, name)
+		}
+		sort.Strings(row.Names)
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Expected != rows[j].Expected {
+			return rows[i].Expected > rows[j].Expected
+		}
+		return rows[i].Domain < rows[j].Domain
+	})
+	return rows, missing
+}
+
+func printRestoreVerify(rows []restoreVerifyRow) {
+	fmt.Println("verify:")
+	if len(rows) == 0 {
+		fmt.Println("  none")
+		return
+	}
+	for _, row := range rows {
+		fmt.Printf("  %s expected %d present %d names %s\n",
+			row.Domain, row.Expected, row.Present, strings.Join(row.Names, ","))
+	}
+}
+
+func cmdRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	sidecarPath := fs.String("sidecar", "", "path to a sidecar.db store")
+	cfgPath := fs.String("config", "", "sink config path used to derive the sidecar path")
+	to := fs.String("to", "", "restore target: netscape=<path>, chromium=<profile-dir>, or cdp=<loopback-http-url>")
+	domainList := fs.String("domains", "", "comma-separated domain suffixes to restore")
+	dryRun := fs.Bool("dry-run", false, "summarize the restore without writing the target")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output for --dry-run")
+	verify := fs.Bool("verify", false, "after CDP restore, read cookies back and report expected vs present counts")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if (*sidecarPath == "") == (*cfgPath == "") {
+		return fmt.Errorf("pass exactly one of -sidecar or -config")
+	}
+	if *to == "" {
+		return fmt.Errorf("-to is required")
+	}
+	target, err := parseRestoreTarget(*to)
+	if err != nil {
+		return err
+	}
+	if *verify && *dryRun {
+		return fmt.Errorf("-verify is not supported with -dry-run")
+	}
+	if *verify && target.kind != restoreTargetCDP {
+		return fmt.Errorf("-verify is only supported with cdp restore targets")
+	}
+	domains, err := parseRestoreDomains(*domainList)
+	if err != nil {
+		return err
+	}
+	store := *sidecarPath
+	var configuredDomains policy.Domain
+	if *cfgPath != "" {
+		c, err := loadConfigWarn(*cfgPath)
+		if err != nil {
+			return err
+		}
+		store = sidecarDBPath(c)
+		configuredDomains = c.Domains
+	}
+
+	sc, err := surface.OpenSidecarReadOnly(store)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "no sidecar store at", store)
+			os.Exit(2)
+		}
+		return err
+	}
+	defer sc.Close()
+	cookies, err := sc.List()
+	if err != nil {
+		return err
+	}
+	cookies = narrowRestoreCookies(cookies, domains, configuredDomains)
+	cookies, skippedExpired := skipExpiredRestoreCookies(cookies, time.Now())
+	if *dryRun {
+		return printRestoreDryRun(store, target, cookies, skippedExpired, *jsonOut)
+	}
+	if *jsonOut {
+		return fmt.Errorf("-json is only supported with -dry-run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	applySkipped, err := restoreApply(ctx, target, cookies)
+	if err != nil {
+		return err
+	}
+	skippedExpired += applySkipped
+	fmt.Printf("restored %d cookie(s) from %s to %s\n", len(cookies), store, target.String())
+	fmt.Printf("skipped expired: %d\n", skippedExpired)
+	if *verify {
+		present, err := (&cdpvault.CDP{BaseURL: target.path}).ReadCookies(ctx)
+		if err != nil {
+			return fmt.Errorf("CDP verify readback: %w", err)
+		}
+		rows, missing := restoreVerifyRows(cookies, present)
+		printRestoreVerify(rows)
+		if missing > 0 {
+			return fmt.Errorf("CDP verify failed: %d expected cookie(s) absent", missing)
 		}
 	}
 	return nil
