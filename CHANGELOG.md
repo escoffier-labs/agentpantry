@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Source configs can set `peer = "none"` for local script-driven deployments:
+  `doctor` skips peer reachability and reports the local topology as OK, while
+  the long-running source loop rejects the sentinel and sink configs still fail
+  validation.
 - Source-side KeePass secret reader: `keepass_path`/`keepass_keyfile`/`keepass_pass_file`/`keepass_tag`
   read tagged vault entries as named secrets, replacing the need for a plaintext `secrets_dir`.
   `agentpantry doctor` validates the unlock and reports the tagged entry count.

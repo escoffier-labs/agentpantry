@@ -18,7 +18,7 @@ func buildBin(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin, ".")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build failed: %v\n%s", err, out)
@@ -109,6 +109,67 @@ func TestDoctorJSONConfigured(t *testing.T) {
 	}
 	if payload["fail_count"] != float64(1) {
 		t.Fatalf("want one fail for missing key, got %v", payload["fail_count"])
+	}
+}
+
+func TestDoctorPeerNonePassesWithoutListener(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	key := filepath.Join(dir, "psk.key")
+	if code, _, stderr := runCmd(t, bin, "keygen", "--out", key); code != 0 {
+		t.Fatalf("keygen failed: %s", stderr)
+	}
+	body := "role = \"source\"\npeer = \"none\"\nkey_path = " + tomlQuote(key) + "\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runDoctor(t, bin, "--config", cfg, "--timeout", "1ms")
+	if code != 0 {
+		t.Fatalf("peerless source doctor must pass, exit %d: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "[OK  ] peer: local deployment, no network peer configured") {
+		t.Fatalf("doctor must report the peerless OK row, got:\n%s", stdout)
+	}
+}
+
+func TestDoctorRealUnreachablePeerStillFails(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	key := filepath.Join(dir, "psk.key")
+	if code, _, stderr := runCmd(t, bin, "keygen", "--out", key); code != 0 {
+		t.Fatalf("keygen failed: %s", stderr)
+	}
+	body := "role = \"source\"\npeer = \"127.0.0.1:1\"\nkey_path = " + tomlQuote(key) + "\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runDoctor(t, bin, "--config", cfg, "--timeout", "10ms")
+	if code == 0 {
+		t.Fatal("unreachable real peer must fail doctor")
+	}
+	if !strings.Contains(stdout, "[FAIL] peer: unreachable:") || !strings.Contains(stderr, "doctor found problems") {
+		t.Fatalf("doctor must keep failing unreachable real peers, stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestSourcePeerNoneExitsWithClearError(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "config.toml")
+	body := "role = \"source\"\npeer = \"none\"\nkey_path = " + tomlQuote(filepath.Join(dir, "missing.key")) + "\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runCmd(t, bin, "source", "--config", cfg)
+	if code == 0 {
+		t.Fatal("source must refuse peerless configs")
+	}
+	for _, want := range []string{"peerless config", "external-scheduler/doctor use", "cannot run the sync loop", "explicit per-profile -config pairs"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("source error must contain %q, got: %s", want, stderr)
+		}
 	}
 }
 

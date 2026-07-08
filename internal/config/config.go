@@ -11,6 +11,10 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/privfile"
 )
 
+// PeerNone is the case-sensitive source-only sentinel for local, externally
+// scheduled deployments that do not use a network peer.
+const PeerNone = "none"
+
 // BrowserRef names a browser profile and its cookie store path.
 type BrowserRef struct {
 	Kind       string `toml:"kind"` // "chromium" | "firefox" | "cdp"
@@ -47,6 +51,12 @@ type Config struct {
 	ResyncSeconds   int           `toml:"resync_seconds"`   // source: periodic resync (0 = off)
 	WarnExpiryDays  int           `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
 	SidecarPath     string        `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
+}
+
+// Peerless reports whether the config declares the source-only local deployment
+// sentinel. Other roles must still treat "none" as an invalid peer value.
+func (c Config) Peerless() bool {
+	return c.Role == "source" && c.Peer == PeerNone
 }
 
 // Dir returns the config directory, honoring XDG_CONFIG_HOME.

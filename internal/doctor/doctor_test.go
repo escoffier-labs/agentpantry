@@ -112,6 +112,26 @@ func TestSourceMissingCookieStoreFails(t *testing.T) {
 	}
 }
 
+func TestSourcePeerNoneConfigPasses(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{Role: "source", Peer: "none", KeyPath: key}
+	ck := find(Run(c), "config")
+	if ck.Status != OK {
+		t.Fatalf("source peer none must be valid, got %+v", ck)
+	}
+}
+
+func TestSinkPeerNoneConfigFails(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{Role: "sink", Peer: "none", KeyPath: key, Surfaces: []string{"sidecar"}}
+	ck := find(Run(c), "config")
+	if ck.Status != Fail {
+		t.Fatalf("sink peer none must fail validation, got %+v", ck)
+	}
+}
+
 func TestHasFailHelper(t *testing.T) {
 	if HasFail([]Check{{Status: OK}, {Status: Warn}}) {
 		t.Fatal("no Fail present")

@@ -137,7 +137,8 @@ background service, use `agentpantry install-service`, which writes a systemd
 user unit and prints the commands to enable it.
 
 The `examples/` directory has copyable source and sink configs for Chromium,
-Firefox, CDP, Hermes Agent, GitHub CLI, OpenClaw, and SSH stdio transport.
+Firefox, CDP, local script-driven captures, Hermes Agent, GitHub CLI, OpenClaw,
+and SSH stdio transport.
 
 ## How it works
 
@@ -230,7 +231,10 @@ source it confirms each browser cookie store and the secrets directory are
 readable, and on a sink it confirms the bind address is loopback (warning if
 not), and that each configured surface is satisfiable. On a source it also
 dials the peer to confirm reachability; pass `--no-net` to skip that or
-`--timeout` to change the dial timeout. Each check prints `OK`, `WARN`, or
+`--timeout` to change the dial timeout. A source config may set
+`peer = "none"` for a local script-driven deployment with no long-running
+network peer; doctor reports that as an `OK` peer row and skips the dial.
+Sink configs cannot use that sentinel. Each check prints `OK`, `WARN`, or
 `FAIL`. doctor exits 0 when nothing failed and exits 1 when any check is a
 `FAIL` (warnings do not fail the run), so it can gate a startup script. Pass
 `--json` for a machine-readable payload with check rows, fail/warn counts, and a
@@ -262,6 +266,13 @@ read them from stdin, then connect the two over SSH:
 In `--stdio` mode the source never dials the peer and the sink never binds a
 port, so the encrypted link exists only inside the SSH channel. The same key
 and framing apply.
+
+For same-box captures driven by an external scheduler, use separate per-profile
+source and sink config files and pass each path with `-config` from the script.
+Set `peer = "none"` only on those source configs so `agentpantry doctor` can
+validate the local setup without requiring a listener. Do not run
+`agentpantry source` with that config; the scheduler is responsible for driving
+each explicit capture pair.
 
 ## Hardening
 
