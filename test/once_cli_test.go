@@ -169,30 +169,35 @@ func waitForFile(t *testing.T, path string) string {
 	return ""
 }
 
-func waitForSidecarCookie(t *testing.T, path, host string) string {
-	t.Helper()
+// pollSidecarCookie waits for a cookie row to appear, returning (value, true)
+// once present or ("", false) after the deadline. Read-only DSN matches
+// surface.OpenSidecarReadOnly: a plain read-write sql.Open takes a lock that
+// clashes on Windows with the live sink still holding the file open.
+func pollSidecarCookie(path, host string) (string, bool) {
 	deadline := time.Now().Add(15 * time.Second)
-	var lastErr error
-	// Read-only DSN, matching surface.OpenSidecarReadOnly: a plain read-write
-	// sql.Open takes a lock that clashes on Windows with the live sink process
-	// still holding the file open, so the row reads as absent.
 	dsn := filepath.ToSlash(path) + "?mode=ro"
 	for time.Now().Before(deadline) {
 		db, err := sql.Open("sqlite", dsn)
 		if err == nil {
 			var got string
-			lastErr = db.QueryRow(`SELECT value FROM cookies WHERE host=?`, host).Scan(&got)
+			scanErr := db.QueryRow(`SELECT value FROM cookies WHERE host=?`, host).Scan(&got)
 			_ = db.Close()
-			if lastErr == nil {
-				return got
+			if scanErr == nil {
+				return got, true
 			}
-		} else {
-			lastErr = err
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("cookie %s missing from sidecar: %v", host, lastErr)
-	return ""
+	return "", false
+}
+
+func waitForSidecarCookie(t *testing.T, path, host string) string {
+	t.Helper()
+	got, ok := pollSidecarCookie(path, host)
+	if !ok {
+		t.Fatalf("cookie %s missing from sidecar", host)
+	}
+	return got
 }
 
 func TestSourceOnceSyncsAndExits(t *testing.T) {
@@ -469,28 +474,49 @@ deny = ["blocked.example"]
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var out bytes.Buffer
+	// Source output goes to a file so it can be read race-free while the
+	// process is still running (go test -race forbids reading a live buffer).
+	outPath := filepath.Join(dir, "source.out")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outFile.Close()
+	sourceOut := func() string {
+		data, _ := os.ReadFile(outPath)
+		return string(data)
+	}
 	cmd := exec.CommandContext(ctx, bin, "source", "--config", sourceCfg)
-	cmd.Stdout = &out
-	cmd.Stderr = &out
+	cmd.Stdout = outFile
+	cmd.Stderr = outFile
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	if got := waitForSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
+	got, ok := pollSidecarCookie(sidecarPath, "example.com")
+	if !ok {
+		// Distinguish "source died before syncing" from "sync never landed".
+		select {
+		case err := <-done:
+			t.Fatalf("source exited before initial sync completed: %v\n%s", err, sourceOut())
+		default:
+			t.Fatalf("initial sync cookie never landed; source still running\n%s", sourceOut())
+		}
+	}
+	if got != "example-session" {
 		t.Fatalf("example cookie mismatch: %q", got)
 	}
 	select {
 	case err := <-done:
-		t.Fatalf("source exited without --once after initial sync: %v\n%s", err, out.String())
+		t.Fatalf("source exited without --once after initial sync: %v\n%s", err, sourceOut())
 	case <-time.After(500 * time.Millisecond):
 	}
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Fatalf("source did not stop after cancellation\n%s", out.String())
+		t.Fatalf("source did not stop after cancellation\n%s", sourceOut())
 	}
 }
