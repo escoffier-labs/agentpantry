@@ -127,7 +127,11 @@ asks Chrome for the cookies over the DevTools Protocol, so Chrome performs its o
 authorized decryption. The debugging port grants full browser control, so keep it
 on loopback and treat it as sensitive. A `cdp` reader syncs at startup, on
 other browsers' file events, and on the `resync_seconds` poll, which defaults
-to 60 seconds for a CDP source when unset.
+to 60 seconds for a CDP source when unset. For an operator-export run that
+should refresh the sink once and return control to a wrapper, run
+`agentpantry source --once`: it reads the CDP source, applies the same policies,
+updates source state, closes the connection, and exits 0 after a successful
+initial sync.
 
 Both ends must hold the same pre-shared key. Generate it once on the sink with
 `agentpantry keygen` and copy the file to the source. Run `agentpantry status`
@@ -273,6 +277,15 @@ Set `peer = "none"` only on those source configs so `agentpantry doctor` can
 validate the local setup without requiring a listener. Do not run
 `agentpantry source` with that config; the scheduler is responsible for driving
 each explicit capture pair.
+For a one-shot stdio export, add `--once` on the source side:
+
+    agentpantry source --once --stdio | ssh sink.example agentpantry sink --stdio
+
+`--once` is useful in scripts because the source exits on its own after the
+initial sync succeeds. Do not wrap a normal long-running `agentpantry source`
+in `timeout` just to force it to stop: a healthy run killed by `timeout` exits
+as 124, which can look like an agentpantry failure. Use `source --once` when
+the expected result is "sync once, then exit."
 
 ## Hardening
 
@@ -315,7 +328,10 @@ sink restarts or the link drops, and resends its full current state on each
 reconnect. Set `resync_seconds` to have the source periodically re-sync on a
 timer in addition to filesystem events (covers any missed event); a `kind=cdp`
 source, which has no file to watch, defaults to a 60s poll when `resync_seconds`
-is unset.
+is unset. `agentpantry source --once` uses the same initial connect, salt
+handshake, read, diff, send, and state-update path, then closes the stream and
+exits. It does not start the filesystem watcher, reconnect loop, or resync
+timer. Dial, handshake, or initial sync failures return a nonzero exit status.
 
 ## Surfaces
 
