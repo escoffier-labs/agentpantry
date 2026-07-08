@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
       # scripts/verify is the single local gate (build, vet, test); CI adds -race on top.
       - run: ./scripts/verify
       - run: go test -race ./...
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
       # scripts/verify is the single local gate (build, vet, test); CI adds -race on top.
       - run: ./scripts/verify
         shell: bash
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
       - uses: golangci/golangci-lint-action@v9
         with:
           version: latest
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
 
   security:
@@ -64,5 +64,5 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
       - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.27.1 ./...
