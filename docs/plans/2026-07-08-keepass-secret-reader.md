@@ -380,7 +380,10 @@ func TestReadSecretsPasswordAndKeyfile(t *testing.T) {
 }
 
 func TestReadSecretsKeyfileRequired(t *testing.T) {
-	r := &Reader{Path: "whatever.kdbx", Tag: "agentpantry"}
+	// A real vault: ReadSecrets stats Path before building credentials, so a
+	// missing vault would mask the keyfile error this test is about.
+	vault, _ := writeTestVault(t, t.TempDir(), "", []testEntry{{"A", "v", "agentpantry"}})
+	r := &Reader{Path: vault, Tag: "agentpantry"}
 	if _, err := r.ReadSecrets(context.Background()); err == nil || !strings.Contains(err.Error(), "keepass_keyfile") {
 		t.Fatalf("missing keyfile must be a clear config error, got %v", err)
 	}
