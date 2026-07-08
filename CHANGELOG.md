@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Source-side KeePass secret reader: `keepass_path`/`keepass_keyfile`/`keepass_pass_file`/`keepass_tag`
+  read tagged vault entries as named secrets, replacing the need for a plaintext `secrets_dir`.
+  `agentpantry doctor` validates the unlock and reports the tagged entry count.
+
 ## v0.5.0 - 2026-06-27
 
 ### Added

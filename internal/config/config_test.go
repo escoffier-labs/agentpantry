@@ -305,3 +305,37 @@ func TestSaveRefusesSymlink(t *testing.T) {
 		t.Fatalf("symlink target was overwritten: %q", body)
 	}
 }
+
+func TestKeepassRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	in := Default("source")
+	in.KeepassPath = "/home/u/vault.kdbx"
+	in.KeepassKeyfile = "/home/u/.config/agentpantry/vault.key"
+	in.KeepassPassFile = "/home/u/.config/agentpantry/vault.pass"
+	in.KeepassTag = "prod"
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, unknown, err := LoadChecked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("keepass_* must be known keys, got unknown %v", unknown)
+	}
+	if out.KeepassPath != in.KeepassPath || out.KeepassKeyfile != in.KeepassKeyfile ||
+		out.KeepassPassFile != in.KeepassPassFile || out.KeepassTag != in.KeepassTag {
+		t.Fatalf("keepass fields lost: %+v", out)
+	}
+}
+
+func TestKeepassTagOrDefault(t *testing.T) {
+	var c Config
+	if got := c.KeepassTagOrDefault(); got != "agentpantry" {
+		t.Fatalf("empty tag must default to agentpantry, got %q", got)
+	}
+	c.KeepassTag = "prod"
+	if got := c.KeepassTagOrDefault(); got != "prod" {
+		t.Fatalf("explicit tag must win, got %q", got)
+	}
+}

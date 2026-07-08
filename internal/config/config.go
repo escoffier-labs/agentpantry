@@ -31,18 +31,22 @@ type AdapterRef struct {
 
 // Config is the on-disk configuration for either role.
 type Config struct {
-	Role           string        `toml:"role"` // "source" | "sink"
-	Peer           string        `toml:"peer"` // dial target (source) or bind addr (sink)
-	KeyPath        string        `toml:"key_path"`
-	Surfaces       []string      `toml:"surfaces"`
-	Browsers       []BrowserRef  `toml:"browsers"`
-	SecretsDir     string        `toml:"secrets_dir"` // source: read from; sink: write to
-	Adapters       []AdapterRef  `toml:"adapters"`
-	Domains        policy.Domain `toml:"domains"`
-	SecretNames    policy.Names  `toml:"secret_names"`
-	ResyncSeconds  int           `toml:"resync_seconds"`   // source: periodic resync (0 = off)
-	WarnExpiryDays int           `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
-	SidecarPath    string        `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
+	Role            string        `toml:"role"` // "source" | "sink"
+	Peer            string        `toml:"peer"` // dial target (source) or bind addr (sink)
+	KeyPath         string        `toml:"key_path"`
+	Surfaces        []string      `toml:"surfaces"`
+	Browsers        []BrowserRef  `toml:"browsers"`
+	SecretsDir      string        `toml:"secrets_dir"`       // source: read from; sink: write to
+	KeepassPath     string        `toml:"keepass_path"`      // source: read tagged KeePass entries as named secrets
+	KeepassKeyfile  string        `toml:"keepass_keyfile"`   // key file unlocking the vault (0600)
+	KeepassPassFile string        `toml:"keepass_pass_file"` // optional: file holding the DB password (0600)
+	KeepassTag      string        `toml:"keepass_tag"`       // export only entries with this tag (default "agentpantry")
+	Adapters        []AdapterRef  `toml:"adapters"`
+	Domains         policy.Domain `toml:"domains"`
+	SecretNames     policy.Names  `toml:"secret_names"`
+	ResyncSeconds   int           `toml:"resync_seconds"`   // source: periodic resync (0 = off)
+	WarnExpiryDays  int           `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
+	SidecarPath     string        `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
 }
 
 // Dir returns the config directory, honoring XDG_CONFIG_HOME.
@@ -88,6 +92,15 @@ func LoadChecked(path string) (Config, []string, error) {
 	return c, unknown, nil
 }
 
+// KeepassTagOrDefault returns the tag gating which vault entries sync,
+// defaulting to "agentpantry" so an operator opts entries in explicitly.
+func (c Config) KeepassTagOrDefault() string {
+	if c.KeepassTag != "" {
+		return c.KeepassTag
+	}
+	return "agentpantry"
+}
+
 // WriteTemplate writes a commented starter config for role. The uncommented
 // values parse back to Default(role); the comments walk a new user through the
 // fields the quickstart tells them to fill in.
@@ -110,6 +123,16 @@ key_path = %q
 
 # Optional: mirror a directory of named secret files (one file = one secret).
 #secrets_dir = "/home/you/.config/agentpantry/source-secrets"
+
+# Optional: read named secrets from an encrypted KeePass vault instead of (or
+# alongside) secrets_dir. Only entries tagged keepass_tag are exported
+# (entry Title -> secret name, Password -> value); untagging an entry
+# propagates as a delete on the sink. keepass_keyfile must be 0600.
+# keepass_pass_file is only needed when the vault also has a master password.
+#keepass_path = "/home/you/vault.kdbx"
+#keepass_keyfile = "/home/you/.config/agentpantry/vault.key"
+#keepass_pass_file = "/home/you/.config/agentpantry/vault.pass"
+#keepass_tag = "agentpantry"
 
 # Optional: periodic full re-sync in seconds, in addition to file events.
 #resync_seconds = 300

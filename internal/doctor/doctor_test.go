@@ -9,6 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tobischo/gokeepasslib/v3"
+	w "github.com/tobischo/gokeepasslib/v3/wrappers"
+
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 )
@@ -296,5 +299,65 @@ func TestCDPBrowserNonLoopbackFails(t *testing.T) {
 	}
 	if find(Run(c), "cdp:p").Status != Fail {
 		t.Fatal("non-loopback cdp endpoint must Fail")
+	}
+}
+
+// writeDoctorVault mirrors internal/keepass's test helper (unexported by
+// design): a KDBX4 vault with one agentpantry-tagged entry, key-file unlock.
+func writeDoctorVault(t *testing.T, dir string) (vaultPath, keyPath string) {
+	t.Helper()
+	keyPath = filepath.Join(dir, "vault.key")
+	if err := os.WriteFile(keyPath, []byte("doctor-key-material"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := gokeepasslib.NewKeyDataCredentials([]byte("doctor-key-material"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := gokeepasslib.NewEntry()
+	e.Values = append(e.Values,
+		gokeepasslib.ValueData{Key: "Title", Value: gokeepasslib.V{Content: "API_KEY"}},
+		gokeepasslib.ValueData{Key: "Password", Value: gokeepasslib.V{Content: "v", Protected: w.NewBoolWrapper(true)}},
+	)
+	e.Tags = "agentpantry"
+	root := gokeepasslib.NewGroup()
+	root.Name = "Root"
+	root.Entries = append(root.Entries, e)
+	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion4())
+	db.Credentials = creds
+	db.Content.Root = &gokeepasslib.RootData{Groups: []gokeepasslib.Group{root}}
+	if err := db.LockProtectedEntries(); err != nil {
+		t.Fatal(err)
+	}
+	vaultPath = filepath.Join(dir, "vault.kdbx")
+	f, err := os.Create(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := gokeepasslib.NewEncoder(f).Encode(db); err != nil {
+		t.Fatal(err)
+	}
+	return vaultPath, keyPath
+}
+
+func TestKeepassVaultMissingFails(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{Role: "source", KeyPath: key, KeepassPath: filepath.Join(dir, "nope.kdbx")}
+	ck := find(Run(c), "keepass")
+	if ck.Status != Fail {
+		t.Fatalf("missing vault must Fail, got %+v", ck)
+	}
+}
+
+func TestKeepassHealthyReportsCount(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	vault, vaultKey := writeDoctorVault(t, dir)
+	c := config.Config{Role: "source", KeyPath: key, KeepassPath: vault, KeepassKeyfile: vaultKey}
+	ck := find(Run(c), "keepass")
+	if ck.Status != OK || !strings.Contains(ck.Detail, "1 secret") {
+		t.Fatalf("healthy vault must report the tagged count, got %+v", ck)
 	}
 }

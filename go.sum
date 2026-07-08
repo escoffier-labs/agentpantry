@@ -20,6 +20,10 @@ github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOF
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
+github.com/tobischo/argon2 v0.1.0 h1:mwAx/9DK/4rP0xzNifb/XMAf43dU3eG1B3aeF88qu4Y=
+github.com/tobischo/argon2 v0.1.0/go.mod h1:4NLmLFwhWPbT66nRZNgcktV/mibJ6fESoeEp43h9GRw=
+github.com/tobischo/gokeepasslib/v3 v3.6.2 h1:SJzzllmNe7iZLudLJ3Lzdm3pDb++AJqZlmqG+SR8bVc=
+github.com/tobischo/gokeepasslib/v3 v3.6.2/go.mod h1:ga7HFqG0TZSLNao/QOnV2+yngkrf5186saPxSQ1Xp7o=
 golang.org/x/crypto v0.53.0 h1:QZ4Muo8THX6CizN2vPPd5fBGHyogrdK9fG4wLPFUsto=
 golang.org/x/crypto v0.53.0/go.mod h1:DNLU434OwVakk9PzuwV8w62mAJpRJL3vsgcfp4Qnsio=
 golang.org/x/mod v0.36.0 h1:JJjpVx6myfUsUdAzZuOSTTmRE0PfZeNWzzvKrP7amb4=

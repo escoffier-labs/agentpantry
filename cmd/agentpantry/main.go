@@ -22,6 +22,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/doctor"
 	"github.com/escoffier-labs/agentpantry/internal/ffvault"
+	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
@@ -307,6 +308,17 @@ func cmdSource(args []string) error {
 		secretReaders = append(secretReaders, &secretsrc.DirReader{Dir: c.SecretsDir})
 		if _, statErr := os.Stat(c.SecretsDir); statErr == nil {
 			paths = append(paths, c.SecretsDir)
+		}
+	}
+	if c.KeepassPath != "" {
+		secretReaders = append(secretReaders, &keepass.Reader{
+			Path:     c.KeepassPath,
+			Keyfile:  c.KeepassKeyfile,
+			PassFile: c.KeepassPassFile,
+			Tag:      c.KeepassTagOrDefault(),
+		})
+		if _, statErr := os.Stat(c.KeepassPath); statErr == nil {
+			paths = append(paths, c.KeepassPath) // a vault save triggers a resync
 		}
 	}
 
