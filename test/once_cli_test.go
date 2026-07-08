@@ -105,9 +105,10 @@ func writeFirefoxCookieDB(t *testing.T, path string) {
 }
 
 type runningProcess struct {
-	cancel context.CancelFunc
-	done   chan error
-	out    *bytes.Buffer
+	cancel   context.CancelFunc
+	done     chan error
+	out      *bytes.Buffer
+	stopOnce sync.Once
 }
 
 func startSinkProcess(t *testing.T, bin, cfgPath, addr string) *runningProcess {
@@ -143,14 +144,19 @@ func startSinkProcess(t *testing.T, bin, cfgPath, addr string) *runningProcess {
 	return nil
 }
 
+// stop cancels the process and waits for it to exit. Idempotent: safe to call
+// explicitly (to flush and release a sink's sidecar file before reading it)
+// and again via defer.
 func (rp *runningProcess) stop(t *testing.T) {
 	t.Helper()
-	rp.cancel()
-	select {
-	case <-rp.done:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("process did not exit after cancellation\n%s", rp.out.String())
-	}
+	rp.stopOnce.Do(func() {
+		rp.cancel()
+		select {
+		case <-rp.done:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("process did not exit after cancellation\n%s", rp.out.String())
+		}
+	})
 }
 
 func waitForFile(t *testing.T, path string) string {
@@ -169,35 +175,38 @@ func waitForFile(t *testing.T, path string) string {
 	return ""
 }
 
-// pollSidecarCookie waits for a cookie row to appear, returning (value, true)
-// once present or ("", false) after the deadline. Read-only DSN matches
-// surface.OpenSidecarReadOnly: a plain read-write sql.Open takes a lock that
-// clashes on Windows with the live sink still holding the file open.
-func pollSidecarCookie(path, host string) (string, bool) {
-	deadline := time.Now().Add(15 * time.Second)
-	dsn := filepath.ToSlash(path) + "?mode=ro"
-	for time.Now().Before(deadline) {
-		db, err := sql.Open("sqlite", dsn)
-		if err == nil {
-			var got string
-			scanErr := db.QueryRow(`SELECT value FROM cookies WHERE host=?`, host).Scan(&got)
-			_ = db.Close()
-			if scanErr == nil {
-				return got, true
-			}
-		}
-		time.Sleep(25 * time.Millisecond)
+// openSidecarRO opens the sidecar read-only, matching surface.OpenSidecarReadOnly.
+// Call only after the writing sink process has stopped: a cross-process read
+// while the sink still holds the file open is unreliable on Windows.
+func openSidecarRO(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.ToSlash(path)+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open sidecar: %v", err)
 	}
-	return "", false
+	return db
 }
 
-func waitForSidecarCookie(t *testing.T, path, host string) string {
+func readSidecarCookie(t *testing.T, path, host string) string {
 	t.Helper()
-	got, ok := pollSidecarCookie(path, host)
-	if !ok {
-		t.Fatalf("cookie %s missing from sidecar", host)
+	db := openSidecarRO(t, path)
+	defer db.Close()
+	var got string
+	if err := db.QueryRow(`SELECT value FROM cookies WHERE host=?`, host).Scan(&got); err != nil {
+		t.Fatalf("cookie %s missing from sidecar: %v", host, err)
 	}
 	return got
+}
+
+func countSidecarCookies(t *testing.T, path, host string) int {
+	t.Helper()
+	db := openSidecarRO(t, path)
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM cookies WHERE host=?`, host).Scan(&n); err != nil {
+		t.Fatalf("count cookies for %s: %v", host, err)
+	}
+	return n
 }
 
 func TestSourceOnceSyncsAndExits(t *testing.T) {
@@ -266,26 +275,23 @@ deny = ["drop_token"]
 	if ctx.Err() != nil {
 		t.Fatalf("source --once did not exit before timeout\n%s", out)
 	}
-	if got := waitForSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
-		t.Fatalf("example cookie mismatch: %q", got)
-	}
-	db, err := sql.Open("sqlite", filepath.ToSlash(sidecarPath)+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var denied int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM cookies WHERE host=?`, "blocked.example").Scan(&denied); err != nil {
-		t.Fatal(err)
-	}
-	_ = db.Close()
-	if denied != 0 {
-		t.Fatal("denied domain synced to sidecar")
-	}
+	// The synced secret file proves the sink applied the frame. Then stop the
+	// sink so its sidecar handle is flushed and released before we read it: a
+	// cross-process sqlite read while the sink holds the file open is
+	// unreliable on Windows.
 	if got := waitForFile(t, filepath.Join(sinkSecrets, "api_token")); got != "secret-live" {
 		t.Fatalf("allowed secret did not sync: %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(sinkSecrets, "drop_token")); !os.IsNotExist(err) {
 		t.Fatalf("denied secret synced: %v", err)
+	}
+	sinkProc.stop(t)
+
+	if got := readSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
+		t.Fatalf("example cookie mismatch: %q", got)
+	}
+	if n := countSidecarCookies(t, sidecarPath, "blocked.example"); n != 0 {
+		t.Fatal("denied domain synced to sidecar")
 	}
 	output := string(out)
 	if !strings.Contains(output, "warning: cookie sid@example.com expires") {
@@ -380,7 +386,8 @@ deny = ["blocked.example"]
 	if ctx.Err() != nil {
 		t.Fatalf("stdio --once pipeline timed out\nsource:\n%s\nsink:\n%s", sourceOut.String(), sinkOut.String())
 	}
-	if got := waitForSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
+	// Both processes have exited, so the sidecar handle is released.
+	if got := readSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
 		t.Fatalf("example cookie mismatch after stdio --once: %q", got)
 	}
 }
@@ -444,6 +451,14 @@ func TestSourceWithoutOnceKeepsRunningAfterInitialSync(t *testing.T) {
 
 	ffPath := filepath.Join(dir, "cookies.sqlite")
 	writeFirefoxCookieDB(t, ffPath)
+	srcSecrets := filepath.Join(dir, "source-secrets")
+	sinkSecrets := filepath.Join(dir, "sink-secrets")
+	if err := os.MkdirAll(srcSecrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcSecrets, "api_token"), []byte("secret-live"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sidecarPath := filepath.Join(dir, "sidecar.db")
 	sourceCfg := filepath.Join(dir, "source.toml")
 	sinkCfg := filepath.Join(dir, "sink.toml")
@@ -451,13 +466,15 @@ func TestSourceWithoutOnceKeepsRunningAfterInitialSync(t *testing.T) {
 role = "sink"
 peer = %q
 key_path = %q
-surfaces = ["sidecar"]
+surfaces = ["sidecar", "secrets"]
 sidecar_path = %q
-`, addr, keyPath, sidecarPath))
+secrets_dir = %q
+`, addr, keyPath, sidecarPath, sinkSecrets))
 	writeConfig(t, sourceCfg, fmt.Sprintf(`
 role = "source"
 peer = %q
 key_path = %q
+secrets_dir = %q
 
 [[browsers]]
 kind = "firefox"
@@ -467,7 +484,7 @@ cookie_path = %q
 [domains]
 allow = ["example.com"]
 deny = ["blocked.example"]
-`, addr, keyPath, ffPath))
+`, addr, keyPath, srcSecrets, ffPath))
 
 	sinkProc := startSinkProcess(t, bin, sinkCfg, addr)
 	defer sinkProc.stop(t)
@@ -495,24 +512,28 @@ deny = ["blocked.example"]
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	got, ok := pollSidecarCookie(sidecarPath, "example.com")
-	if !ok {
-		// Distinguish "source died before syncing" from "sync never landed".
-		select {
-		case err := <-done:
-			t.Fatalf("source exited before initial sync completed: %v\n%s", err, sourceOut())
-		default:
-			t.Fatalf("initial sync cookie never landed; source still running\n%s", sourceOut())
-		}
+	// Wait for the secret file, which the sink writes as a plain file when it
+	// applies the source's initial frame: portable proof the initial sync
+	// landed, without racing the sink for its open sidecar handle.
+	if got := waitForFile(t, filepath.Join(sinkSecrets, "api_token")); got != "secret-live" {
+		t.Fatalf("initial sync secret did not land: %q\n%s", got, sourceOut())
 	}
-	if got != "example-session" {
-		t.Fatalf("example cookie mismatch: %q", got)
-	}
+	// Core assertion: without --once the source stays running after that sync.
 	select {
 	case err := <-done:
 		t.Fatalf("source exited without --once after initial sync: %v\n%s", err, sourceOut())
 	case <-time.After(500 * time.Millisecond):
 	}
+	// Stop the sink to flush and release its sidecar handle, then read the
+	// cookie cleanly (see readSidecarCookie).
+	sinkProc.stop(t)
+	if got := readSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
+		t.Fatalf("initial sync cookie mismatch: %q", got)
+	}
+	if n := countSidecarCookies(t, sidecarPath, "blocked.example"); n != 0 {
+		t.Fatal("denied domain synced to sidecar")
+	}
+
 	cancel()
 	select {
 	case <-done:
