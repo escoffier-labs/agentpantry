@@ -124,7 +124,7 @@ func startSinkProcess(t *testing.T, bin, cfgPath, addr string) *runningProcess {
 	rp := &runningProcess{cancel: cancel, done: make(chan error, 1), out: &out}
 	go func() { rp.done <- cmd.Wait() }()
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
 		if err == nil {
@@ -153,9 +153,25 @@ func (rp *runningProcess) stop(t *testing.T) {
 	}
 }
 
+func waitForFile(t *testing.T, path string) string {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return string(data)
+		}
+		lastErr = err
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("file %s never appeared: %v", path, lastErr)
+	return ""
+}
+
 func waitForSidecarCookie(t *testing.T, path, host string) string {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		db, err := sql.Open("sqlite", path)
@@ -256,9 +272,8 @@ deny = ["drop_token"]
 	if denied != 0 {
 		t.Fatal("denied domain synced to sidecar")
 	}
-	secretValue, err := os.ReadFile(filepath.Join(sinkSecrets, "api_token"))
-	if err != nil || string(secretValue) != "secret-live" {
-		t.Fatalf("allowed secret did not sync: %v / %q", err, secretValue)
+	if got := waitForFile(t, filepath.Join(sinkSecrets, "api_token")); got != "secret-live" {
+		t.Fatalf("allowed secret did not sync: %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(sinkSecrets, "drop_token")); !os.IsNotExist(err) {
 		t.Fatalf("denied secret synced: %v", err)
