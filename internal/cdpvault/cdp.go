@@ -123,6 +123,113 @@ func sameSiteCode(s string) int {
 	}
 }
 
+func sameSiteString(code int) (string, bool) {
+	switch code {
+	case 2:
+		return "Strict", true
+	case 1:
+		return "Lax", true
+	case 0:
+		return "None", true
+	default:
+		return "", false
+	}
+}
+
+type cdpSetCookieParam struct {
+	Name     string   `json:"name"`
+	Value    string   `json:"value"`
+	Domain   string   `json:"domain"`
+	Path     string   `json:"path,omitempty"`
+	Expires  *float64 `json:"expires,omitempty"`
+	Secure   bool     `json:"secure"`
+	HTTPOnly bool     `json:"httpOnly"`
+	SameSite string   `json:"sameSite,omitempty"`
+}
+
+// WriteCookies materializes cookies into a running Chromium through CDP. It
+// skips already-expired persistent cookies because setting them would delete or
+// immediately discard the slot in Chromium. The returned count is safe to log.
+func (c *CDP) WriteCookies(ctx context.Context, cookies []cookie.Cookie) (int, error) {
+	now := time.Now().Unix()
+	params := make([]cdpSetCookieParam, 0, len(cookies))
+	skippedExpired := 0
+	for _, ck := range cookies {
+		if ck.ExpiresUTC > 0 && cookie.ExpiresUnix(ck.ExpiresUTC) <= now {
+			skippedExpired++
+			continue
+		}
+		sameSite, ok := sameSiteString(ck.SameSite)
+		if !ok {
+			return skippedExpired, fmt.Errorf("cookie %s@%s has unsupported SameSite code %d", ck.Name, ck.Host, ck.SameSite)
+		}
+		path := ck.Path
+		if path == "" {
+			path = "/"
+		}
+		param := cdpSetCookieParam{
+			Name: ck.Name, Value: ck.Value, Domain: ck.Host, Path: path,
+			Secure: ck.IsSecure, HTTPOnly: ck.IsHTTPOnly, SameSite: sameSite,
+		}
+		if ck.ExpiresUTC > 0 {
+			exp := float64(cookie.ExpiresUnix(ck.ExpiresUTC))
+			param.Expires = &exp
+		}
+		params = append(params, param)
+	}
+	if len(params) == 0 {
+		return skippedExpired, nil
+	}
+
+	ws, err := c.wsURL(ctx)
+	if err != nil {
+		return skippedExpired, err
+	}
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	if err != nil {
+		return skippedExpired, fmt.Errorf("dial devtools websocket: %w", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"id":     1,
+		"method": "Storage.setCookies",
+		"params": map[string]any{"cookies": params},
+	}); err != nil {
+		return skippedExpired, err
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return skippedExpired, fmt.Errorf("set read deadline: %w", err)
+	}
+	for {
+		var msg struct {
+			ID    int `json:"id"`
+			Error *struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := conn.ReadJSON(&msg); err != nil {
+			return skippedExpired, err
+		}
+		if msg.ID != 1 {
+			continue
+		}
+		if msg.Error != nil {
+			// The setCookies payload carries cookie values, and a browser may
+			// echo the offending value in its error message. Report the numeric
+			// code only, never the message, so values cannot leak into logs.
+			return skippedExpired, fmt.Errorf("CDP rejected Storage.setCookies (code %d); message withheld to avoid logging cookie values", msg.Error.Code)
+		}
+		return skippedExpired, nil
+	}
+}
+
 func (c *CDP) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	ws, err := c.wsURL(ctx)
 	if err != nil {
@@ -160,6 +267,7 @@ func (c *CDP) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 				Cookies []cdpCookie `json:"cookies"`
 			} `json:"result"`
 			Error *struct {
+				Code    int    `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
@@ -170,7 +278,8 @@ func (c *CDP) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 			continue // skip CDP events
 		}
 		if msg.Error != nil {
-			return nil, fmt.Errorf("CDP error: %s", msg.Error.Message)
+			// Withhold the browser's message to keep cookie material out of logs.
+			return nil, fmt.Errorf("CDP rejected the cookie read (code %d); message withheld to avoid logging cookie values", msg.Error.Code)
 		}
 		out := make([]cookie.Cookie, 0, len(msg.Result.Cookies))
 		for _, cc := range msg.Result.Cookies {

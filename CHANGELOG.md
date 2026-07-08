@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- `agentpantry restore` can materialize cookies from a sidecar backup into
+  Netscape `cookies.txt`, a Chromium profile cookie DB, or a running loopback
+  Chrome DevTools target with `--to cdp=http://127.0.0.1:PORT`. CDP restore
+  writes through `Storage.setCookies`, skips expired cookies with a safe count,
+  and supports `--verify` readback with per-domain expected vs present counts
+  and cookie names only.
 - Source configs can set `peer = "none"` for local script-driven deployments:
   `doctor` skips peer reachability and reports the local topology as OK, while
   the long-running source loop rejects the sentinel and sink configs still fail
