@@ -144,6 +144,8 @@ func Run(c config.Config) []Check {
 	// config
 	if c.Role != "source" && c.Role != "sink" {
 		checks = append(checks, Check{"config", Fail, fmt.Sprintf("role must be source|sink, got %q", c.Role)})
+	} else if c.Peerless() {
+		checks = append(checks, Check{"config", OK, c.Role + " " + c.Peer})
 	} else if _, _, err := net.SplitHostPort(c.Peer); err != nil {
 		checks = append(checks, Check{"config", Fail, fmt.Sprintf("peer %q is not host:port", c.Peer)})
 	} else {
@@ -307,4 +309,9 @@ func PeerReachable(peer string, timeout time.Duration) Check {
 	}
 	_ = conn.Close()
 	return Check{"peer", OK, "reachable " + peer}
+}
+
+// Peerless reports a source config that intentionally has no network peer.
+func Peerless() Check {
+	return Check{"peer", OK, "local deployment, no network peer configured"}
 }

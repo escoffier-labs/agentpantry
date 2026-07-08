@@ -1,0 +1,17 @@
+# Source-side config for same-box, script-driven captures.
+# The external scheduler should pass explicit per-profile -config paths when it
+# drives each capture pair. This config is valid for doctor/status, but
+# `agentpantry source -config ...` will refuse to run the long-lived sync loop.
+
+role = "source"
+peer = "none"
+key_path = "/home/alice/.config/agentpantry/psk.key"
+
+[[browsers]]
+kind = "cdp"
+profile = "automation"
+url = "http://127.0.0.1:9222"
+
+[domains]
+allow = ["github.com", ".example.com"]
+deny = []

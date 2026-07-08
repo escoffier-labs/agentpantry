@@ -289,6 +289,9 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
+	if c.Peerless() {
+		return errors.New("peerless config is for external-scheduler/doctor use and cannot run the sync loop because operators drive capture with explicit per-profile -config pairs")
+	}
 	key, err := keyfile.Load(c.KeyPath)
 	if err != nil {
 		return err
@@ -798,7 +801,11 @@ func cmdDoctor(args []string) error {
 		})
 	}
 	if c.Role == "source" && !*skipNet {
-		checks = append(checks, doctor.PeerReachable(c.Peer, *timeout))
+		if c.Peerless() {
+			checks = append(checks, doctor.Peerless())
+		} else {
+			checks = append(checks, doctor.PeerReachable(c.Peer, *timeout))
+		}
 	}
 	if *jsonOut {
 		printDoctorJSON(doctorPayload(*cfgPath, c, checks, *skipNet))
