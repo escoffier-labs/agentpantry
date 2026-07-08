@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/cdpvault"
 	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
@@ -179,6 +181,23 @@ func Run(c config.Config) []Check {
 				checks = append(checks, Check{"secrets_dir", Fail, "missing: " + c.SecretsDir})
 			} else {
 				checks = append(checks, Check{"secrets_dir", OK, c.SecretsDir})
+			}
+		}
+		if c.KeepassPath != "" {
+			if _, err := os.Stat(c.KeepassPath); err != nil {
+				checks = append(checks, Check{"keepass", Fail, "vault unreadable: " + c.KeepassPath})
+			} else {
+				r := &keepass.Reader{
+					Path:     c.KeepassPath,
+					Keyfile:  c.KeepassKeyfile,
+					PassFile: c.KeepassPassFile,
+					Tag:      c.KeepassTagOrDefault(),
+				}
+				if ss, err := r.ReadSecrets(context.Background()); err != nil {
+					checks = append(checks, Check{"keepass", Fail, err.Error()})
+				} else {
+					checks = append(checks, Check{"keepass", OK, fmt.Sprintf("%d secret(s) from %s (tag: %s)", len(ss), c.KeepassPath, c.KeepassTagOrDefault())})
+				}
 			}
 		}
 		hasChromium := false
