@@ -94,7 +94,7 @@ func writeFirefoxCookieDB(t *testing.T, path string) {
 		host, value string
 	}{
 		{"example.com", "example-session"},
-		{"bank.com", "should-not-sync"},
+		{"blocked.example", "should-not-sync"},
 	}
 	for _, row := range rows {
 		if _, err := db.Exec(`INSERT INTO moz_cookies(name,value,host,path,expiry,isSecure,isHttpOnly,sameSite)
@@ -173,8 +173,12 @@ func waitForSidecarCookie(t *testing.T, path, host string) string {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
+	// Read-only DSN, matching surface.OpenSidecarReadOnly: a plain read-write
+	// sql.Open takes a lock that clashes on Windows with the live sink process
+	// still holding the file open, so the row reads as absent.
+	dsn := filepath.ToSlash(path) + "?mode=ro"
 	for time.Now().Before(deadline) {
-		db, err := sql.Open("sqlite", path)
+		db, err := sql.Open("sqlite", dsn)
 		if err == nil {
 			var got string
 			lastErr = db.QueryRow(`SELECT value FROM cookies WHERE host=?`, host).Scan(&got)
@@ -237,7 +241,7 @@ cookie_path = %q
 
 [domains]
 allow = ["example.com"]
-deny = ["bank.com"]
+deny = ["blocked.example"]
 
 [secret_names]
 allow = ["api_token", "drop_token"]
@@ -260,12 +264,12 @@ deny = ["drop_token"]
 	if got := waitForSidecarCookie(t, sidecarPath, "example.com"); got != "example-session" {
 		t.Fatalf("example cookie mismatch: %q", got)
 	}
-	db, err := sql.Open("sqlite", sidecarPath)
+	db, err := sql.Open("sqlite", filepath.ToSlash(sidecarPath)+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var denied int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM cookies WHERE host=?`, "bank.com").Scan(&denied); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM cookies WHERE host=?`, "blocked.example").Scan(&denied); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.Close()
@@ -282,7 +286,7 @@ deny = ["drop_token"]
 	if !strings.Contains(output, "warning: cookie sid@example.com expires") {
 		t.Fatalf("near-expiry warning missing from source output:\n%s", output)
 	}
-	if strings.Contains(output, "bank.com") {
+	if strings.Contains(output, "blocked.example") {
 		t.Fatalf("near-expiry warning ignored domain policy:\n%s", output)
 	}
 	st, err := state.Load(filepath.Join(dir, "state.json"))
@@ -324,7 +328,7 @@ cookie_path = %q
 
 [domains]
 allow = ["example.com"]
-deny = ["bank.com"]
+deny = ["blocked.example"]
 `, keyPath, ffPath))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -457,7 +461,7 @@ cookie_path = %q
 
 [domains]
 allow = ["example.com"]
-deny = ["bank.com"]
+deny = ["blocked.example"]
 `, addr, keyPath, ffPath))
 
 	sinkProc := startSinkProcess(t, bin, sinkCfg, addr)
