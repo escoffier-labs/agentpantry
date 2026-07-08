@@ -41,7 +41,10 @@ say "1/6 preconditions"
 branch="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$branch" == "master" ]] || die "must cut from master (on '$branch')"
 [[ -z "$(git status --porcelain)" ]] || die "working tree not clean; commit or stash first"
-git fetch origin --quiet --tags
+# Update origin/master only. Deliberately NOT --tags: a diverged local tag would
+# make --tags fail ('would clobber existing tag') and abort the whole cut, and
+# the tag existence checks below query the remote directly with ls-remote anyway.
+git fetch origin --quiet master || die "git fetch origin master failed (network or auth?)"
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/master)" ]] \
   || die "local master is not in sync with origin/master"
 # CHANGELOG must carry a heading for this version (with or without the leading v)
