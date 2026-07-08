@@ -7,6 +7,9 @@
   `doctor` skips peer reachability and reports the local topology as OK, while
   the long-running source loop rejects the sentinel and sink configs still fail
   validation.
+- `agentpantry source --once` runs the startup sync path once over TCP or
+  `--stdio`, persists source state, then exits 0 on success without starting the
+  watcher or resync timer.
 - Source-side KeePass secret reader: `keepass_path`/`keepass_keyfile`/`keepass_pass_file`/`keepass_tag`
   read tagged vault entries as named secrets, replacing the need for a plaintext `secrets_dir`.
   `agentpantry doctor` validates the unlock and reports the tagged entry count.

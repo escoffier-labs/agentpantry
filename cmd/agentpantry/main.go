@@ -281,6 +281,7 @@ func cmdSource(args []string) error {
 	fs := flag.NewFlagSet("source", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	stdio := fs.Bool("stdio", false, "stream frames to stdout instead of dialing the peer")
+	once := fs.Bool("once", false, "sync once, then close the connection and exit")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -332,7 +333,7 @@ func cmdSource(args []string) error {
 			hasCDP = true
 		}
 	}
-	if hasCDP && resync == 0 {
+	if hasCDP && resync == 0 && !*once {
 		resync = 60 * time.Second
 		fmt.Fprintln(os.Stderr, "agentpantry: cdp source detected, defaulting resync to 60s")
 	}
@@ -359,6 +360,10 @@ func cmdSource(args []string) error {
 		},
 	}
 	ctx := signalCtx()
+	syncOnce := func() error {
+		syncer.Reset()
+		return syncer.SyncOnce(ctx)
+	}
 
 	if *stdio {
 		salt, serr := transport.SendSalt(os.Stdout)
@@ -371,11 +376,41 @@ func cmdSource(args []string) error {
 		}
 		syncer.Sealer = sealer
 		syncer.Out = os.Stdout
+		if *once {
+			fmt.Fprintf(os.Stderr, "source: syncing once from %d store(s), streaming frame to stdout\n", len(paths))
+			return syncOnce()
+		}
 		fmt.Fprintf(os.Stderr, "source: watching %d store(s), streaming frames to stdout\n", len(paths))
 		return syncer.Watch(ctx, paths, 500*time.Millisecond, resync)
 	}
 
 	// TCP: reconnect with capped backoff so a sink restart or blip recovers.
+	if *once {
+		fmt.Printf("source: syncing once from %d store(s), pushing to %s\n", len(paths), c.Peer)
+		conn, derr := net.Dial("tcp", c.Peer)
+		if derr != nil {
+			return derr
+		}
+		defer func() { _ = conn.Close() }()
+		if err := conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			return err
+		}
+		salt, herr := transport.RecvSalt(conn)
+		if herr != nil {
+			return herr
+		}
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			return err
+		}
+		sealer, serr := transport.NewSealer(key, salt)
+		if serr != nil {
+			return serr
+		}
+		syncer.Sealer = sealer
+		syncer.Out = conn
+		return syncOnce()
+	}
+
 	fmt.Printf("source: watching %d store(s), pushing to %s\n", len(paths), c.Peer)
 	attempt := 0
 	for {
