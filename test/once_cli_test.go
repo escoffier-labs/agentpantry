@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -32,7 +33,11 @@ func agentpantryCLI(t *testing.T) string {
 			cliBuild.err = err
 			return
 		}
-		cliBuild.path = filepath.Join(dir, "agentpantry")
+		name := "agentpantry"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		cliBuild.path = filepath.Join(dir, name)
 		cmd := exec.Command("go", "build", "-buildvcs=false", "-o", cliBuild.path, "../cmd/agentpantry")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
