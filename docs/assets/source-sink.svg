@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Pantry source to sink: sealed session sync</title>
+  <desc id="desc">Daily driver source allowlists domains and secrets, seals diffs with AES-256-GCM, pushes to the agent machine sink which applies cookies and secrets to local surfaces. Opt-in only.</desc>
+  <defs>
+    <linearGradient id="card" x1="0" y1="0" x2="0.12" y2="1">
+      <stop offset="0%" stop-color="#161a20"/>
+      <stop offset="100%" stop-color="#0f1217"/>
+    </linearGradient>
+    <linearGradient id="rail" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e0a45c"/>
+      <stop offset="100%" stop-color="#3d8bfd"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#e0a45c"/>
+    </marker>
+    <marker id="arr-b" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#3d8bfd"/>
+    </marker>
+    <filter id="soft" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="880" height="420" fill="#1a2030"/>
+  <circle cx="720" cy="70" r="190" fill="#3d8bfd" opacity="0.16"/>
+  <circle cx="120" cy="360" r="160" fill="#e0a45c" opacity="0.1"/>
+
+  <rect x="36" y="24" width="808" height="372" rx="18" fill="url(#card)" stroke="#2a3340" filter="url(#soft)"/>
+  <rect x="36" y="24" width="5" height="372" rx="2.5" fill="url(#rail)"/>
+
+  <text x="68" y="56" fill="#8b9bb0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="2.2">SOURCE → SEAL → SINK</text>
+  <text x="812" y="56" text-anchor="end" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">AES-256-GCM · opt-in · local</text>
+  <line x1="68" y1="72" x2="812" y2="72" stroke="#2a3340"/>
+
+  <!-- SOURCE -->
+  <rect x="68" y="96" width="240" height="220" rx="14" fill="#12161c" stroke="#e0a45c" stroke-width="1.5"/>
+  <text x="188" y="124" text-anchor="middle" fill="#e0a45c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="1.6">SOURCE</text>
+  <text x="188" y="144" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">daily driver</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e8eef6">
+    <text x="92" y="178">browsers[]</text>
+    <text x="92" y="200" fill="#6b7a8f">Chrome · creator lane · …</text>
+    <text x="92" y="232">allowlist</text>
+    <text x="92" y="254" fill="#f0c48a">github.com · claude.ai · …</text>
+    <text x="92" y="286">named secrets</text>
+    <text x="92" y="308" fill="#6b7a8f">only what you name</text>
+  </g>
+
+  <!-- seal pipe -->
+  <path d="M308 206 H360" stroke="#e0a45c" stroke-width="2" marker-end="url(#arr)"/>
+  <rect x="360" y="150" width="160" height="112" rx="14" fill="#1a140c" stroke="#e0a45c" stroke-width="2"/>
+  <text x="440" y="182" text-anchor="middle" fill="#e0a45c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.4">SEALED FRAME</text>
+  <text x="440" y="208" text-anchor="middle" fill="#f5f2ea" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">AES-256-GCM</text>
+  <text x="440" y="230" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">PSK · replay protect</text>
+  <text x="440" y="248" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">diff only · no dump</text>
+
+  <path d="M520 206 H572" stroke="#3d8bfd" stroke-width="2" marker-end="url(#arr-b)"/>
+
+  <!-- SINK -->
+  <rect x="572" y="96" width="240" height="220" rx="14" fill="#12161c" stroke="#3d8bfd" stroke-width="1.5"/>
+  <text x="692" y="124" text-anchor="middle" fill="#9ec1ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="1.6">SINK</text>
+  <text x="692" y="144" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">agent machine</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e8eef6">
+    <text x="596" y="178">apply surfaces</text>
+    <text x="596" y="200" fill="#6b7a8f">cookie jars · env files</text>
+    <text x="596" y="232">harnesses ready</text>
+    <text x="596" y="254" fill="#9ec1ff">Codex · Claude · Grok …</text>
+    <text x="596" y="286">doctor / status</text>
+    <text x="596" y="308" fill="#6b7a8f">expiry · peer health</text>
+  </g>
+
+  <!-- bottom -->
+  <line x1="68" y1="336" x2="812" y2="336" stroke="#2a3340"/>
+  <text x="68" y="364" fill="#cbbfac" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.6">NOT A PASSWORD MANAGER · NOT A CLOUD VAULT</text>
+  <text x="68" y="388" fill="#e8eef6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">Nothing moves until you allow a domain. Brigade <tspan fill="#e0a45c">add pantry</tspan> plans and health-checks; it never starts source/sink for you.</text>
+  <text x="68" y="408" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">agentpantry source  ·  agentpantry sink  ·  one PSK both sides</text>
+</svg>

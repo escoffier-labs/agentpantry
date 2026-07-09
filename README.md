@@ -52,10 +52,10 @@ agentpantry status
 | **Watch** | Expiry and health | Doctor and status; Brigade pantry station wires checks |
 
 <p align="center">
-  <img src="docs/assets/agentpantry-setup.svg" alt="Recording: agentpantry init, keygen, doctor, status" width="760">
+  <img src="docs/assets/source-sink.svg" alt="Source daily driver allowlist seals AES-256-GCM frames to agent machine sink surfaces" width="880">
 </p>
 
-<p align="center"><em>Configure a sink, generate keys, doctor the setup, check status. Sealed until you allow it.</em></p>
+<p align="center"><em>Source → seal → sink. Not a password manager. Not a cloud vault. Opt-in domains only.</em></p>
 
 
 ## Quickstart
