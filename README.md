@@ -1,81 +1,62 @@
 <p align="center">
-  <img src="docs/assets/agentpantry-social-preview.jpg" alt="Agent Pantry secure browser session sync for AI agents" width="900">
+  <img src="docs/assets/agentpantry-social-preview.jpg" alt="Agent Pantry banner" width="900">
 </p>
 
 <h1 align="center">Agent Pantry</h1>
 
-<p align="center"><strong>Authenticated sessions for agent machines.</strong></p>
+<p align="center">
+  <img src="docs/assets/marks/agentpantry-circle.svg" alt="" width="40" height="40">
+</p>
 
 <p align="center">
-  <strong>Website:</strong> <a href="https://agentpantry.escoffierlabs.dev">agentpantry.escoffierlabs.dev</a>
+  <strong>Your agent machine needs your logins. Pantry ships them sealed.</strong>
+</p>
+
+<p align="center">
+  Opt-in browser session and secret sync for AI agent hosts: AES-256-GCM frames, allowlisted domains, source to sink. Not a password manager and not a cloud vault. One local Go binary.
+</p>
+
+<p align="center">
+  <a href="https://brigade.tools/agentpantry">Website</a> &middot; <a href="#install">Install</a> &middot; <a href="https://brigade.tools">Brigade hub</a>
 </p>
 
 <p align="center">
   <img src="https://shieldcn.dev/github/ci/escoffier-labs/agentpantry.svg?branch=master&workflow=ci.yml" alt="CI status">
   <img src="https://shieldcn.dev/github/release/escoffier-labs/agentpantry.svg" alt="Latest release">
   <img src="https://shieldcn.dev/badge/go-1.25%2B-00ADD8.svg?logo=go&logoColor=white" alt="Go 1.25+">
-  <img src="https://shieldcn.dev/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-334155.svg" alt="Platform: Linux, macOS, Windows">
   <img src="https://shieldcn.dev/badge/license-MIT-green.svg" alt="MIT license">
 </p>
 
-Keep your agent's machine authenticated. Agent Pantry (`agentpantry`) is a
-secure browser session and secret sync CLI for AI agents. It mirrors selected
-cookies, browser auth state, and named secrets from your daily-driver (source)
-to the machine your agent runs on (sink), whether that is Codex, Claude Code,
-OpenClaw, Hermes Agent, or a custom runner. Unlike a password manager or a
-hosted secret store, it is a single local Go binary that moves nothing until you
-allow a domain, seals every diff in an AES-256-GCM frame with replay protection,
-and writes only to the surfaces you turn on, so automation can use tools that
-expect local auth state.
+## Install
 
-In kitchen terms: the pantry is where the chef stores the cookies and the
-secret recipes.
+```bash
+go install github.com/escoffier-labs/agentpantry/cmd/agentpantry@latest
+# or via Brigade
+brigade add pantry
+```
 
-<p align="center">
-  <img src="docs/assets/agentpantry-setup.svg" alt="Recording: agentpantry init, keygen, doctor, and status configuring an agent machine to receive sealed sessions" width="760">
-</p>
-
-<p align="center"><em>Set up the agent machine in four commands: write a config, generate the pre-shared key, validate, and check status. Nothing secret reaches the terminal: `keygen` reports only that a 32-byte key was written, and `status` shows counts and `key_present`, never values. From there `source` and `sink` stream cookie and secret diffs sealed with AES-256-GCM.</em></p>
-
-Agent Pantry is part of the [Brigade](https://github.com/escoffier-labs/brigade)
-fleet from Escoffier Labs: small, composable agent-ops tools that help agent
-runtimes work with real local environments. It is still a standalone
-MIT-licensed CLI; you can use it without Brigade or any other Escoffier Labs
-tool.
+```bash
+agentpantry init
+agentpantry keygen
+agentpantry doctor
+agentpantry status
+```
 
 ## What it does
 
-Agent Pantry keeps an AI agent's machine authenticated by syncing browser
-cookies, browser auth state, and named secrets from your daily driver to the
-agent's machine over an encrypted link. You run the `source` role on the machine
-where you actually log in and the `sink` role on the agent's machine. The source
-watches the browser cookie store, decrypts and normalizes the cookies, filters
-them through a domain allow/deny policy, diffs against the last snapshot so only
-changes move, and seals each diff in an AES-256-GCM frame carrying a monotonic
-replay counter. The sink rejects any stale frame and applies the diff to the
-surfaces you enable: a default plaintext sidecar SQLite store, opt-in secrets and
-browser stores, or native adapters for Netscape `cookies.txt`, the GitHub CLI,
-OpenClaw provider profiles, and a Hermes Agent bundle. Nothing syncs until you
-add a domain to the allow list, and cookie and secret values are never logged.
+| | Job | What you get |
+|---|---|---|
+| **Select** | What leaves the daily driver | Allowlisted domains and named secrets only |
+| **Seal** | AES-256-GCM end to end | Replay-protected frames; nothing moves until you opt in |
+| **Sync** | Source machine to agent host | Cookies and auth state land where the agent runs |
+| **Watch** | Expiry and health | Doctor and status; Brigade pantry station wires checks |
 
-## Install
+<p align="center">
+  <img src="docs/assets/agentpantry-setup.svg" alt="Recording: agentpantry init, keygen, doctor, status" width="760">
+</p>
 
-    go install github.com/escoffier-labs/agentpantry/cmd/agentpantry@latest
+<p align="center"><em>Configure a sink, generate keys, doctor the setup, check status. Sealed until you allow it.</em></p>
 
-Confirm the installed binary:
-
-    agentpantry version
-
-Or install a release archive:
-
-    VERSION=v0.4.0
-    OS=linux
-    ARCH=amd64
-    curl -LO "https://github.com/escoffier-labs/agentpantry/releases/download/${VERSION}/agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"
-    curl -LO "https://github.com/escoffier-labs/agentpantry/releases/download/${VERSION}/checksums.txt"
-    sha256sum -c checksums.txt --ignore-missing
-    tar -xzf "agentpantry_${VERSION}_${OS}_${ARCH}.tar.gz"
-    install -m 0755 "agentpantry_${VERSION}_${OS}_${ARCH}/agentpantry" ~/.local/bin/agentpantry
 
 ## Quickstart
 
