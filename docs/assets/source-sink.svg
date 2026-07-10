@@ -1,76 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="420" viewBox="0 0 880 420" role="img" aria-labelledby="title desc">
-  <title id="title">Agent Pantry source to sink: sealed session sync</title>
-  <desc id="desc">Daily driver source allowlists domains and secrets, seals diffs with AES-256-GCM, pushes to the agent machine sink which applies cookies and secrets to local surfaces. Opt-in only.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540" role="img" aria-labelledby="workflow-title workflow-desc">
+  <title id="workflow-title">Move selected state without moving the browser</title>
+  <desc id="workflow-desc">The source filters and seals changes; the sink rejects replays and updates approved surfaces.</desc>
   <defs>
-    <linearGradient id="card" x1="0" y1="0" x2="0.12" y2="1">
-      <stop offset="0%" stop-color="#161a20"/>
-      <stop offset="100%" stop-color="#0f1217"/>
+    <linearGradient id="workflow-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d1014"/>
+      <stop offset="1" stop-color="#0f1318"/>
     </linearGradient>
-    <linearGradient id="rail" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e0a45c"/>
-      <stop offset="100%" stop-color="#3d8bfd"/>
+    <linearGradient id="workflow-card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#11161c"/>
+      <stop offset="1" stop-color="#0f1318"/>
     </linearGradient>
-    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+    <filter id="workflow-shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.38"/>
+    </filter>
+    <marker id="workflow-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
       <path d="M0,0 L8,4 L0,8 Z" fill="#e0a45c"/>
     </marker>
-    <marker id="arr-b" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
-      <path d="M0,0 L8,4 L0,8 Z" fill="#3d8bfd"/>
-    </marker>
-    <filter id="soft" x="-8%" y="-8%" width="116%" height="116%">
-      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
-    </filter>
   </defs>
-
-  <rect width="880" height="420" fill="#1a2030"/>
-  <circle cx="720" cy="70" r="190" fill="#3d8bfd" opacity="0.16"/>
-  <circle cx="120" cy="360" r="160" fill="#e0a45c" opacity="0.1"/>
-
-  <rect x="36" y="24" width="808" height="372" rx="18" fill="url(#card)" stroke="#2a3340" filter="url(#soft)"/>
-  <rect x="36" y="24" width="5" height="372" rx="2.5" fill="url(#rail)"/>
-
-  <text x="68" y="56" fill="#8b9bb0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="2.2">SOURCE → SEAL → SINK</text>
-  <text x="812" y="56" text-anchor="end" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">AES-256-GCM · opt-in · local</text>
-  <line x1="68" y1="72" x2="812" y2="72" stroke="#2a3340"/>
-
-  <!-- SOURCE -->
-  <rect x="68" y="96" width="240" height="220" rx="14" fill="#12161c" stroke="#e0a45c" stroke-width="1.5"/>
-  <text x="188" y="124" text-anchor="middle" fill="#e0a45c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="1.6">SOURCE</text>
-  <text x="188" y="144" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">daily driver</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e8eef6">
-    <text x="92" y="178">browsers[]</text>
-    <text x="92" y="200" fill="#6b7a8f">Chrome · creator lane · …</text>
-    <text x="92" y="232">allowlist</text>
-    <text x="92" y="254" fill="#f0c48a">github.com · claude.ai · …</text>
-    <text x="92" y="286">named secrets</text>
-    <text x="92" y="308" fill="#6b7a8f">only what you name</text>
-  </g>
-
-  <!-- seal pipe -->
-  <path d="M308 206 H360" stroke="#e0a45c" stroke-width="2" marker-end="url(#arr)"/>
-  <rect x="360" y="150" width="160" height="112" rx="14" fill="#1a140c" stroke="#e0a45c" stroke-width="2"/>
-  <text x="440" y="182" text-anchor="middle" fill="#e0a45c" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.4">SEALED FRAME</text>
-  <text x="440" y="208" text-anchor="middle" fill="#f5f2ea" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="700">AES-256-GCM</text>
-  <text x="440" y="230" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">PSK · replay protect</text>
-  <text x="440" y="248" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">diff only · no dump</text>
-
-  <path d="M520 206 H572" stroke="#3d8bfd" stroke-width="2" marker-end="url(#arr-b)"/>
-
-  <!-- SINK -->
-  <rect x="572" y="96" width="240" height="220" rx="14" fill="#12161c" stroke="#3d8bfd" stroke-width="1.5"/>
-  <text x="692" y="124" text-anchor="middle" fill="#9ec1ff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" letter-spacing="1.6">SINK</text>
-  <text x="692" y="144" text-anchor="middle" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">agent machine</text>
-  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#e8eef6">
-    <text x="596" y="178">apply surfaces</text>
-    <text x="596" y="200" fill="#6b7a8f">cookie jars · env files</text>
-    <text x="596" y="232">harnesses ready</text>
-    <text x="596" y="254" fill="#9ec1ff">Codex · Claude · Grok …</text>
-    <text x="596" y="286">doctor / status</text>
-    <text x="596" y="308" fill="#6b7a8f">expiry · peer health</text>
-  </g>
-
-  <!-- bottom -->
-  <line x1="68" y1="336" x2="812" y2="336" stroke="#2a3340"/>
-  <text x="68" y="364" fill="#cbbfac" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.6">NOT A PASSWORD MANAGER · NOT A CLOUD VAULT</text>
-  <text x="68" y="388" fill="#e8eef6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">Nothing moves until you allow a domain. Brigade <tspan fill="#e0a45c">add pantry</tspan> plans and health-checks; it never starts source/sink for you.</text>
-  <text x="68" y="408" fill="#6b7a8f" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">agentpantry source  ·  agentpantry sink  ·  one PSK both sides</text>
+  <rect width="960" height="540" fill="url(#workflow-bg)"/>
+  <circle cx="872" cy="52" r="220" fill="#e0a45c" opacity="0.07"/>
+  <circle cx="62" cy="506" r="180" fill="#e0a45c" opacity="0.04"/>
+  <rect x="36" y="28" width="888" height="484" rx="20" fill="url(#workflow-card)" stroke="#2a323d" filter="url(#workflow-shadow)"/>
+  <rect x="36" y="28" width="5" height="484" rx="2.5" fill="#e0a45c"/>
+  <text x="72" y="67" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="11" font-weight="600" letter-spacing="2.4">AGENTPANTRY WORKFLOW</text>
+  <text x="72" y="96" fill="#dde3ea" font-family="Inter, ui-sans-serif, sans-serif" font-size="21" font-weight="700" letter-spacing="-0.6">Move selected state without moving the browser</text>
+  <text x="72" y="119" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="11">The source filters and seals changes; the sink rejects replays and updates approved surfaces.</text>
+  <text x="888" y="67" text-anchor="end" fill="#7d8590" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">AES-256-GCM · deny wins</text>
+  <line x1="72" y1="139" x2="888" y2="139" stroke="#1e242c"/>
+  <text x="72.0" y="164" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" font-weight="600" letter-spacing="1.7">INPUTS</text>
+  <text x="283.5" y="164" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" font-weight="600" letter-spacing="1.7">SOURCE</text>
+  <text x="495.0" y="164" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" font-weight="600" letter-spacing="1.7">TRANSPORT</text>
+  <text x="706.5" y="164" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" font-weight="600" letter-spacing="1.7">SINK</text>
+  <line class="workflow-edge" x1="253.5" y1="189.0" x2="283.5" y2="230.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <line class="workflow-edge" x1="253.5" y1="271.0" x2="283.5" y2="230.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <line class="workflow-edge" x1="253.5" y1="353.0" x2="283.5" y2="312.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <line class="workflow-edge" x1="465.0" y1="230.0" x2="495.0" y2="230.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <line class="workflow-edge" x1="465.0" y1="312.0" x2="495.0" y2="230.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <line class="workflow-edge" x1="676.5" y1="230.0" x2="706.5" y2="230.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <line class="workflow-edge" x1="676.5" y1="312.0" x2="706.5" y2="312.0" stroke="#e0a45c" stroke-width="1.5" opacity="0.9" marker-end="url(#workflow-arrow)"/>
+  <rect x="72.0" y="155.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#2a323d"/>
+  <text class="workflow-node-label" x="88.0" y="184.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">browser profiles</text>
+  <text x="88.0" y="204.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">Chromium · Firefox · CDP</text>
+  <rect x="72.0" y="237.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#2a323d"/>
+  <text class="workflow-node-label" x="88.0" y="266.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">named secrets</text>
+  <text x="88.0" y="286.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">allowlisted files</text>
+  <rect x="72.0" y="319.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#2a323d"/>
+  <text class="workflow-node-label" x="88.0" y="348.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">domain policy</text>
+  <text x="88.0" y="368.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">allow first · deny wins</text>
+  <rect x="283.5" y="196.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#e0a45c"/>
+  <text class="workflow-node-label" x="299.5" y="225.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">decrypt + normalize</text>
+  <text x="299.5" y="245.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">cookies · secrets</text>
+  <rect x="283.5" y="278.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#2a323d"/>
+  <text class="workflow-node-label" x="299.5" y="307.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">diff snapshots</text>
+  <text x="299.5" y="327.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">changed values only</text>
+  <rect x="495.0" y="196.0" width="181.5" height="68" rx="12" fill="#0f1318" stroke="#e0a45c"/>
+  <text class="workflow-node-label" x="511.0" y="233.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">seal frame</text>
+  <text x="511.0" y="252.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">HKDF · replay counter</text>
+  <text class="workflow-badge" x="511.0" y="213.0" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="8" font-weight="600" letter-spacing="1.2">ENCRYPTED</text>
+  <rect x="495.0" y="278.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#2a323d"/>
+  <text class="workflow-node-label" x="511.0" y="307.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">byte stream</text>
+  <text x="511.0" y="327.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">TCP · SSH stdio · tunnel</text>
+  <rect x="706.5" y="196.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#e0a45c"/>
+  <text class="workflow-node-label" x="722.5" y="225.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">open + verify</text>
+  <text x="722.5" y="245.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">strict monotonic counter</text>
+  <rect x="706.5" y="278.0" width="181.5" height="68" rx="12" fill="#11161c" stroke="#2a323d"/>
+  <text class="workflow-node-label" x="722.5" y="307.0" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="14" font-weight="600">sink surfaces</text>
+  <text x="722.5" y="327.0" fill="#9aa4b2" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">SQLite · files · adapters</text>
+  <line x1="72" y1="398" x2="888" y2="398" stroke="#1e242c"/>
+  <text x="72" y="427" fill="#e0a45c" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10" font-weight="600" letter-spacing="1.6">SECURITY CONTRACT</text>
+  <text x="72" y="455" fill="#dde3ea" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="13" font-weight="600">deny-wins policy · per-session keys · replay rejection · 0600 outputs</text>
+  <text x="72" y="478" fill="#7d8590" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="10">No plaintext crosses the transport boundary.</text>
 </svg>

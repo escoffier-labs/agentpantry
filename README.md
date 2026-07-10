@@ -148,60 +148,7 @@ CLI auth, OpenClaw provider profiles, and a Hermes Agent bundle.
 
 ### Source-to-sink flow
 
-```mermaid
-flowchart TB
-    SOURCE["<b>agentpantry source</b><br/><i>daily-driver role</i>"]
-    SINK["<b>agentpantry sink</b><br/><i>agent-machine role</i>"]
-
-    subgraph INPUTS [" source inputs "]
-        BROWSERS["<b>Browser profiles</b><br/>Chromium · Firefox · CDP"]
-        SECRETS["<b>Secrets directory</b><br/>named files only"]
-        POLICY["<b>Domain policy</b><br/>allow first · deny wins"]
-    end
-
-    BROWSERS & SECRETS & POLICY --> SOURCE
-
-    subgraph PIPELINE [" normalize and seal "]
-        READ["<b>Read current state</b><br/>copy locked DB · ask CDP"]
-        NORMALIZE["<b>Decrypt + normalize</b><br/>cookies · secrets"]
-        DIFF["<b>Diff snapshots</b><br/>send only changed values"]
-        FRAME["<b>Seal frame</b><br/>AES-256-GCM · HKDF salt · replay counter"]
-    end
-
-    SOURCE --> READ --> NORMALIZE --> DIFF --> FRAME
-
-    STREAM["<b>Sealed byte stream</b><br/>TCP · SSH stdio · tunnel"]
-    FRAME == encrypted frames ==> STREAM
-    STREAM == length-prefixed frames ==> SINK
-
-    subgraph TARGETS [" sink surfaces and adapters "]
-        SIDECAR["<b>Sidecar SQLite</b><br/>default cookie store"]
-        SECRET_OUT["<b>Secrets</b><br/>0600 files"]
-        ADAPTERS["<b>Adapters</b><br/>cookies.txt · gh · OpenClaw · Hermes"]
-        CHROME["<b>Chrome re-encrypt</b><br/>Windows automation profile"]
-    end
-
-    SINK -->|reject stale counters| SIDECAR
-    SINK --> SECRET_OUT
-    SINK --> ADAPTERS
-    SINK --> CHROME
-
-    GUARD["<b>Security boundary</b><br/>nothing syncs without an allow policy; values stay sealed in transit"]
-    POLICY -. constrains .-> GUARD
-    FRAME -. enforces .-> GUARD
-    GUARD -. limits writes .-> TARGETS
-
-    classDef source fill:#eff6ff,stroke:#2563eb,color:#1e3a8a;
-    classDef process fill:#ecfdf5,stroke:#059669,color:#064e3b;
-    classDef stream fill:#fff7ed,stroke:#ea580c,color:#7c2d12;
-    classDef sink fill:#f8fafc,stroke:#64748b,color:#334155;
-    classDef guard fill:#fee2e2,stroke:#ef4444,color:#7f1d1d;
-    class SOURCE,BROWSERS,SECRETS,POLICY source;
-    class READ,NORMALIZE,DIFF process;
-    class FRAME,STREAM stream;
-    class SINK,SIDECAR,SECRET_OUT,ADAPTERS,CHROME sink;
-    class GUARD guard;
-```
+<p align="center"><em>The generated source-to-sink plate above is rebuilt from <code>docs/assets/workflows/source-sink.json</code>.</em></p>
 
 The transport is just a byte stream, so the link can be a TCP connection over a
 trusted network or a piped stdio channel through a tunnel. The encryption and
