@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+- Added a Brigade `station.json` contract for zero-network doctor checks,
+  bounded inventory JSON, and version conformance.
+
 ## v0.6.0 - 2026-07-08
 
 ### Added

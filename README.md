@@ -242,6 +242,11 @@ SQLite schema by hand. Point it at a store with `--store` (default
 dashboards can consume. It reports on existing stores only: if the path does not
 exist it exits 2 rather than create an empty one.
 
+The root `station.json` publishes these machine surfaces to Brigade. Its doctor
+probe checks `--json` and `--no-net` without loading operator state, inventory is
+advertised as bounded JSON, and `version --json` is the read-only conformance
+check.
+
 `agentpantry restore` materializes cookies from an existing sidecar backup into
 one explicit target. This is the capture-once-materialize-anywhere path: keep a
 sidecar as the portable capture, then write it into the format a local tool or
