@@ -1,0 +1,41 @@
+{
+  "schema": "brigade.station.v1",
+  "name": "agentpantry",
+  "station": "pantry",
+  "summary": "browser session auth sync through a process-boundary Go binary",
+  "lifecycle": "active",
+  "tools": [
+    {
+      "name": "agentpantry",
+      "kind": "executable",
+      "command": "agentpantry",
+      "summary": "browser session auth sync from source to sink",
+      "install": ["go", "install", "github.com/escoffier-labs/agentpantry/cmd/agentpantry@latest"],
+      "surfaces": [
+        {
+          "kind": "doctor-json",
+          "command": ["agentpantry", "doctor", "--json", "--no-net"],
+          "read_only": false,
+          "timeout_seconds": 10,
+          "probe": ["agentpantry", "doctor", "--help"],
+          "probe_contains": ["-json", "-no-net"]
+        },
+        {
+          "kind": "summary-json",
+          "command": ["agentpantry", "inventory", "--json"],
+          "read_only": true,
+          "timeout_seconds": 10,
+          "max_chars": 4000,
+          "probe": ["agentpantry", "inventory", "--help"],
+          "probe_contains": ["-json"]
+        },
+        {
+          "kind": "verify-exit",
+          "command": ["agentpantry", "version", "--json"],
+          "read_only": true,
+          "timeout_seconds": 10
+        }
+      ]
+    }
+  ]
+}
