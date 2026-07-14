@@ -450,6 +450,30 @@ while the browser holds the store, so `capture_localstorage` requires
 `kind = "cdp"` and `doctor` fails it otherwise. `sessionStorage`, IndexedDB, and
 service worker state stay out of scope.
 
+## Launching an automation browser
+
+`agentpantry browser` stands up a dedicated automation Chrome that is already
+logged in, so a scraper attaches to a warm session instead of driving a login
+(the step anti-bot systems flag hardest):
+
+    agentpantry browser --sidecar ./sidecar.db --domains github.com --keep-open
+
+It launches Chrome with a throwaway profile (never a real one) on a loopback
+debugging port, opens a tab on each origin in the backup, sets the cookies
+browser-wide, seeds each origin's `localStorage` in its loaded tab, and hands the
+DevTools endpoint back. Flags: `--headless` uses new headless (`--headless=new`),
+`--profile` names a persistent user-data-dir instead of a temp one, `--port` sets
+the debugging port, `--chrome` points at a specific binary, `--verify` reads
+cookies back through CDP, and `--keep-open` leaves the browser running (Ctrl-C to
+stop) for a scraper to attach.
+
+Because agentpantry owns this browser, it seeds `localStorage` reliably by
+navigating to each origin, unlike `restore --to cdp=` against a browser you
+already launched (which cannot navigate and is best-effort). For anti-bot targets
+prefer a headed window (omit `--headless`) and a session minted in a browser
+whose fingerprint (user agent, timezone, language) matches where the scraper
+runs.
+
 ## Adapters
 
 Adapters are extra sink surfaces that write synced data into the native file a
