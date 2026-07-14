@@ -468,11 +468,21 @@ cookies back through CDP, and `--keep-open` leaves the browser running (Ctrl-C t
 stop) for a scraper to attach.
 
 Because agentpantry owns this browser, it seeds `localStorage` reliably by
-navigating to each origin, unlike `restore --to cdp=` against a browser you
-already launched (which cannot navigate and is best-effort). For anti-bot targets
-prefer a headed window (omit `--headless`) and a session minted in a browser
-whose fingerprint (user agent, timezone, language) matches where the scraper
-runs.
+navigating to each origin, which `restore --to cdp=` against a browser you
+already launched cannot do (that path is best-effort). The launch sets
+`--disable-blink-features=AutomationControlled` so `navigator.webdriver` stays
+unset. That flag is the extent of agentpantry's anti-bot posture. It delivers the
+authenticated session and gets out of the way. Fingerprint shims, human-paced
+input, and captcha handling belong to the tool driving the tab (a
+Playwright/Puppeteer stealth layer). A session restored into a browser whose user
+agent, timezone, or language differ from where it was minted can still be
+flagged, so match those.
+
+For a long-running automation browser you already drive over CDP, keep its
+session fresh in place with `agentpantry restore --to cdp=http://127.0.0.1:PORT`
+instead of relaunching. That pairs with the capture direction: a `kind = "cdp"`
+source can read cookies and `localStorage` back out of the same running browser,
+so one browser stays synced with your daily driver in both directions.
 
 ## Adapters
 
