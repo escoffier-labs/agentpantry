@@ -237,6 +237,30 @@ func TestAdapterWritableParentOK(t *testing.T) {
 	}
 }
 
+func TestStorageStateAdapterWritableParentOK(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"},
+		Adapters: []config.AdapterRef{{Type: "storagestate", Path: filepath.Join(dir, "state.json")}},
+	}
+	if find(Run(c), "adapter:storagestate").Status != OK {
+		t.Fatal("storagestate adapter with writable parent must be OK")
+	}
+}
+
+func TestStorageStateAdapterMissingPathFails(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"},
+		Adapters: []config.AdapterRef{{Type: "storagestate"}},
+	}
+	if find(Run(c), "adapter:storagestate").Status != Fail {
+		t.Fatal("storagestate adapter without a path must Fail")
+	}
+}
+
 func TestHermesAdapterWritableBundleDirOK(t *testing.T) {
 	dir := t.TempDir()
 	key := writeKey(t, dir, 0o600)

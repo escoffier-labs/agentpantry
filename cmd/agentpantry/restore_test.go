@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -15,6 +19,7 @@ func TestParseRestoreTarget(t *testing.T) {
 	}{
 		{spec: "netscape=/tmp/cookies.txt", wantKind: restoreTargetNetscape, wantPath: "/tmp/cookies.txt"},
 		{spec: "chromium=/tmp/Profile", wantKind: restoreTargetChromium, wantProfile: "/tmp/Profile"},
+		{spec: "storagestate=/tmp/state.json", wantKind: restoreTargetStorageState, wantPath: "/tmp/state.json"},
 		{spec: "cdp=http://127.0.0.1:9222", wantKind: restoreTargetCDP, wantPath: "http://127.0.0.1:9222"},
 	}
 	for _, tc := range cases {
@@ -29,8 +34,46 @@ func TestParseRestoreTarget(t *testing.T) {
 	}
 }
 
+func TestRestoreApplyStorageStateWritesPlaywrightFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("chmod tempdir: %v", err)
+	}
+	path := filepath.Join(dir, "state.json")
+	target, err := parseRestoreTarget("storagestate=" + path)
+	if err != nil {
+		t.Fatalf("parseRestoreTarget: %v", err)
+	}
+	cookies := []cookie.Cookie{
+		{Host: "github.com", Name: "user_session", Value: "sekret", Path: "/", IsSecure: true, IsHTTPOnly: true, SameSite: 1},
+	}
+	if _, err := restoreApply(context.Background(), target, cookies); err != nil {
+		t.Fatalf("restoreApply: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var doc struct {
+		Cookies []map[string]any `json:"cookies"`
+		Origins []any            `json:"origins"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+	if len(doc.Cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(doc.Cookies))
+	}
+	if doc.Origins == nil {
+		t.Fatalf("origins should be an empty array, got null:\n%s", data)
+	}
+	if doc.Cookies[0]["name"] != "user_session" || doc.Cookies[0]["sameSite"] != "Lax" {
+		t.Fatalf("cookie fields wrong: %v", doc.Cookies[0])
+	}
+}
+
 func TestParseRestoreTargetRejectsInvalidSpecs(t *testing.T) {
-	for _, spec := range []string{"", "netscape=", "chromium=", "cdp=", "cdp=http://198.51.100.10:9222", "chrome=/tmp/Profile", "/tmp/cookies.txt"} {
+	for _, spec := range []string{"", "netscape=", "chromium=", "storagestate=", "cdp=", "cdp=http://198.51.100.10:9222", "chrome=/tmp/Profile", "/tmp/cookies.txt"} {
 		if _, err := parseRestoreTarget(spec); err == nil {
 			t.Fatalf("parseRestoreTarget(%q) succeeded, want error", spec)
 		}

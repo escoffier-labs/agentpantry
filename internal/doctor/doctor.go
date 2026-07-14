@@ -250,7 +250,7 @@ func Run(c config.Config) []Check {
 		for _, a := range c.Adapters {
 			name := "adapter:" + a.Type
 			switch a.Type {
-			case "netscape", "gh", "openclaw":
+			case "netscape", "gh", "openclaw", "storagestate":
 				if a.Path == "" {
 					checks = append(checks, Check{name, Fail, "adapter needs a path"})
 				} else if !writableOrCreatable(filepath.Dir(a.Path)) {

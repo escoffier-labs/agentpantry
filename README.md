@@ -205,13 +205,18 @@ Examples:
       --to chromium=/tmp/agent-chrome-profile
 
     agentpantry restore -sidecar ./sidecar.db \
+      --to storagestate=./state.json --domains github.com
+
+    agentpantry restore -sidecar ./sidecar.db \
       --to cdp=http://127.0.0.1:9222 --verify
 
 Use `-sidecar` to name the store directly, or `-config` to derive the sidecar
 path the same way `sink` does. Targets are `netscape=<path>` for curl-family
 `cookies.txt`, `chromium=<profile-dir>` for a not-running Chrome-compatible
-profile directory, and `cdp=<http://127.0.0.1:PORT>` for a running Chromium
-DevTools endpoint on loopback. `--verify` is CDP-only: after writing, it reads
+profile directory, `storagestate=<path>` for a Playwright/Puppeteer
+`storageState` JSON file (`browser.newContext({ storageState })`), consumed by
+headless or headed automation, and `cdp=<http://127.0.0.1:PORT>` for a running
+Chromium DevTools endpoint on loopback. `--verify` is CDP-only: after writing, it reads
 back through `Storage.getCookies` and prints per-domain expected and present
 counts plus cookie names. It exits nonzero if any expected cookie is absent.
 
@@ -221,7 +226,9 @@ Restore limitations:
 | --- | --- |
 | Encrypted or app-bound profile state | `chromium=<profile-dir>` writes a local cookie DB and cannot recreate another browser's encrypted profile state. Use CDP for a running browser that must encrypt its own cookies. |
 | Partitioned or CHIPS cookies | The sidecar model does not preserve the partition key, so restore cannot recreate partitioned identity exactly. |
-| Session storage | Restore handles cookies only. `localStorage`, `sessionStorage`, IndexedDB, service worker state, and cache data are out of scope. |
+| Session storage | Restore handles cookies only. `localStorage`, `sessionStorage`, IndexedDB, service worker state, and cache data are out of scope. A `storagestate=` target writes an empty `origins` array (or preserves origins a prior automation run wrote), but agentpantry does not yet capture `localStorage` into it. |
+| `storagestate` overwrite guard | `storagestate=<path>` merges into an existing `storageState` JSON (preserving its `origins`). It refuses to overwrite a file that is not valid `storageState` JSON, so pointing `--to` at the wrong path fails loudly instead of clobbering it. |
+| `SameSite=None` on import | Playwright's `storageState` loader hands cookies to Chromium, which requires `Secure` for `SameSite=None`. agentpantry writes the cookie's real attributes; an insecure `None` cookie may be dropped by the browser on import, as with CDP. |
 | `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
 | Unreachable CDP | `cdp=` targets must be loopback HTTP(S) endpoints with a reachable DevTools websocket. Remote DevTools URLs are rejected. |
 | Missing sidecar | Restore opens the sidecar read-only and exits 2 if the store is missing. It does not create an empty backup by accident. |
@@ -372,6 +379,13 @@ Four adapter types ship:
   curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
   seeded from its own file on start, so a sink restart does not drop rows the
   source has not re-sent, and it rewrites the whole file on each apply.
+- `storagestate`: a cookie surface that writes a Playwright/Puppeteer
+  `storageState` JSON file, mode 0600, so a headless or headed automation
+  browser wakes up authenticated via `browser.newContext({ storageState })`
+  without replaying a login (the login step is what anti-bot systems flag
+  hardest). Like `netscape` it seeds from its own file so a restart keeps rows
+  the source has not re-sent, and it preserves any `origins` (localStorage)
+  a prior automation run captured. Also available as a `restore` target.
 - `gh`: a secret surface that writes the GitHub token into the GitHub CLI's
   `hosts.yml`. It is merge-only, so unrelated hosts already in the file are
   preserved, and upsert-only, so a transient missing secret never deletes the
@@ -401,6 +415,10 @@ Example sink config with the common adapters:
     path = "/home/agent/.config/agentpantry/cookies.txt"
 
     [[adapters]]
+    type = "storagestate"
+    path = "/home/agent/.config/agentpantry/state.json"
+
+    [[adapters]]
     type = "gh"
     path = "/home/agent/.config/gh/hosts.yml"
     secret = "gh_token"
@@ -427,9 +445,9 @@ single file.
 
 Current status: cookie sync to the plaintext sidecar remains the default path.
 Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
-`cookies.txt`, `gh`, `openclaw`, and the Hermes Agent bundle. Source support
-includes Linux Chromium, Firefox, Windows Chromium, and Chrome DevTools Protocol
-export for app-bound Chrome profiles.
+`cookies.txt`, Playwright/Puppeteer `storageState`, `gh`, `openclaw`, and the
+Hermes Agent bundle. Source support includes Linux Chromium, Firefox, Windows
+Chromium, and Chrome DevTools Protocol export for app-bound Chrome profiles.
 
 ## Why not something else?
 

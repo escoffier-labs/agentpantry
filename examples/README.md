@@ -14,5 +14,6 @@ Use the same `psk.key` on both machines. Generate it on one side with
 - `source-cdp.toml`: Chrome DevTools Protocol source for app-bound Chrome.
 - `source-local-none.toml`: source-side doctor config for local script-driven captures.
 - `sink-hermes.toml`: Sink with the default sidecar plus a Hermes Agent bundle.
+- `sink-storagestate.toml`: Sink that keeps a Playwright/Puppeteer `storageState` file fresh for a scraping or job-hunting browser.
 - `sink-gh-openclaw.toml`: Sink adapters for GitHub CLI and OpenClaw.
 - `stdio-ssh.md`: Source-to-sink transport over SSH stdio.

@@ -1,0 +1,26 @@
+# Sink that keeps a Playwright/Puppeteer storageState file fresh, so a scraping
+# or job-hunting automation browser (headless or headed real Chrome) wakes up
+# already logged in. Arriving past the login step is the point: the login flow is
+# what anti-bot systems challenge hardest (captcha, 2FA, device checks).
+#
+# Consume it from your automation:
+#   const ctx = await browser.newContext({ storageState: 'state.json' })
+# Headed real Chrome for anti-bot targets:
+#   chromium.launch({ channel: 'chrome', headless: false })
+
+role = "sink"
+peer = "127.0.0.1:8787"
+key_path = "/home/agent/.config/agentpantry/psk.key"
+
+# Keep the default sidecar as the durable capture; the adapter is the live,
+# ready-to-consume view of it.
+surfaces = ["sidecar"]
+
+[[adapters]]
+type = "storagestate"
+path = "/home/agent/.config/agentpantry/state.json"
+
+# Restrict what ever reaches this sink at the source with a domains.allow list.
+# For a job-hunting run that might be, e.g., the boards you actually use:
+# [domains]
+# allow = ["linkedin.com", "indeed.com", "github.com"]

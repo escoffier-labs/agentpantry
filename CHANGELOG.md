@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+- `storagestate` surface: writes a Playwright/Puppeteer `storageState` JSON file
+  (`browser.newContext({ storageState })`), so a headless or headed automation
+  browser wakes up authenticated without replaying a login. Available as a
+  `restore` target (`--to storagestate=<path>`) and as a sink adapter
+  (`type = "storagestate"`) for live keep-fresh sync. It seeds from its own file
+  so a restart keeps rows the source has not re-sent, preserves any existing
+  `origins` (localStorage) verbatim, refuses to overwrite a file that is not
+  valid `storageState` JSON, and writes mode 0600. Cookie values are never
+  logged. `doctor` validates the adapter's target directory. See
+  `examples/sink-storagestate.toml`.
+
 ## v0.6.0 - 2026-07-08
 
 ### Added

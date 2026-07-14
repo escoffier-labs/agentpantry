@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -129,6 +130,81 @@ sidecar_path = %q
 	}
 	if !strings.Contains(string(body), "example.com\tFALSE\t/\tTRUE\t0\tsid\trestored-cookie-value") {
 		t.Fatalf("netscape target missing restored cookie:\n%s", body)
+	}
+}
+
+func TestRestoreToStorageStateWritesPlaywrightFile(t *testing.T) {
+	bin := agentpantryCLI(t)
+	dir := t.TempDir()
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	// Building the sidecar first tightens dir to 0700, satisfying the surface's
+	// group/world-writable guard for the subsequent restore.
+	writeSidecarCookies(t, sidecarPath,
+		cookie.Cookie{Host: "github.com", Name: "user_session", Path: "/", Value: "restored-cookie-value", IsSecure: true, IsHTTPOnly: true, SameSite: 1},
+		cookie.Cookie{Host: "api.example.com", Name: "sid", Path: "/", Value: "off-domain-value"},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	targetPath := filepath.Join(dir, "state.json")
+	cmd := exec.CommandContext(ctx, bin, "restore",
+		"-sidecar", sidecarPath,
+		"--to", "storagestate="+targetPath,
+		"--domains", "github.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restore failed: %v\n%s", err, out)
+	}
+	for _, secret := range []string{"restored-cookie-value", "off-domain-value"} {
+		if strings.Contains(string(out), secret) {
+			t.Fatalf("restore output leaked cookie value %q:\n%s", secret, out)
+		}
+	}
+
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cookies []struct {
+			Name     string  `json:"name"`
+			Value    string  `json:"value"`
+			Domain   string  `json:"domain"`
+			Path     string  `json:"path"`
+			Expires  float64 `json:"expires"`
+			HTTPOnly bool    `json:"httpOnly"`
+			Secure   bool    `json:"secure"`
+			SameSite string  `json:"sameSite"`
+		} `json:"cookies"`
+		Origins []any `json:"origins"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("storagestate target is not valid JSON: %v\n%s", err, body)
+	}
+	if doc.Origins == nil {
+		t.Fatalf("origins must be an empty array, not null:\n%s", body)
+	}
+	// The -domains github.com narrowing must drop the off-domain cookie.
+	if len(doc.Cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1 (domain-narrowed):\n%s", len(doc.Cookies), body)
+	}
+	c := doc.Cookies[0]
+	if c.Name != "user_session" || c.Value != "restored-cookie-value" || c.Domain != "github.com" {
+		t.Fatalf("unexpected cookie: %+v", c)
+	}
+	if !c.Secure || !c.HTTPOnly || c.SameSite != "Lax" || c.Expires != -1 {
+		t.Fatalf("cookie attributes not carried through: %+v", c)
+	}
+
+	if runtime.GOOS != "windows" { // Go synthesizes 0666 on Windows; ACLs govern there
+		info, err := os.Stat(targetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("storagestate file mode = %o, want 600", perm)
+		}
 	}
 }
 

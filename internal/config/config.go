@@ -25,7 +25,7 @@ type BrowserRef struct {
 
 // AdapterRef declares a per-CLI or per-harness adapter sink surface.
 type AdapterRef struct {
-	Type     string            `toml:"type"`     // "netscape" | "gh" | "openclaw" | "hermes"
+	Type     string            `toml:"type"`     // "netscape" | "storagestate" | "gh" | "openclaw" | "hermes"
 	Path     string            `toml:"path"`     // target file, or hermes bundle directory
 	Secret   string            `toml:"secret"`   // gh: secret Name holding the token
 	Host     string            `toml:"host"`     // gh: default "github.com"
