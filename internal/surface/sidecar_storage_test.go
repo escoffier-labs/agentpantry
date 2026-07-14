@@ -61,6 +61,7 @@ func TestSidecarListStorageMissingTableEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.Close() // close before TempDir cleanup; Windows cannot delete an open file
 	if _, err := s.db.Exec(`DROP TABLE localstorage`); err != nil {
 		t.Fatal(err)
 	}
