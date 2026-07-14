@@ -628,6 +628,12 @@ func cmdSink(args []string) error {
 				return err
 			}
 			cookieSurfaces = append(cookieSurfaces, ns)
+		case "storagestate":
+			ss, err := surface.NewStorageState(a.Path)
+			if err != nil {
+				return err
+			}
+			cookieSurfaces = append(cookieSurfaces, ss)
 		case "gh":
 			gh, err := surface.NewGHHosts(a.Path, a.Secret, a.Host, a.User)
 			if err != nil {
@@ -1114,9 +1120,10 @@ func cmdInventory(args []string) error {
 type restoreTargetKind string
 
 const (
-	restoreTargetNetscape restoreTargetKind = "netscape"
-	restoreTargetChromium restoreTargetKind = "chromium"
-	restoreTargetCDP      restoreTargetKind = "cdp"
+	restoreTargetNetscape     restoreTargetKind = "netscape"
+	restoreTargetChromium     restoreTargetKind = "chromium"
+	restoreTargetCDP          restoreTargetKind = "cdp"
+	restoreTargetStorageState restoreTargetKind = "storagestate"
 )
 
 type restoreTarget struct {
@@ -1128,20 +1135,22 @@ type restoreTarget struct {
 func parseRestoreTarget(spec string) (restoreTarget, error) {
 	kind, value, ok := strings.Cut(spec, "=")
 	if !ok || value == "" {
-		return restoreTarget{}, fmt.Errorf("-to must be netscape=<path>, chromium=<profile-dir>, or cdp=<loopback-http-url>")
+		return restoreTarget{}, fmt.Errorf("-to must be netscape=<path>, chromium=<profile-dir>, storagestate=<path>, or cdp=<loopback-http-url>")
 	}
 	switch restoreTargetKind(kind) {
 	case restoreTargetNetscape:
 		return restoreTarget{kind: restoreTargetNetscape, path: value}, nil
 	case restoreTargetChromium:
 		return restoreTarget{kind: restoreTargetChromium, profileDir: value}, nil
+	case restoreTargetStorageState:
+		return restoreTarget{kind: restoreTargetStorageState, path: value}, nil
 	case restoreTargetCDP:
 		if err := cdpvault.ValidateLoopbackURL(value, "http", "https"); err != nil {
 			return restoreTarget{}, fmt.Errorf("invalid CDP restore target: %w", err)
 		}
 		return restoreTarget{kind: restoreTargetCDP, path: value}, nil
 	default:
-		return restoreTarget{}, fmt.Errorf("unsupported restore target %q (supported: netscape, chromium, cdp)", kind)
+		return restoreTarget{}, fmt.Errorf("unsupported restore target %q (supported: netscape, chromium, storagestate, cdp)", kind)
 	}
 }
 
@@ -1151,6 +1160,8 @@ func (t restoreTarget) String() string {
 		return string(t.kind) + "=" + t.path
 	case restoreTargetChromium:
 		return string(t.kind) + "=" + t.profileDir
+	case restoreTargetStorageState:
+		return string(t.kind) + "=" + t.path
 	case restoreTargetCDP:
 		return string(t.kind) + "=" + t.path
 	default:
@@ -1309,6 +1320,12 @@ func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Co
 			return 0, err
 		}
 		return 0, ns.Apply(d)
+	case restoreTargetStorageState:
+		ss, err := surface.NewStorageState(target.path)
+		if err != nil {
+			return 0, err
+		}
+		return 0, ss.Apply(d)
 	case restoreTargetChromium:
 		cs, closeFn, err := newChromeSurface(target.chromeCookiePath())
 		if err != nil {
@@ -1390,7 +1407,7 @@ func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	sidecarPath := fs.String("sidecar", "", "path to a sidecar.db store")
 	cfgPath := fs.String("config", "", "sink config path used to derive the sidecar path")
-	to := fs.String("to", "", "restore target: netscape=<path>, chromium=<profile-dir>, or cdp=<loopback-http-url>")
+	to := fs.String("to", "", "restore target: netscape=<path>, chromium=<profile-dir>, storagestate=<path>, or cdp=<loopback-http-url>")
 	domainList := fs.String("domains", "", "comma-separated domain suffixes to restore")
 	dryRun := fs.Bool("dry-run", false, "summarize the restore without writing the target")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output for --dry-run")
