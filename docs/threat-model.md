@@ -20,6 +20,13 @@ what is explicitly out of scope.
 - **Opt-in scope.** Cookies sync only for domains in the allow list (empty allow
   = nothing). Secrets sync only from the configured `secrets_dir`, optionally
   narrowed by a secret-name allow/deny policy.
+- **localStorage is opt-in and narrow.** `localStorage` capture is off by
+  default, enabled per browser with `capture_localstorage` on a `kind = "cdp"`
+  source only (disk profiles cannot be read safely while the browser holds the
+  lock). Each item's origin is checked against the same deny-wins domain allow
+  list before it is captured or sent, and a non-http(s) origin is dropped.
+  Values are session secrets and are never logged, on either end or in CDP error
+  text.
 - **On-disk perms.** The pre-shared key, plaintext sidecar, secret files, and
   adapter outputs are `0600`; directories `0700`.
 
@@ -43,6 +50,13 @@ These are required for the guarantees above to hold:
   secret store; restrict access to the sink account. The real-Chrome re-encrypt
   surface avoids cleartext cookies but the secrets and adapter outputs may still
   be cleartext on disk by design (tools need to read them).
+- **Enabling `localStorage` capture widens what leaves the source browser.** When
+  turned on, a broader class of in-browser secrets (auth tokens, refresh tokens,
+  device IDs) is mirrored, not just cookies. It is opt-in, off by default,
+  CDP-only, and gated by the domain allow list so the blast radius stays
+  deliberate. Captured `localStorage` is cleartext at rest in the sidecar and the
+  storageState file, like cookies. `sessionStorage`, IndexedDB, service worker
+  state, and cache remain out of scope.
 - **A compromised source or sink host** sees the synced sessions. agentpantry
   protects the link, not a compromised endpoint.
 - **No forward secrecy.** The pre-shared key is long-lived; if it leaks, past
