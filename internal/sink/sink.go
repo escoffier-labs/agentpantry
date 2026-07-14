@@ -11,6 +11,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
@@ -24,6 +25,11 @@ type SecretSurface interface {
 	ApplySecrets(d secret.Diff) error
 }
 
+// StorageSurface is a sink-side destination for synced localStorage.
+type StorageSurface interface {
+	ApplyStorage(d webstorage.Diff) error
+}
+
 // FrameOpener decrypts one inbound frame. *transport.Opener satisfies it, as
 // does *transport.FallbackOpener during a key-rotation grace window.
 type FrameOpener interface {
@@ -32,9 +38,10 @@ type FrameOpener interface {
 
 // Server opens frames from a stream and routes payloads to surfaces.
 type Server struct {
-	Opener         FrameOpener
-	CookieSurfaces []CookieSurface
-	SecretSurfaces []SecretSurface
+	Opener          FrameOpener
+	CookieSurfaces  []CookieSurface
+	SecretSurfaces  []SecretSurface
+	StorageSurfaces []StorageSurface
 
 	// AuthTimeout, when > 0 and the stream supports read deadlines, bounds the
 	// wait for the first frame that authenticates under the session key. A peer
@@ -110,6 +117,13 @@ func (s *Server) apply(p wire.Payload) error {
 	if !p.Secrets.IsEmpty() {
 		for _, ss := range s.SecretSurfaces {
 			if err := ss.ApplySecrets(p.Secrets); err != nil {
+				return err
+			}
+		}
+	}
+	if !p.Storage.IsEmpty() {
+		for _, ws := range s.StorageSurfaces {
+			if err := ws.ApplyStorage(p.Storage); err != nil {
 				return err
 			}
 		}
