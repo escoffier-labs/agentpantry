@@ -33,6 +33,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/state"
 	"github.com/escoffier-labs/agentpantry/internal/surface"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 )
 
 var (
@@ -599,6 +600,7 @@ func cmdSink(args []string) error {
 
 	var cookieSurfaces []sink.CookieSurface
 	var secretSurfaces []sink.SecretSurface
+	var storageSurfaces []sink.StorageSurface
 	var closers []func() error
 
 	for _, name := range c.Surfaces {
@@ -609,6 +611,7 @@ func cmdSink(args []string) error {
 				return err
 			}
 			cookieSurfaces = append(cookieSurfaces, sc)
+			storageSurfaces = append(storageSurfaces, sc)
 			closers = append(closers, sc.Close)
 		case "chrome":
 			if len(c.Browsers) == 0 {
@@ -647,6 +650,7 @@ func cmdSink(args []string) error {
 				return err
 			}
 			cookieSurfaces = append(cookieSurfaces, ss)
+			storageSurfaces = append(storageSurfaces, ss)
 		case "gh":
 			gh, err := surface.NewGHHosts(a.Path, a.Secret, a.Host, a.User)
 			if err != nil {
@@ -695,7 +699,7 @@ func cmdSink(args []string) error {
 		if oerr != nil {
 			return oerr
 		}
-		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces}
+		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces, StorageSurfaces: storageSurfaces}
 		fmt.Fprintf(os.Stderr, "sink: reading frames from stdin, surfaces %v\n", c.Surfaces)
 		return srv.Serve(ctx, os.Stdin)
 	}
@@ -766,11 +770,12 @@ func cmdSink(args []string) error {
 				return
 			}
 			srv := &sink.Server{
-				Opener:         opener,
-				CookieSurfaces: cookieSurfaces,
-				SecretSurfaces: secretSurfaces,
-				AuthTimeout:    authTimeout,
-				ApplyMu:        &applyMu,
+				Opener:          opener,
+				CookieSurfaces:  cookieSurfaces,
+				SecretSurfaces:  secretSurfaces,
+				StorageSurfaces: storageSurfaces,
+				AuthTimeout:     authTimeout,
+				ApplyMu:         &applyMu,
 			}
 			if err := srv.Serve(ctx, conn); err != nil {
 				fmt.Fprintln(os.Stderr, "connection ended:", err)
@@ -1002,6 +1007,7 @@ func cmdStatus(args []string) error {
 			"last_sync":            lastSync,
 			"last_cookies":         st.Cookies,
 			"last_secrets":         st.Secrets,
+			"last_storage":         st.Storage,
 			"rotation_in_progress": rotationInProgress,
 		}
 		b, err := json.MarshalIndent(payload, "", "  ")
@@ -1017,7 +1023,7 @@ func cmdStatus(args []string) error {
 	if rotationInProgress {
 		fmt.Printf("rotation: in progress (old key at %s)\n", keyfile.OldKeyPath(c.KeyPath))
 	}
-	fmt.Printf("last sync: %s (cookies %d, secrets %d)\n", lastSync, st.Cookies, st.Secrets)
+	fmt.Printf("last sync: %s (cookies %d, secrets %d, localStorage %d)\n", lastSync, st.Cookies, st.Secrets, st.Storage)
 	return nil
 }
 
@@ -1067,6 +1073,15 @@ func cmdInventory(args []string) error {
 	}
 	near := cookie.NearExpiry(cookies, within, now)
 
+	storageItems, err := sc.ListStorage()
+	if err != nil {
+		return err
+	}
+	storageOrigins := map[string]struct{}{}
+	for _, it := range storageItems {
+		storageOrigins[it.Origin] = struct{}{}
+	}
+
 	type hostStat struct {
 		Host  string
 		Count int
@@ -1096,13 +1111,15 @@ func cmdInventory(args []string) error {
 			})
 		}
 		payload := map[string]any{
-			"store":            *store,
-			"total":            len(cookies),
-			"persistent":       len(cookies) - sessionOnly,
-			"session_only":     sessionOnly,
-			"hosts":            hostList,
-			"near_expiry_days": *expiryDays,
-			"near_expiry":      nearList,
+			"store":                *store,
+			"total":                len(cookies),
+			"persistent":           len(cookies) - sessionOnly,
+			"session_only":         sessionOnly,
+			"hosts":                hostList,
+			"near_expiry_days":     *expiryDays,
+			"near_expiry":          nearList,
+			"localstorage_items":   len(storageItems),
+			"localstorage_origins": len(storageOrigins),
 		}
 		b, err := json.MarshalIndent(payload, "", "  ")
 		if err != nil {
@@ -1117,6 +1134,7 @@ func cmdInventory(args []string) error {
 	for _, h := range hosts {
 		fmt.Printf("  %5d  %s\n", h.Count, h.Host)
 	}
+	fmt.Printf("localStorage: %d item(s) across %d origin(s)\n", len(storageItems), len(storageOrigins))
 	if len(near) == 0 {
 		fmt.Printf("near-expiry (within %dd): none\n", *expiryDays)
 	} else {
@@ -1223,6 +1241,34 @@ func narrowRestoreCookies(cookies []cookie.Cookie, domains []string, configured 
 	return out
 }
 
+// narrowRestoreStorage applies the same suffix-style domain narrowing to
+// localStorage items, keyed on each origin's host. A non-http(s) origin is
+// dropped.
+func narrowRestoreStorage(items []webstorage.Item, domains []string, configured policy.Domain) []webstorage.Item {
+	requested := policy.Domain{Allow: domains}
+	out := make([]webstorage.Item, 0, len(items))
+	for _, it := range items {
+		host, ok := webstorage.OriginHost(it.Origin)
+		if !ok {
+			continue
+		}
+		if len(configured.Allow) > 0 && !configured.Permit(host) {
+			continue
+		}
+		if len(configured.Allow) == 0 && len(configured.Deny) > 0 {
+			hostOnly := policy.Domain{Allow: []string{host}, Deny: configured.Deny}
+			if !hostOnly.Permit(host) {
+				continue
+			}
+		}
+		if len(domains) > 0 && !requested.Permit(host) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 func skipExpiredRestoreCookies(cookies []cookie.Cookie, now time.Time) ([]cookie.Cookie, int) {
 	out := make([]cookie.Cookie, 0, len(cookies))
 	skipped := 0
@@ -1324,7 +1370,7 @@ func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cook
 	return nil
 }
 
-func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie) (int, error) {
+func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie, storage []webstorage.Item) (int, error) {
 	d := cookie.Diff{Upserts: cookies}
 	switch target.kind {
 	case restoreTargetNetscape:
@@ -1338,7 +1384,10 @@ func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Co
 		if err != nil {
 			return 0, err
 		}
-		return 0, ss.Apply(d)
+		if err := ss.Apply(d); err != nil {
+			return 0, err
+		}
+		return 0, ss.ApplyStorage(webstorage.Diff{Upserts: storage})
 	case restoreTargetChromium:
 		cs, closeFn, err := newChromeSurface(target.chromeCookiePath())
 		if err != nil {
@@ -1474,20 +1523,41 @@ func cmdRestore(args []string) error {
 	}
 	cookies = narrowRestoreCookies(cookies, domains, configuredDomains)
 	cookies, skippedExpired := skipExpiredRestoreCookies(cookies, time.Now())
+
+	// localStorage only materializes into a storageState file; other targets are
+	// cookie-only formats.
+	var storageItems []webstorage.Item
+	if target.kind == restoreTargetStorageState {
+		items, lerr := sc.ListStorage()
+		if lerr != nil {
+			return lerr
+		}
+		storageItems = narrowRestoreStorage(items, domains, configuredDomains)
+	}
+
 	if *dryRun {
-		return printRestoreDryRun(store, target, cookies, skippedExpired, *jsonOut)
+		if err := printRestoreDryRun(store, target, cookies, skippedExpired, *jsonOut); err != nil {
+			return err
+		}
+		if target.kind == restoreTargetStorageState && !*jsonOut {
+			fmt.Printf("localStorage items: %d\n", len(storageItems))
+		}
+		return nil
 	}
 	if *jsonOut {
 		return fmt.Errorf("-json is only supported with -dry-run")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	applySkipped, err := restoreApply(ctx, target, cookies)
+	applySkipped, err := restoreApply(ctx, target, cookies, storageItems)
 	if err != nil {
 		return err
 	}
 	skippedExpired += applySkipped
 	fmt.Printf("restored %d cookie(s) from %s to %s\n", len(cookies), store, target.String())
+	if target.kind == restoreTargetStorageState {
+		fmt.Printf("materialized %d localStorage item(s)\n", len(storageItems))
+	}
 	fmt.Printf("skipped expired: %d\n", skippedExpired)
 	if *verify {
 		present, err := (&cdpvault.CDP{BaseURL: target.path}).ReadCookies(ctx)

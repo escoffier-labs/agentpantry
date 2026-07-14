@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 )
 
 // safeStatePath returns a state.json path inside a 0700 temp dir, satisfying the
@@ -137,6 +138,65 @@ func TestStorageStatePreservesOriginsAndMergesCookies(t *testing.T) {
 	ls := origins[0].(map[string]any)["localStorage"].([]any)
 	if ls[0].(map[string]any)["value"] != "keep-me" {
 		t.Fatalf("localStorage value not preserved: %v", origins)
+	}
+}
+
+func TestStorageStateApplyStorageWritesOrigins(t *testing.T) {
+	path := safeStatePath(t)
+	ss, err := NewStorageState(path)
+	if err != nil {
+		t.Fatalf("NewStorageState: %v", err)
+	}
+	if err := ss.Apply(cookie.Diff{Upserts: []cookie.Cookie{{Host: "github.com", Name: "sid", Value: "c", Path: "/"}}}); err != nil {
+		t.Fatalf("Apply cookies: %v", err)
+	}
+	if err := ss.ApplyStorage(webstorage.Diff{Upserts: []webstorage.Item{
+		{Origin: "https://github.com", Key: "tok", Value: "t1"},
+		{Origin: "https://github.com", Key: "dev", Value: "d1"},
+		{Origin: "https://app.example.com", Key: "s", Value: "s1"},
+	}}); err != nil {
+		t.Fatalf("ApplyStorage: %v", err)
+	}
+
+	out := decodeStorageState(t, path)
+	if len(out["cookies"].([]any)) != 1 {
+		t.Fatalf("cookies must survive ApplyStorage: %v", out["cookies"])
+	}
+	origins := out["origins"].([]any)
+	if len(origins) != 2 {
+		t.Fatalf("origins = %d, want 2: %v", len(origins), origins)
+	}
+	byOrigin := map[string][]any{}
+	for _, o := range origins {
+		m := o.(map[string]any)
+		byOrigin[m["origin"].(string)] = m["localStorage"].([]any)
+	}
+	gh := byOrigin["https://github.com"]
+	if len(gh) != 2 {
+		t.Fatalf("github localStorage = %d, want 2: %v", len(gh), gh)
+	}
+	// Sorted by name: dev before tok.
+	if gh[0].(map[string]any)["name"] != "dev" || gh[1].(map[string]any)["name"] != "tok" {
+		t.Fatalf("localStorage not sorted by name: %v", gh)
+	}
+}
+
+func TestStorageStateApplyStorageDeleteDropsEmptyOrigin(t *testing.T) {
+	path := safeStatePath(t)
+	ss, err := NewStorageState(path)
+	if err != nil {
+		t.Fatalf("NewStorageState: %v", err)
+	}
+	item := webstorage.Item{Origin: "https://a.com", Key: "k", Value: "v"}
+	if err := ss.ApplyStorage(webstorage.Diff{Upserts: []webstorage.Item{item}}); err != nil {
+		t.Fatalf("ApplyStorage upsert: %v", err)
+	}
+	if err := ss.ApplyStorage(webstorage.Diff{Deletes: []string{webstorage.Key(item)}}); err != nil {
+		t.Fatalf("ApplyStorage delete: %v", err)
+	}
+	out := decodeStorageState(t, path)
+	if got := len(out["origins"].([]any)); got != 0 {
+		t.Fatalf("origins = %d after deleting the only entry, want 0 (empty origin dropped)", got)
 	}
 }
 

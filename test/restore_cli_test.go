@@ -17,6 +17,7 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/surface"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/gorilla/websocket"
 )
 
@@ -28,6 +29,18 @@ func writeSidecarCookies(t *testing.T, path string, cookies ...cookie.Cookie) {
 	}
 	defer sc.Close()
 	if err := sc.Apply(cookie.Diff{Upserts: cookies}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSidecarStorage(t *testing.T, path string, items ...webstorage.Item) {
+	t.Helper()
+	sc, err := surface.NewSidecar(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+	if err := sc.ApplyStorage(webstorage.Diff{Upserts: items}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -205,6 +218,66 @@ func TestRestoreToStorageStateWritesPlaywrightFile(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o600 {
 			t.Fatalf("storagestate file mode = %o, want 600", perm)
 		}
+	}
+}
+
+func TestRestoreToStorageStateMaterializesLocalStorage(t *testing.T) {
+	bin := agentpantryCLI(t)
+	dir := t.TempDir()
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	writeSidecarCookies(t, sidecarPath,
+		cookie.Cookie{Host: "github.com", Name: "sid", Path: "/", Value: "cookie-secret", IsSecure: true, SameSite: 1},
+	)
+	writeSidecarStorage(t, sidecarPath,
+		webstorage.Item{Origin: "https://github.com", Key: "tok", Value: "ls-secret"},
+		webstorage.Item{Origin: "https://evil.com", Key: "x", Value: "off-domain-ls"},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	targetPath := filepath.Join(dir, "state.json")
+	cmd := exec.CommandContext(ctx, bin, "restore",
+		"-sidecar", sidecarPath,
+		"--to", "storagestate="+targetPath,
+		"--domains", "github.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restore failed: %v\n%s", err, out)
+	}
+	for _, secret := range []string{"cookie-secret", "ls-secret", "off-domain-ls"} {
+		if strings.Contains(string(out), secret) {
+			t.Fatalf("restore output leaked value %q:\n%s", secret, out)
+		}
+	}
+
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Cookies []map[string]any `json:"cookies"`
+		Origins []struct {
+			Origin       string `json:"origin"`
+			LocalStorage []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"localStorage"`
+		} `json:"origins"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("storagestate not valid JSON: %v\n%s", err, body)
+	}
+	// The off-domain origin must be narrowed out; only github.com survives.
+	if len(doc.Origins) != 1 || doc.Origins[0].Origin != "https://github.com" {
+		t.Fatalf("origins = %+v, want only https://github.com", doc.Origins)
+	}
+	ls := doc.Origins[0].LocalStorage
+	if len(ls) != 1 || ls[0].Name != "tok" || ls[0].Value != "ls-secret" {
+		t.Fatalf("localStorage = %+v, want tok=ls-secret", ls)
+	}
+	if len(doc.Cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(doc.Cookies))
 	}
 }
 

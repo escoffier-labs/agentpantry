@@ -11,6 +11,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
@@ -21,6 +22,34 @@ func (c *capCookie) Apply(d cookie.Diff) error { c.applied = append(c.applied, d
 type capSecret struct{ applied []secret.Diff }
 
 func (c *capSecret) ApplySecrets(d secret.Diff) error { c.applied = append(c.applied, d); return nil }
+
+type capStorage struct{ applied []webstorage.Diff }
+
+func (c *capStorage) ApplyStorage(d webstorage.Diff) error {
+	c.applied = append(c.applied, d)
+	return nil
+}
+
+func TestServeRoutesStorageToStorageSurface(t *testing.T) {
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	var w bytes.Buffer
+
+	p := wire.Payload{Storage: webstorage.Diff{Upserts: []webstorage.Item{{Origin: "https://a.com", Key: "k", Value: "v"}}}}
+	b, _ := json.Marshal(p)
+	frame, _ := sealer.Seal(b)
+	transport.WriteFrame(&w, frame)
+
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
+	cs := &capStorage{}
+	srv := &Server{Opener: opener, StorageSurfaces: []StorageSurface{cs}}
+	if err := srv.Serve(context.Background(), &w); err != nil {
+		t.Fatal(err)
+	}
+	if len(cs.applied) != 1 || len(cs.applied[0].Upserts) != 1 || cs.applied[0].Upserts[0].Key != "k" {
+		t.Fatalf("storage surface not called correctly: %+v", cs.applied)
+	}
+}
 
 func TestServeRoutesPayloadToBothSurfaces(t *testing.T) {
 	key := make([]byte, 32)

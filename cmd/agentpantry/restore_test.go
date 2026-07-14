@@ -47,7 +47,7 @@ func TestRestoreApplyStorageStateWritesPlaywrightFile(t *testing.T) {
 	cookies := []cookie.Cookie{
 		{Host: "github.com", Name: "user_session", Value: "sekret", Path: "/", IsSecure: true, IsHTTPOnly: true, SameSite: 1},
 	}
-	if _, err := restoreApply(context.Background(), target, cookies); err != nil {
+	if _, err := restoreApply(context.Background(), target, cookies, nil); err != nil {
 		t.Fatalf("restoreApply: %v", err)
 	}
 	data, err := os.ReadFile(path)
