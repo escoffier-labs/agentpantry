@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -196,12 +197,14 @@ func TestRestoreToStorageStateWritesPlaywrightFile(t *testing.T) {
 		t.Fatalf("cookie attributes not carried through: %+v", c)
 	}
 
-	info, err := os.Stat(targetPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("storagestate file mode = %o, want 600", perm)
+	if runtime.GOOS != "windows" { // Go synthesizes 0666 on Windows; ACLs govern there
+		info, err := os.Stat(targetPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o600 {
+			t.Fatalf("storagestate file mode = %o, want 600", perm)
+		}
 	}
 }
 

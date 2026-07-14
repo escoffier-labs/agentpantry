@@ -99,13 +99,7 @@ func TestStorageStateModeIs0600(t *testing.T) {
 	if err := ss.Apply(cookie.Diff{Upserts: []cookie.Cookie{{Host: "e.com", Name: "a", Value: "b", Path: "/"}}}); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("mode = %o, want 600", perm)
-	}
+	assertPerm(t, path, 0o600) // skips on Windows, where Go synthesizes 0666
 }
 
 // A restore into an existing storageState must merge cookies and preserve
