@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,5 +85,73 @@ func TestWriteStorageEmptyIsNoop(t *testing.T) {
 	written, err := (&CDP{BaseURL: "http://127.0.0.1:0"}).WriteStorage(context.Background(), nil)
 	if err != nil || written != 0 {
 		t.Fatalf("WriteStorage(nil) = (%d, %v), want (0, nil)", written, err)
+	}
+}
+
+// fakeCDPFrameServer models a tab loaded on origin: /json lists it with its URL,
+// and Runtime.evaluate answers the readiness probe as complete-on-origin and the
+// setItem loop with setResult.
+func fakeCDPFrameServer(t *testing.T, origin, setResult string) *httptest.Server {
+	t.Helper()
+	up := websocket.Upgrader{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+		ws := "ws://" + r.Host + "/devtools/page/ABC"
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"type": "page", "url": origin + "/", "webSocketDebuggerUrl": ws},
+		})
+	})
+	mux.HandleFunc("/devtools/page/ABC", func(w http.ResponseWriter, r *http.Request) {
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			var cmd struct {
+				ID     int `json:"id"`
+				Params struct {
+					Expression string `json:"expression"`
+				} `json:"params"`
+			}
+			if err := c.ReadJSON(&cmd); err != nil {
+				return
+			}
+			value := setResult
+			if strings.Contains(cmd.Params.Expression, "document.readyState") {
+				value = `{"o":"` + origin + `","r":"complete"}`
+			}
+			_ = c.WriteJSON(map[string]any{
+				"id":     cmd.ID,
+				"result": map[string]any{"result": map[string]any{"type": "string", "value": value}},
+			})
+		}
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestWriteStorageViaFramesSeedsLoadedOrigin(t *testing.T) {
+	origin := "https://github.com"
+	srv := fakeCDPFrameServer(t, origin, "2")
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	written, err := (&CDP{BaseURL: srv.URL}).WriteStorageViaFrames(ctx, []webstorage.Item{
+		{Origin: origin, Key: "a", Value: "1"},
+		{Origin: origin, Key: "b", Value: "2"},
+	})
+	if err != nil {
+		t.Fatalf("WriteStorageViaFrames: %v", err)
+	}
+	if written != 2 {
+		t.Fatalf("written = %d, want 2 (both items seeded into the loaded frame)", written)
+	}
+}
+
+func TestWriteStorageViaFramesEmptyIsNoop(t *testing.T) {
+	written, err := (&CDP{BaseURL: "http://127.0.0.1:0"}).WriteStorageViaFrames(context.Background(), nil)
+	if err != nil || written != 0 {
+		t.Fatalf("WriteStorageViaFrames(nil) = (%d, %v), want (0, nil)", written, err)
 	}
 }

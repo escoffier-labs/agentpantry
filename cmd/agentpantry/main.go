@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/escoffier-labs/agentpantry/internal/browser"
 	"github.com/escoffier-labs/agentpantry/internal/cdpvault"
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -68,6 +69,8 @@ func main() {
 		err = cmdInventory(args)
 	case "restore":
 		err = cmdRestore(args)
+	case "browser":
+		err = cmdBrowser(args)
 	case "version":
 		err = cmdVersion(args)
 	case "rotate-key":
@@ -98,6 +101,7 @@ commands:
   status           print the active role, peer, surfaces, and last sync
   inventory        summarize a backup store: per-host counts and near-expiry
   restore          materialize cookies from a sidecar backup to one target
+  browser          launch an automation Chrome pre-seeded with a session
   install-service  install a systemd user unit (Windows: print a task command)
   version          print version and build metadata
 
@@ -1588,6 +1592,143 @@ func cmdRestore(args []string) error {
 		if missing > 0 {
 			return fmt.Errorf("CDP verify failed: %d expected cookie(s) absent", missing)
 		}
+	}
+	return nil
+}
+
+// distinctStorageOrigins returns the sorted unique origins in items, so the
+// launch helper can open a tab on each one (giving it a live frame for
+// localStorage).
+func distinctStorageOrigins(items []webstorage.Item) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, it := range items {
+		if _, ok := seen[it.Origin]; ok {
+			continue
+		}
+		seen[it.Origin] = struct{}{}
+		out = append(out, it.Origin)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cmdBrowser(args []string) error {
+	fs := flag.NewFlagSet("browser", flag.ExitOnError)
+	sidecarPath := fs.String("sidecar", "", "path to a sidecar.db store")
+	cfgPath := fs.String("config", "", "sink config path used to derive the sidecar path and domains")
+	domainList := fs.String("domains", "", "comma-separated domain suffixes to restore")
+	headless := fs.Bool("headless", false, "launch with --headless=new instead of a headed window")
+	profile := fs.String("profile", "", "user-data-dir for the automation profile (default: a throwaway temp dir)")
+	port := fs.Int("port", 9222, "loopback remote debugging port")
+	chromeBin := fs.String("chrome", "", "path to a Chrome/Chromium binary (default: search PATH)")
+	keepOpen := fs.Bool("keep-open", false, "leave the browser running until interrupted, for a scraper to attach")
+	verify := fs.Bool("verify", false, "read cookies back through CDP and report expected vs present")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if (*sidecarPath == "") == (*cfgPath == "") {
+		return fmt.Errorf("pass exactly one of -sidecar or -config")
+	}
+	domains, err := parseRestoreDomains(*domainList)
+	if err != nil {
+		return err
+	}
+
+	store := *sidecarPath
+	var configuredDomains policy.Domain
+	if *cfgPath != "" {
+		c, cerr := loadConfigWarn(*cfgPath)
+		if cerr != nil {
+			return cerr
+		}
+		store = sidecarDBPath(c)
+		configuredDomains = c.Domains
+	}
+
+	sc, err := surface.OpenSidecarReadOnly(store)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "no sidecar store at", store)
+			os.Exit(2)
+		}
+		return err
+	}
+	defer sc.Close()
+	cookies, err := sc.List()
+	if err != nil {
+		return err
+	}
+	cookies = narrowRestoreCookies(cookies, domains, configuredDomains)
+	cookies, _ = skipExpiredRestoreCookies(cookies, time.Now())
+	items, err := sc.ListStorage()
+	if err != nil {
+		return err
+	}
+	storage := narrowRestoreStorage(items, domains, configuredDomains)
+
+	// A throwaway automation profile unless the operator names one. Never a real
+	// user profile.
+	profileDir := *profile
+	cleanup := func() {}
+	if profileDir == "" {
+		d, terr := os.MkdirTemp("", "agentpantry-chrome-")
+		if terr != nil {
+			return terr
+		}
+		profileDir = d
+		cleanup = func() { _ = os.RemoveAll(d) }
+	}
+	defer cleanup()
+
+	ctx := signalCtx()
+	base, stop, err := browser.Launch(ctx, browser.Options{
+		BinaryPath: *chromeBin,
+		ProfileDir: profileDir,
+		Port:       *port,
+		Headless:   *headless,
+		OpenURLs:   distinctStorageOrigins(storage), // a tab per origin gives it a live frame
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stop() }()
+
+	if err := browser.WaitForCDP(ctx, base, 20*time.Second); err != nil {
+		return err
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cdp := &cdpvault.CDP{BaseURL: base}
+	cookieSkipped, err := cdp.WriteCookies(rctx, cookies)
+	if err != nil {
+		return err
+	}
+	// This browser was launched with a tab open on each origin, so seed
+	// localStorage in the loaded frame (reliable), not via DOMStorage.
+	written, err := cdp.WriteStorageViaFrames(rctx, storage)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("browser ready at %s\nrestored %d cookie(s) (%d expired skipped), wrote %d of %d localStorage item(s)\n",
+		base, len(cookies), cookieSkipped, written, len(storage))
+
+	if *verify {
+		present, verr := cdp.ReadCookies(rctx)
+		if verr != nil {
+			return fmt.Errorf("verify readback: %w", verr)
+		}
+		rows, missing := restoreVerifyRows(cookies, present)
+		printRestoreVerify(rows)
+		if missing > 0 {
+			return fmt.Errorf("verify failed: %d expected cookie(s) absent", missing)
+		}
+	}
+
+	if *keepOpen {
+		fmt.Printf("keeping the browser open; attach a scraper to %s. Ctrl-C to stop.\n", base)
+		<-ctx.Done()
 	}
 	return nil
 }
