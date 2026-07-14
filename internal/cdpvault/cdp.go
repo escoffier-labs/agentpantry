@@ -343,6 +343,95 @@ func (c *CDP) readOnePageStorage(ctx context.Context, ws string) (lsCapture, err
 	}
 }
 
+// wsRoundtrip sends one CDP command over conn and waits for the response with
+// the matching id. It returns the CDP error code (0 on success) so a caller can
+// treat a per-item rejection as best-effort. err covers only transport failures.
+// The browser's error message is withheld so it cannot leak stored values.
+func wsRoundtrip(conn *websocket.Conn, id int, method string, params any) (int, error) {
+	msg := map[string]any{"id": id, "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		return 0, err
+	}
+	for {
+		var resp struct {
+			ID    int `json:"id"`
+			Error *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if err := conn.ReadJSON(&resp); err != nil {
+			return 0, err
+		}
+		if resp.ID != id {
+			continue // skip events and other ids
+		}
+		if resp.Error != nil {
+			return resp.Error.Code, nil
+		}
+		return 0, nil
+	}
+}
+
+// WriteStorage writes localStorage into a running Chromium via DOMStorage,
+// without navigating: it targets a browser the operator launched, so a page load
+// would be intrusive and an anti-bot fingerprint signal. Because localStorage is
+// renderer-owned, an origin with no live frame in the target browser is rejected
+// by Chrome; that item is skipped and counted (best-effort). Full seeding of an
+// arbitrary origin belongs to the launch helper, which owns its browser and may
+// navigate. Values are never logged. Returns the number of items written.
+func (c *CDP) WriteStorage(ctx context.Context, items []webstorage.Item) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	ws, err := c.wsURL(ctx)
+	if err != nil {
+		return 0, err
+	}
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	if err != nil {
+		return 0, fmt.Errorf("dial devtools websocket: %w", err)
+	}
+	defer conn.Close()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return 0, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	if code, err := wsRoundtrip(conn, 1, "DOMStorage.enable", nil); err != nil {
+		return 0, err
+	} else if code != 0 {
+		return 0, fmt.Errorf("CDP rejected DOMStorage.enable (code %d)", code)
+	}
+
+	written, skipped := 0, 0
+	for i, it := range items {
+		params := map[string]any{
+			"storageId": map[string]any{"securityOrigin": it.Origin, "isLocalStorage": true},
+			"key":       it.Key,
+			"value":     it.Value,
+		}
+		code, err := wsRoundtrip(conn, i+2, "DOMStorage.setDOMStorageItem", params)
+		if err != nil {
+			return written, err
+		}
+		if code != 0 {
+			skipped++ // origin without a live frame; best-effort skip
+			continue
+		}
+		written++
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d localStorage item(s) whose origin has no live frame in the target browser; use `agentpantry browser` to seed by navigation\n", skipped)
+	}
+	return written, nil
+}
+
 // ReadStorage mirrors localStorage from every open tab's top document. It is
 // non-intrusive: it never navigates or reloads a page. A single hung or closed
 // page is skipped rather than failing the whole capture. Values are never
