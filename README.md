@@ -227,13 +227,14 @@ safe config summary for operator dashboards such as Brigade.
 
 `agentpantry status` reports the active role, peer, key path, surfaces, and the
 configured allow/deny domains. It also reports the last sync: the time of the
-most recent successful source cycle and the cookie and secret counts in the
-last frame that was sent, or `never` if the source has not run yet. Pass
-`--json` for machine-readable output.
+most recent successful source cycle and the cookie, secret, and localStorage
+counts in the last frame that was sent, or `never` if the source has not run
+yet. Pass `--json` for machine-readable output.
 
 `agentpantry inventory` reads a sidecar backup store and summarizes what it
 holds: the total cookie count, the persistent vs session-only split, a per-host
-breakdown sorted by count, and the auth cookies that are near expiry. Where
+breakdown sorted by count, the auth cookies that are near expiry, and the
+localStorage item and origin counts. Where
 `status` reports config and a last-sync count, `inventory` reads the store
 itself, so you can see what a backup actually contains without querying the
 SQLite schema by hand. Point it at a store with `--store` (default
@@ -245,9 +246,11 @@ exist it exits 2 rather than create an empty one.
 `agentpantry restore` materializes cookies from an existing sidecar backup into
 one explicit target. This is the capture-once-materialize-anywhere path: keep a
 sidecar as the portable capture, then write it into the format a local tool or
-browser target needs. Restore reads cookies only from the sidecar, applies the
+browser target needs. Restore reads cookies from the sidecar, applies the
 same suffix-style domain narrowing, skips already-expired persistent cookies,
-and reports counts without printing cookie values.
+and reports counts without printing cookie values. A `storagestate=` target also
+reads captured `localStorage` from the sidecar and writes it into the file's
+`origins`, narrowed by the same domain policy on each origin's host.
 
 Examples:
 
@@ -279,7 +282,7 @@ Restore limitations:
 | --- | --- |
 | Encrypted or app-bound profile state | `chromium=<profile-dir>` writes a local cookie DB and cannot recreate another browser's encrypted profile state. Use CDP for a running browser that must encrypt its own cookies. |
 | Partitioned or CHIPS cookies | The sidecar model does not preserve the partition key, so restore cannot recreate partitioned identity exactly. |
-| Session storage | Restore handles cookies only. `localStorage`, `sessionStorage`, IndexedDB, service worker state, and cache data are out of scope. A `storagestate=` target writes an empty `origins` array (or preserves origins a prior automation run wrote), but agentpantry does not yet capture `localStorage` into it. |
+| Session storage | Cookies always restore. `localStorage` restores into a `storagestate=` target when a CDP source captured it (see the localStorage section). Other targets are cookie-only. `sessionStorage`, IndexedDB, service worker state, and cache data are out of scope. |
 | `storagestate` overwrite guard | `storagestate=<path>` merges into an existing `storageState` JSON (preserving its `origins`). It refuses to overwrite a file that is not valid `storageState` JSON, so pointing `--to` at the wrong path fails loudly instead of clobbering it. |
 | `SameSite=None` on import | Playwright's `storageState` loader hands cookies to Chromium, which requires `Secure` for `SameSite=None`. agentpantry writes the cookie's real attributes; an insecure `None` cookie may be dropped by the browser on import, as with CDP. |
 | `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
@@ -418,6 +421,32 @@ secrets directory.
 Cookies and secrets travel together inside one AES-256-GCM frame, so a single
 peer connection carries both.
 
+## localStorage
+
+Modern logins increasingly keep session material (JWTs, refresh tokens, device
+IDs) in `localStorage` rather than cookies, so a cookies-only restore can leave a
+session signed out. A `kind = "cdp"` source can mirror `localStorage` so the
+restored session is whole. It is opt-in and off by default:
+
+    [[browsers]]
+    kind = "cdp"
+    url  = "http://127.0.0.1:9222"
+    capture_localstorage = true
+
+Capture is non-intrusive: agentpantry reads `localStorage` from the origins
+already open in the browser's tabs and never navigates or reloads a page (which
+would be visible to anti-bot fingerprinting). Each origin is gated by the same
+`domains.allow` policy as cookies, values are never logged, and an oversized
+store is bounded (per-item, per-origin, and per-cycle caps, with skipped items
+counted). It rides the same AES-256-GCM frame as cookies and secrets and lands in
+the `storagestate` surface (`origins[].localStorage`) and the sidecar, so both
+live sync and `restore --to storagestate=` carry it.
+
+Capture is CDP-only: disk Chromium and Firefox sources cannot read `localStorage`
+while the browser holds the store, so `capture_localstorage` requires
+`kind = "cdp"` and `doctor` fails it otherwise. `sessionStorage`, IndexedDB, and
+service worker state stay out of scope.
+
 ## Adapters
 
 Adapters are extra sink surfaces that write synced data into the native file a
@@ -437,8 +466,10 @@ Four adapter types ship:
   browser wakes up authenticated via `browser.newContext({ storageState })`
   without replaying a login (the login step is what anti-bot systems flag
   hardest). Like `netscape` it seeds from its own file so a restart keeps rows
-  the source has not re-sent, and it preserves any `origins` (localStorage)
-  a prior automation run captured. Also available as a `restore` target.
+  the source has not re-sent. It writes `origins[].localStorage` when a CDP
+  source captures it (see the localStorage section), so the restored session
+  carries web-storage tokens alongside cookies. Also available as a `restore`
+  target.
 - `gh`: a secret surface that writes the GitHub token into the GitHub CLI's
   `hosts.yml`. It is merge-only, so unrelated hosts already in the file are
   preserved, and upsert-only, so a transient missing secret never deletes the
@@ -500,7 +531,8 @@ Current status: cookie sync to the plaintext sidecar remains the default path.
 Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
 `cookies.txt`, Playwright/Puppeteer `storageState`, `gh`, `openclaw`, and the
 Hermes Agent bundle. Source support includes Linux Chromium, Firefox, Windows
-Chromium, and Chrome DevTools Protocol export for app-bound Chrome profiles.
+Chromium, and Chrome DevTools Protocol export for app-bound Chrome profiles,
+with optional `localStorage` capture over CDP.
 
 ## Why not something else?
 

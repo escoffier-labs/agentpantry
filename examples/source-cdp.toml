@@ -11,6 +11,10 @@ key_path = "/home/alice/.config/agentpantry/psk.key"
 kind = "cdp"
 profile = "automation"
 url = "http://127.0.0.1:9222"
+# Also mirror localStorage (JWTs, refresh tokens) for allowed origins. Off by
+# default; cdp only. Reads open tabs without navigating. See the README's
+# localStorage section and docs/threat-model.md before enabling.
+# capture_localstorage = true
 
 [domains]
 allow = ["github.com", ".example.com"]
