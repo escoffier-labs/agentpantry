@@ -7,9 +7,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/gorilla/websocket"
 )
 
@@ -228,6 +230,162 @@ func (c *CDP) WriteCookies(ctx context.Context, cookies []cookie.Cookie) (int, e
 		}
 		return skippedExpired, nil
 	}
+}
+
+// localStorage capture caps. localStorage is attacker-influenceable and can be
+// large, so a pathological store is bounded rather than streamed into a frame.
+// Anything skipped is counted and reported (count only), never silently dropped.
+const (
+	maxItemValueBytes = 256 * 1024
+	maxItemsPerOrigin = 512
+	maxStorageBytes   = 8 * 1024 * 1024
+)
+
+// pageWSURLs returns every loopback page-target websocket URL, so localStorage
+// can be read from each open tab. Cookie reads only need one target (cookies are
+// browser-wide), but localStorage is per-origin, one execution context per page.
+func (c *CDP) pageWSURLs(ctx context.Context) ([]string, error) {
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return nil, fmt.Errorf("invalid CDP base URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("CDP /json returned %d", resp.StatusCode)
+	}
+	var targets []cdpTarget
+	if err := json.NewDecoder(resp.Body).Decode(&targets); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, t := range targets {
+		if t.WebSocketDebuggerURL == "" || (t.Type != "page" && t.Type != "") {
+			continue
+		}
+		if err := ValidateLoopbackURL(t.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+			return nil, fmt.Errorf("invalid CDP websocket URL: %w", err)
+		}
+		out = append(out, t.WebSocketDebuggerURL)
+	}
+	return out, nil
+}
+
+// lsCapture is the shape returned by the in-page evaluation: the tab's origin
+// and its localStorage entries as [key, value] pairs.
+type lsCapture struct {
+	Origin  string      `json:"o"`
+	Entries [][2]string `json:"e"`
+}
+
+// readOnePageStorage evaluates localStorage in one page's top document. The
+// try/catch keeps an opaque or storage-denied origin from failing the capture.
+const lsExpr = `(function(){try{return JSON.stringify({o:location.origin,e:Object.entries(window.localStorage)})}catch(e){return JSON.stringify({o:location.origin,e:[]})}})()`
+
+func (c *CDP) readOnePageStorage(ctx context.Context, ws string) (lsCapture, error) {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	if err != nil {
+		return lsCapture{}, fmt.Errorf("dial devtools websocket: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteJSON(map[string]any{
+		"id":     1,
+		"method": "Runtime.evaluate",
+		"params": map[string]any{"expression": lsExpr, "returnByValue": true},
+	}); err != nil {
+		return lsCapture{}, err
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return lsCapture{}, fmt.Errorf("set read deadline: %w", err)
+	}
+	for {
+		var msg struct {
+			ID     int `json:"id"`
+			Result struct {
+				Result struct {
+					Value string `json:"value"`
+				} `json:"result"`
+				ExceptionDetails json.RawMessage `json:"exceptionDetails"`
+			} `json:"result"`
+			Error *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if err := conn.ReadJSON(&msg); err != nil {
+			return lsCapture{}, err
+		}
+		if msg.ID != 1 {
+			continue // skip CDP events
+		}
+		if msg.Error != nil {
+			// Withhold the browser message: it can echo localStorage values.
+			return lsCapture{}, fmt.Errorf("CDP Runtime.evaluate failed (code %d); message withheld", msg.Error.Code)
+		}
+		if len(msg.Result.ExceptionDetails) > 0 {
+			// A page threw (e.g. storage disabled); treat as empty, not fatal.
+			return lsCapture{Origin: ""}, nil
+		}
+		var cap lsCapture
+		if err := json.Unmarshal([]byte(msg.Result.Result.Value), &cap); err != nil {
+			return lsCapture{}, err
+		}
+		return cap, nil
+	}
+}
+
+// ReadStorage mirrors localStorage from every open tab's top document. It is
+// non-intrusive: it never navigates or reloads a page. A single hung or closed
+// page is skipped rather than failing the whole capture. Values are never
+// logged. Size caps bound a pathological store; skipped items are counted.
+func (c *CDP) ReadStorage(ctx context.Context) ([]webstorage.Item, error) {
+	urls, err := c.pageWSURLs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]webstorage.Item{}
+	var order []string
+	perOrigin := map[string]int{}
+	total := 0
+	dropped := 0
+	for _, ws := range urls {
+		capd, err := c.readOnePageStorage(ctx, ws)
+		if err != nil {
+			continue // one bad page does not sink the cycle
+		}
+		for _, kv := range capd.Entries {
+			k, v := kv[0], kv[1]
+			if len(v) > maxItemValueBytes || perOrigin[capd.Origin] >= maxItemsPerOrigin || total+len(k)+len(v) > maxStorageBytes {
+				dropped++
+				continue
+			}
+			it := webstorage.Item{Origin: capd.Origin, Key: k, Value: v}
+			key := webstorage.Key(it)
+			if _, ok := seen[key]; !ok {
+				order = append(order, key)
+			}
+			seen[key] = it
+			perOrigin[capd.Origin]++
+			total += len(k) + len(v)
+		}
+	}
+	if dropped > 0 {
+		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d localStorage item(s) over size/count caps\n", dropped)
+	}
+	out := make([]webstorage.Item, 0, len(order))
+	for _, k := range order {
+		out = append(out, seen[k])
+	}
+	return out, nil
 }
 
 func (c *CDP) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {

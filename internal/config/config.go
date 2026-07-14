@@ -21,6 +21,9 @@ type BrowserRef struct {
 	Profile    string `toml:"profile"`
 	CookiePath string `toml:"cookie_path"`
 	URL        string `toml:"url"` // cdp: DevTools base URL, e.g. http://127.0.0.1:9222
+	// CaptureLocalStorage, cdp only, also mirrors localStorage for permitted
+	// origins. Off by default: it widens what leaves the source browser.
+	CaptureLocalStorage bool `toml:"capture_localstorage"`
 }
 
 // AdapterRef declares a per-CLI or per-harness adapter sink surface.

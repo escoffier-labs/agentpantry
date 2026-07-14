@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	_ "modernc.org/sqlite"
 )
 
@@ -46,6 +47,13 @@ func NewSidecar(path string) (*Sidecar, error) {
 		host TEXT, name TEXT, path TEXT, value TEXT,
 		expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER,
 		PRIMARY KEY(host, name, path))`)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS localstorage(
+		origin TEXT, "key" TEXT, value TEXT,
+		PRIMARY KEY(origin, "key"))`)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -144,6 +152,65 @@ func (s *Sidecar) Apply(d cookie.Diff) error {
 	for _, k := range d.Deletes {
 		host, name, path := keyParts(k)
 		if _, err = tx.Exec(`DELETE FROM cookies WHERE host=? AND name=? AND path=?`, host, name, path); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// hasTable reports whether a table exists, so read paths tolerate an older
+// sidecar that predates the localstorage table.
+func (s *Sidecar) hasTable(name string) bool {
+	var got string
+	err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
+	return err == nil
+}
+
+// ListStorage returns every localStorage item stored in the sidecar. An older
+// sidecar without the table yields an empty list, not an error.
+func (s *Sidecar) ListStorage() ([]webstorage.Item, error) {
+	if !s.hasTable("localstorage") {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT origin, "key", value FROM localstorage`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []webstorage.Item
+	for rows.Next() {
+		var it webstorage.Item
+		if err := rows.Scan(&it.Origin, &it.Key, &it.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// ApplyStorage upserts and deletes localStorage items in the same 0600 store as
+// cookies, so a captured session's localStorage is persisted for restore.
+func (s *Sidecar) ApplyStorage(d webstorage.Diff) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, it := range d.Upserts {
+		if _, err = tx.Exec(`INSERT INTO localstorage(origin,"key",value)
+			VALUES(?,?,?)
+			ON CONFLICT(origin,"key") DO UPDATE SET value=excluded.value`,
+			it.Origin, it.Key, it.Value); err != nil {
+			return err
+		}
+	}
+	for _, k := range d.Deletes {
+		origin, key, ok := strings.Cut(k, "\x00")
+		if !ok {
+			continue
+		}
+		if _, err = tx.Exec(`DELETE FROM localstorage WHERE origin=? AND "key"=?`, origin, key); err != nil {
 			return err
 		}
 	}

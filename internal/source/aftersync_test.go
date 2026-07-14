@@ -21,8 +21,8 @@ func TestAfterSyncFiresWithSentAndCounts(t *testing.T) {
 	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
 	type call struct {
-		sent             bool
-		cookies, secrets int
+		sent                      bool
+		cookies, secrets, storage int
 	}
 	var calls []call
 	syncer := &Syncer{
@@ -33,8 +33,8 @@ func TestAfterSyncFiresWithSentAndCounts(t *testing.T) {
 		Policy: policy.Domain{Allow: []string{"github.com"}},
 		Sealer: sealer,
 		Out:    &buf,
-		AfterSync: func(sent bool, c, s int) {
-			calls = append(calls, call{sent, c, s})
+		AfterSync: func(sent bool, c, s, st int) {
+			calls = append(calls, call{sent, c, s, st})
 		},
 	}
 	// First sync: 2 cookie upserts sent.

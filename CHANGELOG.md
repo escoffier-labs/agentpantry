@@ -13,6 +13,20 @@
   valid `storageState` JSON, and writes mode 0600. Cookie values are never
   logged. `doctor` validates the adapter's target directory. See
   `examples/sink-storagestate.toml`.
+- `localStorage` capture and restore. A `kind = "cdp"` source with
+  `capture_localstorage = true` mirrors `localStorage` for policy-permitted
+  origins into the same AES-256-GCM frame as cookies and secrets, so a restored
+  Playwright/Puppeteer session carries web-storage tokens alongside cookies.
+  Capture is opt-in and off by default, CDP-only (disk profiles cannot be read
+  safely), non-intrusive (reads open tabs, never navigates), gated by the domain
+  allow list on each origin's host, and size-capped with counted drops. It lands
+  in the `storagestate` surface (`origins[].localStorage`) and a new sidecar
+  `localstorage` table, so live sync and `restore --to storagestate=` both carry
+  it. `inventory` reports item/origin counts, `status` reports the last-sent
+  localStorage count, and `doctor` fails `capture_localstorage` on a non-cdp
+  browser. localStorage values are never logged. `sessionStorage`, IndexedDB, and
+  service worker state stay out of scope. See `docs/threat-model.md` for the
+  capture threat delta and `docs/specs/2026-07-14-localstorage-sync.md`.
 
 ## v0.6.0 - 2026-07-08
 
