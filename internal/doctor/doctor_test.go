@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -109,6 +111,37 @@ func TestSourceMissingCookieStoreFails(t *testing.T) {
 	}
 	if find(Run(c), "vault:p").Status != Fail {
 		t.Fatal("missing cookie store must Fail")
+	}
+}
+
+func TestCaptureLocalStorageOnNonCDPFails(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{
+		Role: "source", Peer: "127.0.0.1:8787", KeyPath: key,
+		Browsers: []config.BrowserRef{{
+			Kind: "firefox", Profile: "p", CookiePath: filepath.Join(dir, "cookies.sqlite"),
+			CaptureLocalStorage: true,
+		}},
+	}
+	if find(Run(c), "localstorage:p").Status != Fail {
+		t.Fatal("capture_localstorage on a non-cdp browser must Fail")
+	}
+}
+
+func TestCaptureLocalStorageOnCDPReports(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+	c := config.Config{
+		Role: "source", Peer: "127.0.0.1:8787", KeyPath: key,
+		Browsers: []config.BrowserRef{{Kind: "cdp", Profile: "p", URL: srv.URL, CaptureLocalStorage: true}},
+	}
+	if find(Run(c), "localstorage:p").Status != OK {
+		t.Fatal("capture_localstorage on a reachable cdp browser must report OK")
 	}
 }
 

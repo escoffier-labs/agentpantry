@@ -296,7 +296,7 @@ func TestStatePersistsAcrossSyncs(t *testing.T) {
 		Policy: policy.Domain{Allow: []string{"github.com"}},
 		Sealer: sealer,
 		Out:    discard{},
-		AfterSync: func(sent bool, cookies, secrets int) {
+		AfterSync: func(sent bool, cookies, secrets, storage int) {
 			s2, _ := state.Load(sp)
 			s2.LastSyncUnix = 1700000000
 			if sent {
