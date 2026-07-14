@@ -219,7 +219,9 @@ path the same way `sink` does. Targets are `netscape=<path>` for curl-family
 profile directory, `storagestate=<path>` for a Playwright/Puppeteer
 `storageState` JSON file (`browser.newContext({ storageState })`), consumed by
 headless or headed automation, and `cdp=<http://127.0.0.1:PORT>` for a running
-Chromium DevTools endpoint on loopback. `--verify` is CDP-only: after writing, it reads
+Chromium DevTools endpoint on loopback. A `cdp=` restore also writes captured
+`localStorage` best-effort (see below), and a `storagestate=` restore writes it
+into the file's `origins`. `--verify` is CDP-only: after writing, it reads
 back through `Storage.getCookies` and prints per-domain expected and present
 counts plus cookie names. It exits nonzero if any expected cookie is absent.
 
@@ -234,6 +236,7 @@ Restore limitations:
 | `SameSite=None` on import | Playwright's `storageState` loader hands cookies to Chromium, which requires `Secure` for `SameSite=None`. agentpantry writes the cookie's real attributes; an insecure `None` cookie may be dropped by the browser on import, as with CDP. |
 | `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
 | Unreachable CDP | `cdp=` targets must be loopback HTTP(S) endpoints with a reachable DevTools websocket. Remote DevTools URLs are rejected. |
+| localStorage into a live browser | A `cdp=` restore writes `localStorage` without navigating the operator's browser, so an origin with no open tab is rejected by Chrome and skipped (counted, best-effort). To seed `localStorage` for any origin reliably, use a browser you own that can navigate to it. The `storagestate=` file path has no such limit. |
 | Missing sidecar | Restore opens the sidecar read-only and exits 2 if the store is missing. It does not create an empty backup by accident. |
 | Unwritable target | Netscape, Chromium, and CDP writes fail rather than silently dropping cookies when the target cannot be written. |
 | Non-representable cookies | Cookies that CDP or a file format cannot represent may fail the restore. Expired cookies are skipped and counted. |

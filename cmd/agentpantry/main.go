@@ -1370,39 +1370,54 @@ func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cook
 	return nil
 }
 
-func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie, storage []webstorage.Item) (int, error) {
+// restoreApply writes cookies (and, for storagestate/cdp targets, localStorage)
+// to the target. It returns the count of skipped-expired cookies and the count
+// of localStorage items written.
+func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie, storage []webstorage.Item) (int, int, error) {
 	d := cookie.Diff{Upserts: cookies}
 	switch target.kind {
 	case restoreTargetNetscape:
 		ns, err := surface.NewNetscape(target.path)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		return 0, ns.Apply(d)
+		return 0, 0, ns.Apply(d)
 	case restoreTargetStorageState:
 		ss, err := surface.NewStorageState(target.path)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if err := ss.Apply(d); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		return 0, ss.ApplyStorage(webstorage.Diff{Upserts: storage})
+		if err := ss.ApplyStorage(webstorage.Diff{Upserts: storage}); err != nil {
+			return 0, 0, err
+		}
+		return 0, len(storage), nil
 	case restoreTargetChromium:
 		cs, closeFn, err := newChromeSurface(target.chromeCookiePath())
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		defer func() {
 			if err := closeFn(); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: close failed:", err)
 			}
 		}()
-		return 0, cs.Apply(d)
+		return 0, 0, cs.Apply(d)
 	case restoreTargetCDP:
-		return (&cdpvault.CDP{BaseURL: target.path}).WriteCookies(ctx, cookies)
+		cdp := &cdpvault.CDP{BaseURL: target.path}
+		skipped, err := cdp.WriteCookies(ctx, cookies)
+		if err != nil {
+			return skipped, 0, err
+		}
+		if len(storage) == 0 {
+			return skipped, 0, nil
+		}
+		written, err := cdp.WriteStorage(ctx, storage)
+		return skipped, written, err
 	default:
-		return 0, fmt.Errorf("unsupported restore target %q", target.kind)
+		return 0, 0, fmt.Errorf("unsupported restore target %q", target.kind)
 	}
 }
 
@@ -1524,10 +1539,11 @@ func cmdRestore(args []string) error {
 	cookies = narrowRestoreCookies(cookies, domains, configuredDomains)
 	cookies, skippedExpired := skipExpiredRestoreCookies(cookies, time.Now())
 
-	// localStorage only materializes into a storageState file; other targets are
-	// cookie-only formats.
+	// localStorage materializes into a storageState file or a live CDP target;
+	// netscape and chromium are cookie-only formats.
+	carriesStorage := target.kind == restoreTargetStorageState || target.kind == restoreTargetCDP
 	var storageItems []webstorage.Item
-	if target.kind == restoreTargetStorageState {
+	if carriesStorage {
 		items, lerr := sc.ListStorage()
 		if lerr != nil {
 			return lerr
@@ -1539,7 +1555,7 @@ func cmdRestore(args []string) error {
 		if err := printRestoreDryRun(store, target, cookies, skippedExpired, *jsonOut); err != nil {
 			return err
 		}
-		if target.kind == restoreTargetStorageState && !*jsonOut {
+		if carriesStorage && !*jsonOut {
 			fmt.Printf("localStorage items: %d\n", len(storageItems))
 		}
 		return nil
@@ -1549,14 +1565,17 @@ func cmdRestore(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	applySkipped, err := restoreApply(ctx, target, cookies, storageItems)
+	applySkipped, storageWritten, err := restoreApply(ctx, target, cookies, storageItems)
 	if err != nil {
 		return err
 	}
 	skippedExpired += applySkipped
 	fmt.Printf("restored %d cookie(s) from %s to %s\n", len(cookies), store, target.String())
-	if target.kind == restoreTargetStorageState {
-		fmt.Printf("materialized %d localStorage item(s)\n", len(storageItems))
+	switch target.kind {
+	case restoreTargetStorageState:
+		fmt.Printf("materialized %d localStorage item(s)\n", storageWritten)
+	case restoreTargetCDP:
+		fmt.Printf("wrote %d of %d localStorage item(s) into the running browser (best-effort)\n", storageWritten, len(storageItems))
 	}
 	fmt.Printf("skipped expired: %d\n", skippedExpired)
 	if *verify {
