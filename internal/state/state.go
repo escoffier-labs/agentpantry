@@ -17,6 +17,7 @@ type State struct {
 	LastSentUnix int64 `json:"last_sent_unix"` // last cycle that sent a frame
 	Cookies      int   `json:"cookies"`        // cookie upserts in the last sent frame
 	Secrets      int   `json:"secrets"`        // secret upserts in the last sent frame
+	Storage      int   `json:"storage"`        // localStorage upserts in the last sent frame
 }
 
 // Clock yields the current time; injected so tests are deterministic.

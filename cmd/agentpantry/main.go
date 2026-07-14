@@ -330,6 +330,17 @@ func cmdSource(args []string) error {
 		}
 	}
 
+	var storageReaders []source.StorageReader
+	for _, b := range c.Browsers {
+		if !b.CaptureLocalStorage {
+			continue
+		}
+		if b.Kind != "cdp" {
+			return fmt.Errorf("capture_localstorage is only supported for kind = \"cdp\" browsers, not %q", b.Kind)
+		}
+		storageReaders = append(storageReaders, &cdpvault.CDP{BaseURL: b.URL})
+	}
+
 	resync := time.Duration(c.ResyncSeconds) * time.Second
 	hasCDP := false
 	for _, b := range c.Browsers {
@@ -347,9 +358,10 @@ func cmdSource(args []string) error {
 	syncer := &source.Syncer{
 		Vaults:       vs,
 		Secrets:      secretReaders,
+		Storage:      storageReaders,
 		Policy:       c.Domains,
 		SecretPolicy: c.SecretNames,
-		AfterSync: func(sent bool, cookies, secrets int) {
+		AfterSync: func(sent bool, cookies, secrets, storage int) {
 			st, _ := state.Load(sp)
 			now := clock.Now().Unix()
 			st.LastSyncUnix = now
@@ -357,6 +369,7 @@ func cmdSource(args []string) error {
 				st.LastSentUnix = now
 				st.Cookies = cookies
 				st.Secrets = secrets
+				st.Storage = storage
 			}
 			if err := state.Save(sp, st); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: could not write state:", err)

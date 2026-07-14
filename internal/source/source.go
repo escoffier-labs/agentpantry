@@ -12,6 +12,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
 	"github.com/fsnotify/fsnotify"
 )
@@ -26,22 +27,30 @@ type SecretReader interface {
 	ReadSecrets(ctx context.Context) ([]secret.Secret, error)
 }
 
-// Syncer turns successive vault and secret reads into sealed payload frames.
+// StorageReader yields the current localStorage items from one source.
+type StorageReader interface {
+	ReadStorage(ctx context.Context) ([]webstorage.Item, error)
+}
+
+// Syncer turns successive vault, secret, and localStorage reads into sealed
+// payload frames.
 type Syncer struct {
 	Vaults       []CookieReader
 	Secrets      []SecretReader
+	Storage      []StorageReader
 	Policy       policy.Domain
 	SecretPolicy policy.Names
 	Sealer       *transport.Sealer
 	Out          io.Writer
 
 	// AfterSync, if set, is called at the end of each successful SyncOnce.
-	// sent reports whether a frame was written; cookies/secrets are the upsert
-	// counts in that frame (0 when nothing was sent).
-	AfterSync func(sent bool, cookies, secrets int)
+	// sent reports whether a frame was written; cookies/secrets/storage are the
+	// upsert counts in that frame (0 when nothing was sent).
+	AfterSync func(sent bool, cookies, secrets, storage int)
 
 	prev        cookie.Snapshot
 	prevSecrets secret.Snapshot
+	prevStorage webstorage.Snapshot
 }
 
 // Reset clears the previous snapshots so the next SyncOnce resends full state.
@@ -49,6 +58,7 @@ type Syncer struct {
 func (s *Syncer) Reset() {
 	s.prev = cookie.Snapshot{}
 	s.prevSecrets = secret.Snapshot{}
+	s.prevStorage = webstorage.Snapshot{}
 }
 
 // Backoff returns a capped exponential delay for reconnect attempt n (0-based):
@@ -119,9 +129,39 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	s.prev = curCookies
 
-	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff}
+	var storageDiff webstorage.Diff
+	if len(s.Storage) > 0 {
+		var allItems []webstorage.Item
+		storageUnavailable := false
+		for _, r := range s.Storage {
+			items, err := r.ReadStorage(ctx)
+			if err != nil {
+				storageUnavailable = true
+				break
+			}
+			allItems = append(allItems, items...)
+		}
+		if storageUnavailable {
+			// Mirror the secrets policy: a transient capture failure leaves the
+			// already-synced localStorage on the sink untouched this cycle
+			// instead of emitting deletes for everything.
+			fmt.Fprintln(os.Stderr, "agentpantry: localStorage source unavailable this cycle, leaving synced storage untouched")
+		} else {
+			permitted := allItems[:0]
+			for _, it := range allItems {
+				if host, ok := webstorage.OriginHost(it.Origin); ok && s.Policy.Permit(host) {
+					permitted = append(permitted, it)
+				}
+			}
+			curStorage := webstorage.NewSnapshot(permitted)
+			storageDiff = curStorage.DiffFrom(s.prevStorage)
+			s.prevStorage = curStorage
+		}
+	}
+
+	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff, Storage: storageDiff}
 	if p.IsEmpty() {
-		s.afterSync(false, 0, 0)
+		s.afterSync(false, 0, 0, 0)
 		return nil
 	}
 	raw, err := json.Marshal(p)
@@ -135,13 +175,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if err := transport.WriteFrame(s.Out, frame); err != nil {
 		return err
 	}
-	s.afterSync(true, len(cookieDiff.Upserts), len(secretDiff.Upserts))
+	s.afterSync(true, len(cookieDiff.Upserts), len(secretDiff.Upserts), len(storageDiff.Upserts))
 	return nil
 }
 
-func (s *Syncer) afterSync(sent bool, cookies, secrets int) {
+func (s *Syncer) afterSync(sent bool, cookies, secrets, storage int) {
 	if s.AfterSync != nil {
-		s.AfterSync(sent, cookies, secrets)
+		s.AfterSync(sent, cookies, secrets, storage)
 	}
 }
 

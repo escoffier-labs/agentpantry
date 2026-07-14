@@ -155,6 +155,9 @@ func Run(c config.Config) []Check {
 	switch c.Role {
 	case "source":
 		for _, b := range c.Browsers {
+			if b.CaptureLocalStorage && b.Kind != "cdp" {
+				checks = append(checks, Check{"localstorage:" + b.Profile, Fail, "capture_localstorage requires kind = \"cdp\""})
+			}
 			if b.Kind == "cdp" {
 				name := "cdp:" + b.Profile
 				if err := cdpvault.ValidateLoopbackURL(b.URL, "http", "https"); err != nil {
@@ -168,6 +171,9 @@ func Run(c config.Config) []Check {
 				} else {
 					_ = resp.Body.Close()
 					checks = append(checks, Check{name, OK, b.URL})
+				}
+				if b.CaptureLocalStorage {
+					checks = append(checks, Check{"localstorage:" + b.Profile, OK, "capture enabled (domain-gated)"})
 				}
 				continue
 			}
