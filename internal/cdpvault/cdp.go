@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -57,6 +58,7 @@ func ValidateLoopbackURL(raw string, allowedSchemes ...string) error {
 
 type cdpTarget struct {
 	Type                 string `json:"type"`
+	URL                  string `json:"url"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
@@ -341,6 +343,285 @@ func (c *CDP) readOnePageStorage(ctx context.Context, ws string) (lsCapture, err
 		}
 		return cap, nil
 	}
+}
+
+// wsRoundtrip sends one CDP command over conn and waits for the response with
+// the matching id. It returns the CDP error code (0 on success) so a caller can
+// treat a per-item rejection as best-effort. err covers only transport failures.
+// The browser's error message is withheld so it cannot leak stored values.
+func wsRoundtrip(conn *websocket.Conn, id int, method string, params any) (int, error) {
+	msg := map[string]any{"id": id, "method": method}
+	if params != nil {
+		msg["params"] = params
+	}
+	if err := conn.WriteJSON(msg); err != nil {
+		return 0, err
+	}
+	for {
+		var resp struct {
+			ID    int `json:"id"`
+			Error *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if err := conn.ReadJSON(&resp); err != nil {
+			return 0, err
+		}
+		if resp.ID != id {
+			continue // skip events and other ids
+		}
+		if resp.Error != nil {
+			return resp.Error.Code, nil
+		}
+		return 0, nil
+	}
+}
+
+// WriteStorage writes localStorage into a running Chromium via DOMStorage,
+// without navigating: it targets a browser the operator launched, so a page load
+// would be intrusive and an anti-bot fingerprint signal. Because localStorage is
+// renderer-owned, an origin with no live frame in the target browser is rejected
+// by Chrome; that item is skipped and counted (best-effort). Full seeding of an
+// arbitrary origin belongs to the launch helper, which owns its browser and may
+// navigate. Values are never logged. Returns the number of items written.
+func (c *CDP) WriteStorage(ctx context.Context, items []webstorage.Item) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	ws, err := c.wsURL(ctx)
+	if err != nil {
+		return 0, err
+	}
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	if err != nil {
+		return 0, fmt.Errorf("dial devtools websocket: %w", err)
+	}
+	defer conn.Close()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return 0, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	if code, err := wsRoundtrip(conn, 1, "DOMStorage.enable", nil); err != nil {
+		return 0, err
+	} else if code != 0 {
+		return 0, fmt.Errorf("CDP rejected DOMStorage.enable (code %d)", code)
+	}
+
+	written, skipped := 0, 0
+	for i, it := range items {
+		params := map[string]any{
+			"storageId": map[string]any{"securityOrigin": it.Origin, "isLocalStorage": true},
+			"key":       it.Key,
+			"value":     it.Value,
+		}
+		code, err := wsRoundtrip(conn, i+2, "DOMStorage.setDOMStorageItem", params)
+		if err != nil {
+			return written, err
+		}
+		if code != 0 {
+			skipped++ // origin without a live frame; best-effort skip
+			continue
+		}
+		written++
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "agentpantry: skipped %d localStorage item(s) whose origin has no live frame in the target browser; use `agentpantry browser` to seed by navigation\n", skipped)
+	}
+	return written, nil
+}
+
+// evalValue runs a Runtime.evaluate whose expression returns a string, and
+// returns that string. An in-page exception yields ("", nil) so callers can treat
+// it as "not ready / not set" rather than fatal. Values are never logged.
+func (c *CDP) evalValue(conn *websocket.Conn, id int, expr string) (string, error) {
+	if err := conn.WriteJSON(map[string]any{
+		"id":     id,
+		"method": "Runtime.evaluate",
+		"params": map[string]any{"expression": expr, "returnByValue": true},
+	}); err != nil {
+		return "", err
+	}
+	for {
+		var msg struct {
+			ID     int `json:"id"`
+			Result struct {
+				Result struct {
+					Value string `json:"value"`
+				} `json:"result"`
+				ExceptionDetails json.RawMessage `json:"exceptionDetails"`
+			} `json:"result"`
+			Error *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if err := conn.ReadJSON(&msg); err != nil {
+			return "", err
+		}
+		if msg.ID != id {
+			continue
+		}
+		if msg.Error != nil {
+			return "", fmt.Errorf("CDP Runtime.evaluate failed (code %d); message withheld", msg.Error.Code)
+		}
+		if len(msg.Result.ExceptionDetails) > 0 {
+			return "", nil
+		}
+		return msg.Result.Result.Value, nil
+	}
+}
+
+// originOf returns the scheme://host[:port] origin of an http(s) URL.
+func originOf(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", false
+	}
+	return u.Scheme + "://" + u.Host, true
+}
+
+// WriteStorageViaFrames seeds localStorage by evaluating localStorage.setItem in
+// the tab already open on each item's origin. Unlike WriteStorage this is the
+// reliable path, but it requires a tab on the origin, so it is for a browser the
+// caller launched with those origins open (the `agentpantry browser` helper),
+// not an operator's arbitrary browser. Values are never logged. It returns the
+// number of items set.
+func (c *CDP) WriteStorageViaFrames(ctx context.Context, items []webstorage.Item) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	byOrigin := map[string][][2]string{}
+	var order []string
+	for _, it := range items {
+		if _, ok := byOrigin[it.Origin]; !ok {
+			order = append(order, it.Origin)
+		}
+		byOrigin[it.Origin] = append(byOrigin[it.Origin], [2]string{it.Key, it.Value})
+	}
+
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return 0, fmt.Errorf("invalid CDP base URL: %w", err)
+	}
+
+	written := 0
+	for _, origin := range order {
+		ws, err := c.frameWSForOrigin(ctx, origin)
+		if err != nil {
+			return written, err
+		}
+		if ws == "" {
+			continue // no tab on this origin; skip
+		}
+		n, err := c.seedFrame(ctx, ws, origin, byOrigin[origin])
+		if err != nil {
+			return written, err
+		}
+		written += n
+	}
+	return written, nil
+}
+
+// frameWSForOrigin finds the websocket of a page target whose URL origin matches,
+// retrying briefly because a freshly launched tab may not have its URL set yet.
+func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json", nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			var targets []cdpTarget
+			derr := json.NewDecoder(resp.Body).Decode(&targets)
+			_ = resp.Body.Close()
+			if derr == nil {
+				for _, t := range targets {
+					if t.WebSocketDebuggerURL == "" || (t.Type != "page" && t.Type != "") {
+						continue
+					}
+					if o, ok := originOf(t.URL); ok && o == origin {
+						if err := ValidateLoopbackURL(t.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+							return "", fmt.Errorf("invalid CDP websocket URL: %w", err)
+						}
+						return t.WebSocketDebuggerURL, nil
+					}
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// seedFrame waits for the origin's document to be ready, then sets its
+// localStorage entries in one evaluate. Returns the number set.
+func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]string) (int, error) {
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	if err != nil {
+		return 0, fmt.Errorf("dial devtools websocket: %w", err)
+	}
+	defer conn.Close()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return 0, fmt.Errorf("set read deadline: %w", err)
+	}
+
+	id := 1
+	ready := false
+	readyBy := time.Now().Add(10 * time.Second)
+	for {
+		val, err := c.evalValue(conn, id, `JSON.stringify({o:location.origin,r:document.readyState})`)
+		id++
+		if err != nil {
+			return 0, err
+		}
+		var st struct {
+			O string `json:"o"`
+			R string `json:"r"`
+		}
+		if val != "" && json.Unmarshal([]byte(val), &st) == nil && st.O == origin && st.R != "loading" {
+			ready = true
+			break
+		}
+		if time.Now().After(readyBy) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	if !ready {
+		return 0, nil // the tab never became the origin document; skip
+	}
+
+	payload, err := json.Marshal(pairs)
+	if err != nil {
+		return 0, err
+	}
+	// The pairs are embedded as a JSON literal (valid JS). The script sets each
+	// item and returns the count as a string so evalValue can read it.
+	expr := `(function(){var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
+	val, err := c.evalValue(conn, id, expr)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := strconv.Atoi(val)
+	return n, nil
 }
 
 // ReadStorage mirrors localStorage from every open tab's top document. It is

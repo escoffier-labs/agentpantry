@@ -219,7 +219,9 @@ path the same way `sink` does. Targets are `netscape=<path>` for curl-family
 profile directory, `storagestate=<path>` for a Playwright/Puppeteer
 `storageState` JSON file (`browser.newContext({ storageState })`), consumed by
 headless or headed automation, and `cdp=<http://127.0.0.1:PORT>` for a running
-Chromium DevTools endpoint on loopback. `--verify` is CDP-only: after writing, it reads
+Chromium DevTools endpoint on loopback. A `cdp=` restore also writes captured
+`localStorage` best-effort (see below), and a `storagestate=` restore writes it
+into the file's `origins`. `--verify` is CDP-only: after writing, it reads
 back through `Storage.getCookies` and prints per-domain expected and present
 counts plus cookie names. It exits nonzero if any expected cookie is absent.
 
@@ -234,6 +236,7 @@ Restore limitations:
 | `SameSite=None` on import | Playwright's `storageState` loader hands cookies to Chromium, which requires `Secure` for `SameSite=None`. agentpantry writes the cookie's real attributes; an insecure `None` cookie may be dropped by the browser on import, as with CDP. |
 | `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
 | Unreachable CDP | `cdp=` targets must be loopback HTTP(S) endpoints with a reachable DevTools websocket. Remote DevTools URLs are rejected. |
+| localStorage into a live browser | A `cdp=` restore writes `localStorage` without navigating the operator's browser, so an origin with no open tab is rejected by Chrome and skipped (counted, best-effort). To seed `localStorage` for any origin reliably, use a browser you own that can navigate to it. The `storagestate=` file path has no such limit. |
 | Missing sidecar | Restore opens the sidecar read-only and exits 2 if the store is missing. It does not create an empty backup by accident. |
 | Unwritable target | Netscape, Chromium, and CDP writes fail rather than silently dropping cookies when the target cannot be written. |
 | Non-representable cookies | Cookies that CDP or a file format cannot represent may fail the restore. Expired cookies are skipped and counted. |
@@ -393,6 +396,40 @@ Capture is CDP-only: disk Chromium and Firefox sources cannot read `localStorage
 while the browser holds the store, so `capture_localstorage` requires
 `kind = "cdp"` and `doctor` fails it otherwise. `sessionStorage`, IndexedDB, and
 service worker state stay out of scope.
+
+## Launching an automation browser
+
+`agentpantry browser` stands up a dedicated automation Chrome that is already
+logged in, so a scraper attaches to a warm session instead of driving a login
+(the step anti-bot systems flag hardest):
+
+    agentpantry browser --sidecar ./sidecar.db --domains github.com --keep-open
+
+It launches Chrome with a throwaway profile (never a real one) on a loopback
+debugging port, opens a tab on each origin in the backup, sets the cookies
+browser-wide, seeds each origin's `localStorage` in its loaded tab, and hands the
+DevTools endpoint back. Flags: `--headless` uses new headless (`--headless=new`),
+`--profile` names a persistent user-data-dir instead of a temp one, `--port` sets
+the debugging port, `--chrome` points at a specific binary, `--verify` reads
+cookies back through CDP, and `--keep-open` leaves the browser running (Ctrl-C to
+stop) for a scraper to attach.
+
+Because agentpantry owns this browser, it seeds `localStorage` reliably by
+navigating to each origin, which `restore --to cdp=` against a browser you
+already launched cannot do (that path is best-effort). The launch sets
+`--disable-blink-features=AutomationControlled` so `navigator.webdriver` stays
+unset. That flag is the extent of agentpantry's anti-bot posture. It delivers the
+authenticated session and gets out of the way. Fingerprint shims, human-paced
+input, and captcha handling belong to the tool driving the tab (a
+Playwright/Puppeteer stealth layer). A session restored into a browser whose user
+agent, timezone, or language differ from where it was minted can still be
+flagged, so match those.
+
+For a long-running automation browser you already drive over CDP, keep its
+session fresh in place with `agentpantry restore --to cdp=http://127.0.0.1:PORT`
+instead of relaunching. That pairs with the capture direction: a `kind = "cdp"`
+source can read cookies and `localStorage` back out of the same running browser,
+so one browser stays synced with your daily driver in both directions.
 
 ## Adapters
 

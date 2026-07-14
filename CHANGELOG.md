@@ -27,6 +27,20 @@
   browser. localStorage values are never logged. `sessionStorage`, IndexedDB, and
   service worker state stay out of scope. See `docs/threat-model.md` for the
   capture threat delta and `docs/specs/2026-07-14-localstorage-sync.md`.
+- `restore --to cdp=` now writes captured `localStorage` into a running Chromium
+  via `DOMStorage`, best-effort and without navigating the operator's browser
+  (an origin with no live frame is rejected by Chrome and skipped, counted). See
+  `docs/specs/2026-07-14-live-chrome-restore.md`.
+- `agentpantry browser` launches a dedicated automation Chrome (throwaway
+  profile, loopback debugging port, `--headless=new` optional, launched with
+  `--disable-blink-features=AutomationControlled` so `navigator.webdriver` stays
+  unset), opens a tab on
+  each origin, sets cookies browser-wide, seeds each origin's `localStorage` in
+  its loaded tab, and hands the DevTools endpoint back (`--keep-open` for a
+  scraper to attach). Because it owns the browser it seeds `localStorage`
+  reliably by navigating, unlike the best-effort `restore --to cdp=` path.
+  `--domains`, `--profile`, `--port`, `--chrome`, and `--verify` flags. Never
+  touches a real user profile. Values are never logged.
 
 ## v0.6.0 - 2026-07-08
 
