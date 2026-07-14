@@ -75,6 +75,11 @@ func Args(opts Options) []string {
 		"--user-data-dir=" + opts.ProfileDir,
 		"--no-first-run",
 		"--no-default-browser-check",
+		// Drop the AutomationControlled blink feature so navigator.webdriver is
+		// not set and the automation infobar is gone. This is the one anti-bot
+		// baseline worth setting at launch; deeper stealth (fingerprint shims,
+		// human-paced interaction) is the job of the layer that drives the tab.
+		"--disable-blink-features=AutomationControlled",
 	}
 	if opts.Headless {
 		args = append(args, "--headless=new")

@@ -40,6 +40,7 @@ func TestArgsCarriesLoopbackDebugFlagsAndOrigins(t *testing.T) {
 		"--remote-debugging-address=127.0.0.1",
 		"--remote-debugging-port=9333",
 		"--user-data-dir=/tmp/p",
+		"--disable-blink-features=AutomationControlled",
 		"--headless=new",
 		"https://github.com",
 	} {

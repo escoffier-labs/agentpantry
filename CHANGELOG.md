@@ -32,7 +32,9 @@
   (an origin with no live frame is rejected by Chrome and skipped, counted). See
   `docs/specs/2026-07-14-live-chrome-restore.md`.
 - `agentpantry browser` launches a dedicated automation Chrome (throwaway
-  profile, loopback debugging port, `--headless=new` optional), opens a tab on
+  profile, loopback debugging port, `--headless=new` optional, launched with
+  `--disable-blink-features=AutomationControlled` so `navigator.webdriver` stays
+  unset), opens a tab on
   each origin, sets cookies browser-wide, seeds each origin's `localStorage` in
   its loaded tab, and hands the DevTools endpoint back (`--keep-open` for a
   scraper to attach). Because it owns the browser it seeds `localStorage`
