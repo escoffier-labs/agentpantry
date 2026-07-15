@@ -510,3 +510,130 @@ func TestRestoreChromiumDryRunListsTargetWithoutValues(t *testing.T) {
 		t.Fatalf("dry-run wrote the chromium Cookies store: %v", err)
 	}
 }
+
+func TestRestoreDesktopAppCodexDryRunFailsClosedWithoutWriting(t *testing.T) {
+	bin := agentpantryCLI(t)
+	dir := t.TempDir()
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	writeSidecarCookies(t, sidecarPath,
+		cookie.Cookie{Host: "example.com", Name: "sid", Path: "/", Value: "desktop-secret-value"},
+		cookie.Cookie{Host: "api.example.com", Name: "auth", Path: "/", Value: "desktop-api-secret-value"},
+	)
+	profileRoot := filepath.Join(dir, "desktop-profile")
+	if err := os.Mkdir(profileRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "restore",
+		"-sidecar", sidecarPath,
+		"--to", "desktop-app=codex",
+		"--dry-run",
+	)
+	cmd.Env = append(os.Environ(),
+		"HOME="+profileRoot,
+		"XDG_CONFIG_HOME="+profileRoot,
+		"APPDATA="+profileRoot,
+		"LOCALAPPDATA="+profileRoot,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Codex desktop-app dry-run failed: %v\n%s", err, out)
+	}
+	output := string(out)
+	for _, secret := range []string{"desktop-secret-value", "desktop-api-secret-value"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("dry-run output leaked cookie value %q:\n%s", secret, output)
+		}
+	}
+	for _, want := range []string{
+		"restore target: desktop-app=codex",
+		"cookies: 2",
+		"process state: unknown",
+		"injection method: unavailable",
+		"write result: desktop-app=codex restore blocked: no supported Codex session injection or read-back bridge; no files written",
+		"example.com",
+		"api.example.com",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("Codex desktop-app dry-run output missing %q:\n%s", want, output)
+		}
+	}
+	entries, err := os.ReadDir(profileRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Codex desktop-app dry-run wrote under the profile root: %v", entries)
+	}
+}
+
+func TestRestoreDesktopAppClaudeApplyAndVerifyFailClosedWithoutWriting(t *testing.T) {
+	bin := agentpantryCLI(t)
+	dir := t.TempDir()
+	sidecarPath := filepath.Join(dir, "sidecar.db")
+	writeSidecarCookies(t, sidecarPath,
+		cookie.Cookie{Host: "claude.ai", Name: "sessionKey", Path: "/", Value: "claude-secret-value"},
+	)
+
+	for _, tc := range []struct {
+		name    string
+		extra   []string
+		wantErr string
+	}{
+		{
+			name:    "apply",
+			wantErr: "Stop Claude completely, remove --verify if present, then rerun with --dry-run to inspect the offline profile",
+		},
+		{
+			name:    "verify",
+			extra:   []string{"--verify"},
+			wantErr: "desktop-app=claude restore blocked: no supported Claude session injection or read-back bridge; no files written",
+		},
+		{
+			name:    "verify_and_dry_run",
+			extra:   []string{"--verify", "--dry-run"},
+			wantErr: "desktop-app=claude restore blocked: no supported Claude session injection or read-back bridge; no files written",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profileRoot := filepath.Join(dir, tc.name+"-profile")
+			if err := os.Mkdir(profileRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"restore", "-sidecar", sidecarPath, "--to", "desktop-app=claude"}
+			args = append(args, tc.extra...)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, args...)
+			cmd.Env = append(os.Environ(),
+				"HOME="+profileRoot,
+				"XDG_CONFIG_HOME="+profileRoot,
+				"APPDATA="+profileRoot,
+				"LOCALAPPDATA="+profileRoot,
+			)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("Claude desktop-app %s unexpectedly succeeded:\n%s", tc.name, out)
+			}
+			output := string(out)
+			if !strings.Contains(output, tc.wantErr) {
+				t.Fatalf("Claude desktop-app %s output missing %q:\n%s", tc.name, tc.wantErr, output)
+			}
+			if !strings.Contains(output, "remove --verify if present, then rerun with --dry-run") {
+				t.Fatalf("Claude desktop-app %s output lacks executable dry-run guidance:\n%s", tc.name, output)
+			}
+			if strings.Contains(output, "claude-secret-value") {
+				t.Fatalf("Claude desktop-app %s leaked a cookie value:\n%s", tc.name, output)
+			}
+			entries, err := os.ReadDir(profileRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("Claude desktop-app %s wrote under the profile root: %v", tc.name, entries)
+			}
+		})
+	}
+}

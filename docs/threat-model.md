@@ -29,6 +29,14 @@ what is explicitly out of scope.
   text.
 - **On-disk perms.** The pre-shared key, plaintext sidecar, secret files, and
   adapter outputs are `0600`; directories `0700`.
+- **Desktop app targets fail closed.** `desktop-app=codex|claude --dry-run`
+  reads profile, lock, and cookie-path metadata only. It does not open the app's
+  cookie database. Actual restore and read-back verification are rejected until
+  agentpantry has a supported injection bridge or can prove that the app is
+  stopped, its schema and encryption are compatible, a private backup can be
+  made, and read-back verification is available. The refusal directs the
+  operator to stop the app, inspect with `--dry-run`, leave the profile
+  unchanged, retain the sidecar, and use an existing supported target.
 
 ## Operator responsibilities
 
@@ -59,6 +67,11 @@ These are required for the guarantees above to hold:
   state, and cache remain out of scope.
 - **A compromised source or sink host** sees the synced sessions. agentpantry
   protects the link, not a compromised endpoint.
+- **Desktop app detection is heuristic.** The default Codex and Claude profile
+  paths follow each OS user-config convention. A Chromium cookie filename does
+  not establish encryption compatibility, and an absent Electron singleton
+  lock does not prove the app is stopped. The current adapter reports those
+  limits and performs no app write.
 - **No forward secrecy.** The pre-shared key is long-lived; if it leaks, past
   captured ciphertext from the same key is at risk (the session salt separates
   sessions but is derived from the same long-lived key). Rotation is
