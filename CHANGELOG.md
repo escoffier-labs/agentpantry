@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- `restore --to desktop-app=codex|claude --dry-run` adds a read-only inspection
+  contract for desktop app profiles. It reports the OS-specific profile
+  candidate, profile lock state, Chromium cookie-store candidate, domain and
+  cookie counts, and the selected injection method without opening or writing
+  the app database. Actual restore and `--verify` fail closed because no
+  supported injection/read-back bridge or encryption compatibility check is
+  available. Refusals include stop-app, offline inspection, backup, and recovery
+  guidance. Linux, macOS, and Windows profile candidates and the offline restore
+  safety gate are documented separately in the README.
 - `storagestate` surface: writes a Playwright/Puppeteer `storageState` JSON file
   (`browser.newContext({ storageState })`), so a headless or headed automation
   browser wakes up authenticated without replaying a login. Available as a

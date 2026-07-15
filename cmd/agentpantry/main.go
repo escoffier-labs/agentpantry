@@ -1159,18 +1159,20 @@ const (
 	restoreTargetChromium     restoreTargetKind = "chromium"
 	restoreTargetCDP          restoreTargetKind = "cdp"
 	restoreTargetStorageState restoreTargetKind = "storagestate"
+	restoreTargetDesktopApp   restoreTargetKind = "desktop-app"
 )
 
 type restoreTarget struct {
 	kind       restoreTargetKind
 	path       string
 	profileDir string
+	app        string
 }
 
 func parseRestoreTarget(spec string) (restoreTarget, error) {
 	kind, value, ok := strings.Cut(spec, "=")
 	if !ok || value == "" {
-		return restoreTarget{}, fmt.Errorf("-to must be netscape=<path>, chromium=<profile-dir>, storagestate=<path>, or cdp=<loopback-http-url>")
+		return restoreTarget{}, fmt.Errorf("-to must be netscape=<path>, chromium=<profile-dir>, storagestate=<path>, cdp=<loopback-http-url>, or desktop-app=<codex|claude>")
 	}
 	switch restoreTargetKind(kind) {
 	case restoreTargetNetscape:
@@ -1184,8 +1186,13 @@ func parseRestoreTarget(spec string) (restoreTarget, error) {
 			return restoreTarget{}, fmt.Errorf("invalid CDP restore target: %w", err)
 		}
 		return restoreTarget{kind: restoreTargetCDP, path: value}, nil
+	case restoreTargetDesktopApp:
+		if _, ok := desktopApps[value]; !ok {
+			return restoreTarget{}, fmt.Errorf("unsupported desktop app %q (supported: codex, claude)", value)
+		}
+		return restoreTarget{kind: restoreTargetDesktopApp, app: value}, nil
 	default:
-		return restoreTarget{}, fmt.Errorf("unsupported restore target %q (supported: netscape, chromium, storagestate, cdp)", kind)
+		return restoreTarget{}, fmt.Errorf("unsupported restore target %q (supported: netscape, chromium, storagestate, cdp, desktop-app)", kind)
 	}
 }
 
@@ -1199,6 +1206,8 @@ func (t restoreTarget) String() string {
 		return string(t.kind) + "=" + t.path
 	case restoreTargetCDP:
 		return string(t.kind) + "=" + t.path
+	case restoreTargetDesktopApp:
+		return string(t.kind) + "=" + t.app
 	default:
 		return string(t.kind)
 	}
@@ -1335,6 +1344,11 @@ func restoreSummary(cookies []cookie.Cookie) ([]restoreCountRow, []restoreCountR
 
 func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cookie.Cookie, skippedExpired int, jsonOut bool) error {
 	nameHosts, domains := restoreSummary(cookies)
+	var appInspection *desktopAppInspection
+	if target.kind == restoreTargetDesktopApp {
+		inspection := inspectDesktopApp(target)
+		appInspection = &inspection
+	}
 	if jsonOut {
 		payload := map[string]any{
 			"dry_run":         true,
@@ -1344,6 +1358,9 @@ func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cook
 			"skipped_expired": skippedExpired,
 			"name_hosts":      nameHosts,
 			"domains":         domains,
+		}
+		if appInspection != nil {
+			payload["desktop_app"] = appInspection
 		}
 		b, err := json.MarshalIndent(payload, "", "  ")
 		if err != nil {
@@ -1370,6 +1387,15 @@ func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cook
 		for _, row := range domains {
 			fmt.Printf("  %5d  %s\n", row.Count, row.Domain)
 		}
+	}
+	if appInspection != nil {
+		fmt.Println("profile:", appInspection.ProfilePath)
+		fmt.Println("profile state:", appInspection.ProfileState)
+		fmt.Println("process state:", appInspection.ProcessState)
+		fmt.Println("cookie store:", appInspection.CookieStore)
+		fmt.Println("cookie layout:", appInspection.CookieLayout)
+		fmt.Println("injection method:", appInspection.InjectionMethod)
+		fmt.Println("write result:", appInspection.WriteResult)
 	}
 	return nil
 }
@@ -1420,6 +1446,8 @@ func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Co
 		}
 		written, err := cdp.WriteStorage(ctx, storage)
 		return skipped, written, err
+	case restoreTargetDesktopApp:
+		return 0, 0, errors.New(desktopAppRestoreRefusal(target))
 	default:
 		return 0, 0, fmt.Errorf("unsupported restore target %q", target.kind)
 	}
@@ -1488,7 +1516,7 @@ func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	sidecarPath := fs.String("sidecar", "", "path to a sidecar.db store")
 	cfgPath := fs.String("config", "", "sink config path used to derive the sidecar path")
-	to := fs.String("to", "", "restore target: netscape=<path>, chromium=<profile-dir>, storagestate=<path>, or cdp=<loopback-http-url>")
+	to := fs.String("to", "", "restore target: netscape=<path>, chromium=<profile-dir>, storagestate=<path>, cdp=<loopback-http-url>, or desktop-app=<codex|claude>")
 	domainList := fs.String("domains", "", "comma-separated domain suffixes to restore")
 	dryRun := fs.Bool("dry-run", false, "summarize the restore without writing the target")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output for --dry-run")
@@ -1505,6 +1533,9 @@ func cmdRestore(args []string) error {
 	target, err := parseRestoreTarget(*to)
 	if err != nil {
 		return err
+	}
+	if *verify && target.kind == restoreTargetDesktopApp {
+		return errors.New(desktopAppRestoreRefusal(target))
 	}
 	if *verify && *dryRun {
 		return fmt.Errorf("-verify is not supported with -dry-run")

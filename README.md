@@ -213,6 +213,9 @@ Examples:
     agentpantry restore -sidecar ./sidecar.db \
       --to cdp=http://127.0.0.1:9222 --verify
 
+    agentpantry restore -sidecar ./sidecar.db \
+      --to desktop-app=codex --dry-run
+
 Use `-sidecar` to name the store directly, or `-config` to derive the sidecar
 path the same way `sink` does. Targets are `netscape=<path>` for curl-family
 `cookies.txt`, `chromium=<profile-dir>` for a not-running Chrome-compatible
@@ -224,6 +227,59 @@ Chromium DevTools endpoint on loopback. A `cdp=` restore also writes captured
 into the file's `origins`. `--verify` is CDP-only: after writing, it reads
 back through `Storage.getCookies` and prints per-domain expected and present
 counts plus cookie names. It exits nonzero if any expected cookie is absent.
+`desktop-app=codex` and `desktop-app=claude` are inspection-only targets. They
+require `--dry-run`, report the selected profile candidate, lock state, cookie
+store candidate, domain and cookie counts, and the unavailable injection method.
+Without a supported session-injection and read-back bridge, a non-dry-run call
+fails before opening or writing an app profile. `--verify` is rejected for the
+same reason.
+
+### Desktop app inspection
+
+Desktop app profiles often contain a Chromium-style `Network/Cookies` or
+`Cookies` file. The filename does not prove that agentpantry can encrypt values
+the way that app expects. `desktop-app=` checks the paths below, then reports a
+cookie store only as a candidate. It uses read-only filesystem metadata calls
+and never opens the cookie database.
+
+The candidates come from Go's platform user-config lookup. They do not contain a
+compiled-in home directory, and they are not vendor API contracts. A missing
+path is reported as `not found`. A `SingletonLock`, `SingletonCookie`, or
+`SingletonSocket` entry is reported as `possibly running`. An absent lock is
+reported as `not detected`, which does not prove that the app is stopped.
+
+#### Linux
+
+Go resolves the user config directory from `$XDG_CONFIG_HOME`, or from the
+current user's home when that variable is empty. The candidates are
+`${XDG_CONFIG_HOME:-~/.config}/Codex` and
+`${XDG_CONFIG_HOME:-~/.config}/Claude`.
+
+#### macOS
+
+Go resolves the user config directory from the current user's home. The
+candidates are `~/Library/Application Support/Codex` and
+`~/Library/Application Support/Claude`.
+
+#### Windows
+
+Go resolves the user config directory from `%AppData%`. The candidates are
+`%AppData%\Codex` and `%AppData%\Claude`. The Windows build uses the same
+metadata-only lock and cookie-file checks as Linux and macOS.
+
+Offline desktop-app restore stays blocked until the implementation can prove all
+of these conditions: the app is stopped, the cookie store is a regular file with
+a supported schema, the host and app encryption scheme is compatible, a private
+backup is created before the transaction, and read-back verification is
+available. A detected Chromium layout alone does not clear that gate. The
+portable sidecar remains the backup and can still be restored into `netscape=`,
+`storagestate=`, `chromium=`, or a loopback `cdp=` target.
+
+A refused write prints the recovery sequence: stop the app completely, remove
+`--verify` if present, rerun the same target with `--dry-run`, and do not edit the
+profile. Keep the sidecar backup. Until a supported bridge or proven offline
+path exists, restore into `storagestate=<path>`, `chromium=<profile-dir>`, or
+`cdp=<loopback-http-url>` instead.
 
 Restore limitations:
 
@@ -236,6 +292,8 @@ Restore limitations:
 | `SameSite=None` on import | Playwright's `storageState` loader hands cookies to Chromium, which requires `Secure` for `SameSite=None`. agentpantry writes the cookie's real attributes; an insecure `None` cookie may be dropped by the browser on import, as with CDP. |
 | `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
 | Unreachable CDP | `cdp=` targets must be loopback HTTP(S) endpoints with a reachable DevTools websocket. Remote DevTools URLs are rejected. |
+| Desktop app process state | `desktop-app=` treats a profile lock as possibly running. An absent lock does not prove the app is stopped. The target remains inspection-only in either case. |
+| Desktop app cookie encryption | A Chromium cookie filename is only a layout candidate. Codex and Claude restore stays blocked because no supported injection/read-back bridge or encryption compatibility check is implemented. No app file is opened or written. |
 | localStorage into a live browser | A `cdp=` restore writes `localStorage` without navigating the operator's browser, so an origin with no open tab is rejected by Chrome and skipped (counted, best-effort). To seed `localStorage` for any origin reliably, use a browser you own that can navigate to it. The `storagestate=` file path has no such limit. |
 | Missing sidecar | Restore opens the sidecar read-only and exits 2 if the store is missing. It does not create an empty backup by accident. |
 | Unwritable target | Netscape, Chromium, and CDP writes fail rather than silently dropping cookies when the target cannot be written. |
