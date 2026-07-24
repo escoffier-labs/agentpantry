@@ -1,5 +1,7 @@
 package transport
 
+import "errors"
+
 // FallbackOpener opens frames with a primary key, falling back to a previous
 // key during a rotation grace window. The first frame that authenticates pins
 // its key for the rest of the session, so per-session replay protection is
@@ -49,5 +51,5 @@ func (o *FallbackOpener) Open(frame []byte) ([]byte, error) {
 		}
 		return pt, nil
 	}
-	return nil, primaryErr
+	return nil, errors.Join(primaryErr, err)
 }
