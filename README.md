@@ -75,7 +75,8 @@ agentpantry status
     agentpantry doctor
     agentpantry source
 
-`init` writes a commented config that walks through each field (it refuses to
+`init` writes a commented config that walks through each field, including
+commented `[[browsers]]` examples for both `chromium` and `cdp` (it refuses to
 overwrite an existing config unless you pass `--force`), and `doctor` validates
 the result before you rely on it, warning about misspelled or misplaced config
 keys instead of ignoring them.
@@ -187,8 +188,9 @@ itself, so you can see what a backup actually contains without querying the
 SQLite schema by hand. Point it at a store with `--store` (default
 `<config dir>/sidecar.db`), set the near-expiry window with `--expiry-days`
 (default 14), and pass `--json` for a payload that downstream tools and
-dashboards can consume. It reports on existing stores only: if the path does not
-exist it exits 2 rather than create an empty one.
+dashboards can consume. The JSON payload includes cookie `name` and `host` for
+near-expiry rows (never values). It reports on existing stores only: if the path
+does not exist it exits 2 rather than create an empty one.
 
 `agentpantry restore` materializes cookies from an existing sidecar backup into
 one explicit target. This is the capture-once-materialize-anywhere path: keep a
@@ -463,10 +465,14 @@ logged in, so a scraper attaches to a warm session instead of driving a login
 
     agentpantry browser --sidecar ./sidecar.db --domains github.com --keep-open
 
+    agentpantry browser -config ./sink.toml --keep-open
+
 It launches Chrome with a throwaway profile (never a real one) on a loopback
 debugging port, opens a tab on each origin in the backup, sets the cookies
 browser-wide, seeds each origin's `localStorage` in its loaded tab, and hands the
-DevTools endpoint back. Flags: `--headless` uses new headless (`--headless=new`),
+DevTools endpoint back. Use `-sidecar` to name the store directly, or `-config`
+to derive the sidecar path and domain policy the same way `sink` and `restore`
+do (pass exactly one). Flags: `--headless` uses new headless (`--headless=new`),
 `--profile` names a persistent user-data-dir instead of a temp one, `--port` sets
 the debugging port, `--chrome` points at a specific binary, `--verify` reads
 cookies back through CDP, and `--keep-open` leaves the browser running (Ctrl-C to
@@ -497,7 +503,7 @@ without any agentpantry-aware glue. They are declared with an optional
 `[[adapters]]` block in the sink config, each entry chosen by `type`. An adapter
 is layered on top of the regular `surfaces` list; you can run both at once.
 
-Four adapter types ship:
+Five adapter types ship:
 
 - `netscape`: a cookie surface that writes a Netscape `cookies.txt` (the format
   curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
@@ -639,8 +645,10 @@ provenance attestations.
 - The sidecar SQLite is plaintext, mode 0600. Treat the sink like a secret
   store: anyone who can read that file can impersonate the synced sessions.
 - The pre-shared key file is written 0600 and must be kept off shared storage.
-- Cookie values are never logged. They live only in memory, in the encrypted
-  frames on the wire, and in the sidecar.
+- Cookie values are never logged. Cookie names and hosts may appear in stderr
+  expiry warnings during sync and in `inventory --json` near-expiry output.
+  Values live only in memory, in the encrypted frames on the wire, and in the
+  sidecar.
 - Transport is AES-256-GCM with a shared key; run it over Tailscale, Twingate,
   a LAN you trust, or an SSH tunnel.
 - The sink defaults to loopback. Both `doctor` and `agentpantry sink` startup
