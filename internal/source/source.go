@@ -116,20 +116,22 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	}
 
 	var secretDiff secret.Diff
+	secretsCommitted := false
+	var curSecrets secret.Snapshot
 	if secretsUnavailable {
 		// A source secrets read failed (e.g. a vanished/unmounted dir). Leave the
 		// already-synced secrets on the sink untouched this cycle instead of
 		// emitting deletes for everything. Cookies still proceed.
 		fmt.Fprintln(os.Stderr, "agentpantry: secrets source unavailable this cycle, leaving synced secrets untouched")
 	} else {
-		curSecrets := secret.NewSnapshot(filterSecrets(allSecrets, s.SecretPolicy))
+		curSecrets = secret.NewSnapshot(filterSecrets(allSecrets, s.SecretPolicy))
 		secretDiff = curSecrets.DiffFrom(s.prevSecrets)
-		s.prevSecrets = curSecrets
+		secretsCommitted = true
 	}
 
-	s.prev = curCookies
-
 	var storageDiff webstorage.Diff
+	storageCommitted := false
+	var curStorage webstorage.Snapshot
 	if len(s.Storage) > 0 {
 		var allItems []webstorage.Item
 		storageUnavailable := false
@@ -153,14 +155,25 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 					permitted = append(permitted, it)
 				}
 			}
-			curStorage := webstorage.NewSnapshot(permitted)
+			curStorage = webstorage.NewSnapshot(permitted)
 			storageDiff = curStorage.DiffFrom(s.prevStorage)
+			storageCommitted = true
+		}
+	}
+
+	commitPrev := func() {
+		s.prev = curCookies
+		if secretsCommitted {
+			s.prevSecrets = curSecrets
+		}
+		if storageCommitted {
 			s.prevStorage = curStorage
 		}
 	}
 
 	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff, Storage: storageDiff}
 	if p.IsEmpty() {
+		commitPrev()
 		s.afterSync(false, 0, 0, 0)
 		return nil
 	}
@@ -175,6 +188,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if err := transport.WriteFrame(s.Out, frame); err != nil {
 		return err
 	}
+	commitPrev()
 	s.afterSync(true, len(cookieDiff.Upserts), len(secretDiff.Upserts), len(storageDiff.Upserts))
 	return nil
 }
