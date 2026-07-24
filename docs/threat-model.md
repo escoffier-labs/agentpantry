@@ -79,6 +79,10 @@ These are required for the guarantees above to hold:
   legitimate sources from connecting. This is a residual availability risk, not a
   confidentiality breach; keep the sink on loopback or a trusted private
   network (see operator responsibilities above).
+- **Cookie names and hosts may appear in logs.** The source warns on stderr when
+  synced cookies are near expiry (`cookie name@host expires ...`). `inventory
+  --json` includes `name` and `host` for near-expiry rows. Cookie values and
+  `localStorage` values are never logged.
 - **No forward secrecy.** The pre-shared key is long-lived; if it leaks, past
   captured ciphertext from the same key is at risk (the session salt separates
   sessions but is derived from the same long-lived key). Rotation is
