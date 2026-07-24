@@ -75,7 +75,8 @@ agentpantry status
     agentpantry doctor
     agentpantry source
 
-`init` writes a commented config that walks through each field (it refuses to
+`init` writes a commented config that walks through each field, including
+commented `[[browsers]]` examples for both `chromium` and `cdp` (it refuses to
 overwrite an existing config unless you pass `--force`), and `doctor` validates
 the result before you rely on it, warning about misspelled or misplaced config
 keys instead of ignoring them.
