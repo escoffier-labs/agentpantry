@@ -72,6 +72,13 @@ These are required for the guarantees above to hold:
   not establish encryption compatibility, and an absent Electron singleton
   lock does not prove the app is stopped. The current adapter reports those
   limits and performs no app write.
+- **Pre-auth connection slots on the sink.** The sink serves at most 32 concurrent
+  TCP connections, each held up to 30 seconds waiting for the first
+  authenticated frame before the connection is closed. A peer that can reach the
+  bind address without the PSK can occupy all slots for that window and delay
+  legitimate sources from connecting. This is a residual availability risk, not a
+  confidentiality breach; keep the sink on loopback or a trusted private
+  network (see operator responsibilities above).
 - **No forward secrecy.** The pre-shared key is long-lived; if it leaks, past
   captured ciphertext from the same key is at risk (the session salt separates
   sessions but is derived from the same long-lived key). Rotation is
