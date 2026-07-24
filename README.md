@@ -463,10 +463,14 @@ logged in, so a scraper attaches to a warm session instead of driving a login
 
     agentpantry browser --sidecar ./sidecar.db --domains github.com --keep-open
 
+    agentpantry browser -config ./sink.toml --keep-open
+
 It launches Chrome with a throwaway profile (never a real one) on a loopback
 debugging port, opens a tab on each origin in the backup, sets the cookies
 browser-wide, seeds each origin's `localStorage` in its loaded tab, and hands the
-DevTools endpoint back. Flags: `--headless` uses new headless (`--headless=new`),
+DevTools endpoint back. Use `-sidecar` to name the store directly, or `-config`
+to derive the sidecar path and domain policy the same way `sink` and `restore`
+do (pass exactly one). Flags: `--headless` uses new headless (`--headless=new`),
 `--profile` names a persistent user-data-dir instead of a temp one, `--port` sets
 the debugging port, `--chrome` points at a specific binary, `--verify` reads
 cookies back through CDP, and `--keep-open` leaves the browser running (Ctrl-C to
