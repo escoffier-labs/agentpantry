@@ -11,7 +11,7 @@ It runs `make build`, `go vet ./...`, and `go test ./...` (includes `test/` inte
 
 Conditional gates not covered by the script:
 - `make windows` if you touched anything near a `_windows.go` / `_other.go` pair (`cmd/agentpantry/`, `internal/wincrypto`)
-- For security-relevant changes (parsers, framing, filesystem writes, cookie decoding): `make gosec`, `make vuln`, and the matching fuzz target, e.g. `make fuzz PKG=./internal/transport FUZZ=FuzzOpen`. Fuzz targets exist in `internal/{transport,surface,wire,vault,wincrypto}`.
+- For security-relevant changes (parsers, framing, filesystem writes, cookie decoding): `make gosec`, `make vuln`, and the matching fuzz target, e.g. `make fuzz PKG=./internal/transport FUZZ=FuzzOpen`. Fuzz targets exist in `internal/{transport,surface,wire,vault,wincrypto,policy}`.
 
 Report actual command results. If anything fails, quote the failure verbatim and do not claim success. CI additionally runs `go test -race ./...` on Linux and Windows, golangci-lint, govulncheck, and gosec; do not assume local green covers those.
 
