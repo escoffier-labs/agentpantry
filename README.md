@@ -497,7 +497,7 @@ without any agentpantry-aware glue. They are declared with an optional
 `[[adapters]]` block in the sink config, each entry chosen by `type`. An adapter
 is layered on top of the regular `surfaces` list; you can run both at once.
 
-Four adapter types ship:
+Five adapter types ship:
 
 - `netscape`: a cookie surface that writes a Netscape `cookies.txt` (the format
   curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
