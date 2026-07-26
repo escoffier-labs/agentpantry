@@ -162,6 +162,13 @@ key_path = %q
 #profile = "Default"
 #cookie_path = "/home/you/.config/chromium/Default/Cookies"
 
+# App-bound Chrome (127+): read cookies over a loopback DevTools port instead of
+# the on-disk Cookies store (see README). Launch Chrome with
+# --remote-debugging-port=9222 and point url at that endpoint.
+#[[browsers]]
+#kind = "cdp"
+#url  = "http://127.0.0.1:9222"
+
 # Domains are opt-in: nothing syncs until it matches an allow entry.
 # A deny entry overrides any allow match.
 [domains]
