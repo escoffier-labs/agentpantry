@@ -2,6 +2,8 @@ package transport
 
 import (
 	"bytes"
+	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +104,59 @@ func TestFallbackOpenerReplayRejectedAfterPinning(t *testing.T) {
 	}
 	if _, err := o.Open(f1); err == nil {
 		t.Fatal("replayed frame must be rejected after pinning to the fallback key")
+	}
+}
+
+func TestFallbackOpenerWrongKeyThenPrimaryStillOpens(t *testing.T) {
+	primarySealer, _ := NewSealer(key32(), salt16())
+	intruderSealer, _ := NewSealer(thirdKey32(), salt16())
+	o, err := NewFallbackOpener(key32(), oldKey32(), salt16())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad, _ := intruderSealer.Seal([]byte("wrong key"))
+	if _, err := o.Open(bad); err == nil {
+		t.Fatal("frame under an unknown key must not open")
+	}
+	msg := []byte("primary after probe")
+	good, _ := primarySealer.Seal(msg)
+	out, err := o.Open(good)
+	if err != nil {
+		t.Fatalf("valid primary-key frame after a failed probe must open: %v", err)
+	}
+	if !bytes.Equal(out, msg) {
+		t.Fatalf("round trip mismatch: %q", out)
+	}
+}
+
+func TestFallbackOpenerJoinsBothOpenErrors(t *testing.T) {
+	intruderSealer, _ := NewSealer(thirdKey32(), salt16())
+	o, _ := NewFallbackOpener(key32(), oldKey32(), salt16())
+	frame, _ := intruderSealer.Seal([]byte("intruder"))
+	_, err := o.Open(frame)
+	if err == nil {
+		t.Fatal("unknown key must error")
+	}
+	// errors.Join keeps both the primary and the fallback AEAD failure. A
+	// substring check would still pass if Open returned only primaryErr, so
+	// unwrap and count the causes instead.
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("expected a joined error, got %T: %v", err, err)
+	}
+	causes := joined.Unwrap()
+	if len(causes) != 2 {
+		t.Fatalf("expected both primary and fallback open errors, got %d: %v", len(causes), causes)
+	}
+	for i, cause := range causes {
+		if cause == nil {
+			t.Fatalf("cause %d is nil: %v", i, causes)
+		}
+	}
+	for _, key := range [][]byte{key32(), oldKey32(), thirdKey32()} {
+		if strings.Contains(err.Error(), hex.EncodeToString(key)) {
+			t.Fatalf("error must not contain key material: %v", err)
+		}
 	}
 }
 

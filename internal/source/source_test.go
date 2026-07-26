@@ -11,6 +11,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
+	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
@@ -26,6 +27,12 @@ type errSecrets struct{}
 
 func (errSecrets) ReadSecrets(context.Context) ([]secret.Secret, error) {
 	return nil, errors.New("secrets dir gone")
+}
+
+type errWriter struct{ err error }
+
+func (w errWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 func decodePayload(t *testing.T, buf *bytes.Buffer) wire.Payload {
@@ -92,6 +99,37 @@ func TestSyncOnceSecretReaderErrorKeepsSecretsAndSyncsCookies(t *testing.T) {
 	}
 	if len(p.Secrets.Upserts) != 0 || len(p.Secrets.Deletes) != 0 {
 		t.Fatalf("no secret diff should be emitted when the source is unavailable: %+v", p.Secrets)
+	}
+}
+
+// A failed WriteFrame must not advance prev cookie/secret/storage snapshots;
+// the next successful cycle should still emit the same diff.
+func TestSyncOnceWriteFrameFailureDoesNotAdvancePrevSnapshots(t *testing.T) {
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
+	var buf bytes.Buffer
+	syncer := &Syncer{
+		Vaults: []CookieReader{fakeVault{cs: []cookie.Cookie{
+			{Host: "github.com", Name: "sid", Path: "/", Value: "v"},
+		}}},
+		Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "gh", Value: "tok"}}}},
+		Storage: []StorageReader{&staticStorage{items: []webstorage.Item{
+			{Origin: "https://github.com", Key: "k", Value: "1"},
+		}}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    errWriter{err: errors.New("write failed")},
+	}
+	if err := syncer.SyncOnce(context.Background()); err == nil {
+		t.Fatal("WriteFrame failure must surface")
+	}
+	syncer.Out = &buf
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	p := decodePayload(t, &buf)
+	if len(p.Cookies.Upserts) != 1 || len(p.Secrets.Upserts) != 1 || len(p.Storage.Upserts) != 1 {
+		t.Fatalf("failed write must not advance prev snapshots; want full diff, got cookies=%+v secrets=%+v storage=%+v",
+			p.Cookies.Upserts, p.Secrets.Upserts, p.Storage.Upserts)
 	}
 }
 

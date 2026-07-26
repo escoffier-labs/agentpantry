@@ -73,6 +73,38 @@ func TestOpenClawAuthSkipsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestOpenClawAuthIgnoresDeletes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auth-profiles.json")
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	o, err := NewOpenClawAuth(path, map[string]string{"anthropic_secret": "anthropic:default"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	val := `{"type":"oauth","token":"sk-ant-xyz"}`
+	if err := o.ApplySecrets(secret.Diff{Upserts: []secret.Secret{{Name: "anthropic_secret", Value: val}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Upsert-only: deletes must not remove an owned profile.
+	if err := o.ApplySecrets(secret.Diff{Deletes: []string{"anthropic_secret"}}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Profiles map[string]json.RawMessage `json:"profiles"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Profiles["anthropic:default"]; !ok {
+		t.Fatal("delete must not remove an openclaw profile (upsert-only surface)")
+	}
+}
+
 func TestOpenClawAuthRefusesToClobberUnreadableFile(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses file permissions")
