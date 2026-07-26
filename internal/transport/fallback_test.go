@@ -137,9 +137,21 @@ func TestFallbackOpenerJoinsBothOpenErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown key must error")
 	}
-	// errors.Join surfaces both primary and fallback AEAD failures.
-	if !strings.Contains(err.Error(), "cipher") && !strings.Contains(err.Error(), "message authentication failed") {
-		t.Fatalf("expected joined open errors, got: %v", err)
+	// errors.Join keeps both the primary and the fallback AEAD failure. A
+	// substring check would still pass if Open returned only primaryErr, so
+	// unwrap and count the causes instead.
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("expected a joined error, got %T: %v", err, err)
+	}
+	causes := joined.Unwrap()
+	if len(causes) != 2 {
+		t.Fatalf("expected both primary and fallback open errors, got %d: %v", len(causes), causes)
+	}
+	for i, cause := range causes {
+		if cause == nil {
+			t.Fatalf("cause %d is nil: %v", i, causes)
+		}
 	}
 	for _, key := range [][]byte{key32(), oldKey32(), thirdKey32()} {
 		if strings.Contains(err.Error(), hex.EncodeToString(key)) {
