@@ -26,25 +26,42 @@ type WindowsChromium struct {
 
 func (v *WindowsChromium) Name() string { return "chromium-win:" + v.Profile }
 
+// localStateMaxLevels is the number of ancestor directories checked for
+// "Local State", sized to the verified Windows Chrome layout:
+//
+//	<User Data>/<Profile>/Network/Cookies   <- cookiePath
+//	<User Data>/Local State                 <- discovery target
+//
+// Starting at Dir(cookiePath) (= Network), discovery checks that directory
+// and walks up localStateMaxLevels-1 parents (Network -> Profile -> User Data).
+// That is 3 directories checked including Network, and 2 parent traversals.
+// No path is guessed when the file is absent.
+const localStateMaxLevels = 3
+
 // localStatePath discovers the Chrome "Local State" file for a cookie store.
-// CookiePath is typically <UserData>/<Profile>/Network/Cookies; Local State
-// lives in <UserData>, so walk up to find it.
-func localStatePath(cookiePath string) string {
+// It walks at most localStateMaxLevels ancestor directories of cookiePath and
+// never returns a guessed path: if no file is found, it returns an error
+// containing "Local State not found within N levels of <cookiePath>".
+func localStatePath(cookiePath string) (string, error) {
 	dir := filepath.Dir(cookiePath)
-	for i := 0; i < 3; i++ {
+	for i := 0; i < localStateMaxLevels; i++ {
 		cand := filepath.Join(dir, "Local State")
 		if _, err := os.Stat(cand); err == nil {
-			return cand
+			return cand, nil
 		}
 		dir = filepath.Dir(dir)
 	}
-	return filepath.Join(filepath.Dir(cookiePath), "Local State")
+	return "", fmt.Errorf("Local State not found within %d levels of %s", localStateMaxLevels, cookiePath)
 }
 
 // WindowsChromeKey returns the profile's AES key (DPAPI-unwrapped) used for v10
 // AES-256-GCM cookie values. Used by the Windows sink re-encrypt surface.
 func WindowsChromeKey(cookiePath string) ([]byte, error) {
-	b, err := os.ReadFile(localStatePath(cookiePath))
+	path, err := localStatePath(cookiePath)
+	if err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(path) // #nosec G304 -- Chrome cookie store path is intentionally operator-selected.
 	if err != nil {
 		return nil, fmt.Errorf("read Local State: %w", err)
 	}
