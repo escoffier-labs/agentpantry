@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
 	_ "modernc.org/sqlite"
 )
@@ -19,6 +22,7 @@ var chromeWarnOnce sync.Once
 // into an existing Chrome-schema Cookies SQLite. Targets a not-running profile.
 type ChromeStore struct {
 	db      *sql.DB
+	path    string
 	encrypt func(plaintext string) ([]byte, error)
 	cols    map[string]string // present column name -> upper-cased declared type
 }
@@ -45,7 +49,7 @@ func NewChromeStoreEnc(cookiePath string, encrypt func(string) ([]byte, error)) 
 		_ = db.Close()
 		return nil, fmt.Errorf("no cookies table in %s", cookiePath)
 	}
-	return &ChromeStore{db: db, encrypt: encrypt, cols: cols}, nil
+	return &ChromeStore{db: db, path: cookiePath, encrypt: encrypt, cols: cols}, nil
 }
 
 // NewChromeStore wires the Linux v11 AES-128-CBC encryptor from a keyring
@@ -125,7 +129,63 @@ func zeroForType(t string) interface{} {
 	}
 }
 
+// backupCookiesDB copies path beside itself as path.bak.<UTC timestamp> with
+// private mode, using dbcopy for the file copy and privfile for the 0600 write.
+// Returns the backup path. The backup captures pre-transaction content so a
+// later write failure still leaves a readable SQLite snapshot.
+func backupCookiesDB(path string) (string, error) {
+	tmp, cleanup, err := dbcopy.ToTemp(path)
+	if err != nil {
+		return "", fmt.Errorf("backup cookies db: %w", err)
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(tmp) // #nosec G304 -- temp path from dbcopy.ToTemp
+	if err != nil {
+		return "", fmt.Errorf("read cookies backup temp: %w", err)
+	}
+
+	now := time.Now().UTC()
+	base := fmt.Sprintf("%s.bak.%s", path, now.Format("20060102T150405Z"))
+	for i := 0; i < 100; i++ {
+		backupPath := base
+		if i > 0 {
+			backupPath = fmt.Sprintf("%s.%d", base, i)
+		}
+		if _, err := os.Lstat(backupPath); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := privfile.Write(backupPath, data); err != nil {
+			return "", fmt.Errorf("write cookies backup: %w", err)
+		}
+		return backupPath, nil
+	}
+	return "", fmt.Errorf("could not create unique backup path for %s", path)
+}
+
+// stampTimestamps gives new rows real creation/access/update times. Apply's
+// conflict update omits creation_utc, so existing rows keep their original
+// creation time while access and update advance.
+func stampTimestamps(mapped map[string]interface{}) {
+	now := cookie.ExpiresFromUnix(time.Now().Unix())
+	mapped["creation_utc"] = now
+	mapped["last_access_utc"] = now
+	mapped["last_update_utc"] = now
+}
+
 func (s *ChromeStore) Apply(d cookie.Diff) error {
+	if len(d.Upserts) == 0 && len(d.Deletes) == 0 {
+		return nil
+	}
+
+	// Offline-profile safety (#39 / #26 alignment): snapshot the Cookies DB
+	// before any mutation. A failed write must leave this backup intact.
+	if _, err := backupCookiesDB(s.path); err != nil {
+		return err
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -137,19 +197,24 @@ func (s *ChromeStore) Apply(d cookie.Diff) error {
 		if err != nil {
 			return err
 		}
-		var colNames, placeholders []string
+		stampTimestamps(mapped)
+		var colNames, placeholders, updates []string
 		var args []interface{}
 		for col, typ := range s.cols {
-			colNames = append(colNames, "\""+strings.ReplaceAll(col, "\"", "\"\"")+"\"")
+			quoted := "\"" + strings.ReplaceAll(col, "\"", "\"\"") + "\""
+			colNames = append(colNames, quoted)
 			placeholders = append(placeholders, "?")
+			if col != "creation_utc" {
+				updates = append(updates, quoted+"=excluded."+quoted)
+			}
 			if v, ok := mapped[col]; ok {
 				args = append(args, v)
 			} else {
 				args = append(args, zeroForType(typ))
 			}
 		}
-		q := fmt.Sprintf("INSERT OR REPLACE INTO cookies(%s) VALUES(%s)", // #nosec G201 -- values are parameterized; identifiers are quoted from SQLite schema introspection.
-			strings.Join(colNames, ","), strings.Join(placeholders, ","))
+		q := fmt.Sprintf("INSERT INTO cookies(%s) VALUES(%s) ON CONFLICT DO UPDATE SET %s", // #nosec G201 -- values are parameterized; identifiers are quoted from SQLite schema introspection.
+			strings.Join(colNames, ","), strings.Join(placeholders, ","), strings.Join(updates, ","))
 		if _, err := tx.Exec(q, args...); err != nil {
 			return err
 		}
