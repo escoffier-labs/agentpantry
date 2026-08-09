@@ -175,6 +175,8 @@ func cmdKeygen(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	_, existedErr := os.Stat(*out)
+	replaced := existedErr == nil
 	backupPath, err := keyfile.GenerateWithBackup(*out, *backup)
 	if err != nil {
 		return err
@@ -183,7 +185,18 @@ func cmdKeygen(args []string) error {
 		fmt.Printf("backed up previous PSK to %s\n", backupPath)
 		fmt.Println("delete the backup once the rotation is confirmed; it is live key history, especially if you rotated because the old key may have been exposed")
 	}
-	fmt.Printf("wrote 32-byte PSK to %s (copy this file to the peer)\n", *out)
+	fmt.Printf("wrote 32-byte PSK to %s\n", *out)
+	if replaced {
+		// Source loads the PSK once before its reconnect loop; each sink
+		// connection retains its opener, while new connections load this key.
+		fmt.Printf(`blunt keygen recovery checklist (the sink accepts only this key from now on):
+  1. stop existing sink sessions (or close their connections)
+  2. distribute the replacement PSK (%s) to peer machines over a secure channel
+  3. restart persistent sources (they load the PSK once at startup)
+`, *out)
+		return nil
+	}
+	fmt.Println("copy this file to the peer")
 	return nil
 }
 

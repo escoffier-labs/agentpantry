@@ -363,9 +363,12 @@ the rotation without a restart. Finish promptly: until `-finish`, a holder of
 the old key is still accepted. `keygen` remains the blunt instrument; it backs
 up an existing key beside itself as `psk.key.bak.<timestamp>` before replacing
 it (pass `--backup=false` to skip that), but unlike `rotate-key` the sink
-accepts only the new key from that moment on. Delete `psk.key.bak.*` files once
-a rotation is confirmed, especially one prompted by suspected key exposure:
-they hold retired key material.
+accepts only the new key from that moment on. After replacement, stop existing
+sink sessions (or close their connections), distribute the new PSK to peers,
+then restart persistent sources — they load the key once at startup, so a
+running source keeps sealing with the old key until restarted. Delete
+`psk.key.bak.*` files once a rotation is confirmed, especially one prompted by
+suspected key exposure: they hold retired key material.
 
 ## Reliability
 

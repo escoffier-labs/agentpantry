@@ -41,8 +41,10 @@ retire `psk.key.old`. Finish promptly: until `-finish`, a holder of the old key
 is still accepted. `doctor` and `status` both show a rotation in progress.
 
 `agentpantry keygen` remains the stop-the-world alternative (the sink accepts
-only the new key from that moment on, so stop both endpoints first); it backs
-up an existing key as `psk.key.bak.<timestamp>` by default. If a rotation was
+only the new key from that moment on). After replacement, stop or close
+existing sink sessions, distribute the replacement PSK, then restart
+persistent sources — they load the key once at startup. It backs up an
+existing key as `psk.key.bak.<timestamp>` by default. If a rotation was
 prompted by suspected key exposure, delete any `psk.key.bak.*` files on both
 machines once the rotation is complete: they are live PSK history.
 (`rotate-key -finish` already removes its own `psk.key.old`.)
