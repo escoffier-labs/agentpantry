@@ -174,3 +174,76 @@ func TestRotateKeyHelpListed(t *testing.T) {
 		t.Fatalf("help must list rotate-key, got: %s", stdout)
 	}
 }
+
+// TestRotateKeyExplicitKeyOverridesConfig guards issue #46: an operator who
+// generated a key with keygen -out <custom> must be able to rotate that same
+// file via rotate-key -key, even when config.key_path (or the default) points
+// elsewhere. Grace-window semantics (.old + -finish) stay unchanged.
+func TestRotateKeyExplicitKeyOverridesConfig(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	cfg, configKey := writeSinkConfig(t, dir)
+	customKey := filepath.Join(dir, "custom.psk")
+
+	if code, _, stderr := runCmd(t, bin, "keygen", "-out", configKey); code != 0 {
+		t.Fatalf("keygen config key failed: %s", stderr)
+	}
+	if code, _, stderr := runCmd(t, bin, "keygen", "-out", customKey); code != 0 {
+		t.Fatalf("keygen custom key failed: %s", stderr)
+	}
+	configBefore, err := os.ReadFile(configKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customBefore, err := os.ReadFile(customKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCmd(t, bin, "rotate-key", "-config", cfg, "-key", customKey)
+	if code != 0 {
+		t.Fatalf("rotate-key -key failed: %s", stderr)
+	}
+	customOld := customKey + ".old"
+	oldBody, err := os.ReadFile(customOld)
+	if err != nil {
+		t.Fatalf("old key must exist beside the -key path: %v", err)
+	}
+	if string(oldBody) != string(customBefore) {
+		t.Fatal("old-key file must hold the pre-rotation custom key")
+	}
+	customAfter, err := os.ReadFile(customKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(customAfter) == string(customBefore) {
+		t.Fatal("rotate-key -key must rewrite the explicit key path")
+	}
+	configAfter, err := os.ReadFile(configKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(configAfter) != string(configBefore) {
+		t.Fatal("rotate-key -key must not touch config key_path")
+	}
+	if _, err := os.Stat(configKey + ".old"); !os.IsNotExist(err) {
+		t.Fatal("rotate-key -key must not create .old beside config key_path")
+	}
+	if !strings.Contains(stdout, customKey) || !strings.Contains(stdout, customOld) {
+		t.Fatalf("rotate-key -key must mention the explicit paths, got: %s", stdout)
+	}
+
+	if code, _, stderr := runCmd(t, bin, "rotate-key", "-config", cfg, "-key", customKey, "-finish"); code != 0 {
+		t.Fatalf("rotate-key -key -finish failed: %s", stderr)
+	}
+	if _, err := os.Stat(customOld); !os.IsNotExist(err) {
+		t.Fatal("finish with -key must remove the explicit old-key file")
+	}
+	configAfterFinish, err := os.ReadFile(configKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(configAfterFinish) != string(configBefore) {
+		t.Fatal("finish with -key must leave config key_path untouched")
+	}
+}
