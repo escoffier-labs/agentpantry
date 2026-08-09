@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- `rotate-key -key <path>` selects which key file to rotate or finish,
+  overriding config `key_path` and the default `psk.key`. Grace-window
+  semantics (`.old` until `-finish`) are unchanged. Use it when the key was
+  created with `keygen -out` at a non-default path.
 - `restore --to desktop-app=codex|claude --dry-run` adds a read-only inspection
   contract for desktop app profiles. It reports the OS-specific profile
   candidate, profile lock state, Chromium cookie-store candidate, domain and

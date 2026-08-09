@@ -352,6 +352,12 @@ you distribute the new key:
     # restart the source, or let it reconnect
     agentpantry rotate-key -finish    # on the sink, retires psk.key.old
 
+Key path resolution, in order: `-key` when set, else `key_path` from
+`-config` when that file exists and sets one, else the config dir's
+`psk.key`. Pass `-key` when you generated the file with `keygen -out`
+and it is not the path in config. The same `-key` applies to `-finish`;
+it only selects the file and does not change the dual-key grace window.
+
 `doctor` and `status` show a rotation in progress, and a running sink picks up
 the rotation without a restart. Finish promptly: until `-finish`, a holder of
 the old key is still accepted. `keygen` remains the blunt instrument; it backs

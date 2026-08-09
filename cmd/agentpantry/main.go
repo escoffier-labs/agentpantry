@@ -190,12 +190,14 @@ func cmdKeygen(args []string) error {
 func cmdRotateKey(args []string) error {
 	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	keyFlag := fs.String("key", "", "key path (overrides config key_path and the default)")
 	finish := fs.Bool("finish", false, "retire the old key, ending the grace window")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	// Resolve the key path from the config when one exists; otherwise rotate
-	// the default key location, mirroring keygen's default.
+	// the default key location, mirroring keygen's default. An explicit -key
+	// wins over both.
 	keyPath := filepath.Join(config.Dir(), "psk.key")
 	if _, statErr := os.Stat(*cfgPath); statErr == nil {
 		c, err := loadConfigWarn(*cfgPath)
@@ -209,6 +211,9 @@ func cmdRotateKey(args []string) error {
 			fmt.Fprintln(os.Stderr, "warning: rotation is meant to run on the sink, which accepts both keys during the grace window; a source holds only one key")
 		}
 	}
+	if *keyFlag != "" {
+		keyPath = *keyFlag
+	}
 	if *finish {
 		if err := keyfile.FinishRotation(keyPath); err != nil {
 			return err
@@ -220,14 +225,18 @@ func cmdRotateKey(args []string) error {
 	if err != nil {
 		return err
 	}
+	finishCmd := "agentpantry rotate-key -finish"
+	if *keyFlag != "" {
+		finishCmd = "agentpantry rotate-key -key " + keyPath + " -finish"
+	}
 	fmt.Printf(`rotated PSK at %s
 old key preserved at %s
 
 the sink accepts both keys for new connections, so sync keeps working:
   1. copy the new %s to the source machine
   2. restart the source (or let it reconnect)
-  3. run 'agentpantry rotate-key -finish' here to retire %s
-`, keyPath, oldPath, keyPath, oldPath)
+  3. run '%s' here to retire %s
+`, keyPath, oldPath, keyPath, finishCmd, oldPath)
 	return nil
 }
 
