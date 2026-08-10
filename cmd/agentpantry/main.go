@@ -175,27 +175,46 @@ func cmdKeygen(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	_, existedErr := os.Stat(*out)
+	replaced := existedErr == nil
 	backupPath, err := keyfile.GenerateWithBackup(*out, *backup)
 	if err != nil {
 		return err
+	}
+	oldPath := keyfile.OldKeyPath(*out)
+	if err := os.Remove(oldPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("revoke unfinished rotation key %s: %w", oldPath, err)
 	}
 	if backupPath != "" {
 		fmt.Printf("backed up previous PSK to %s\n", backupPath)
 		fmt.Println("delete the backup once the rotation is confirmed; it is live key history, especially if you rotated because the old key may have been exposed")
 	}
-	fmt.Printf("wrote 32-byte PSK to %s (copy this file to the peer)\n", *out)
+	fmt.Printf("wrote 32-byte PSK to %s\n", *out)
+	if replaced {
+		// Source loads the PSK once before its reconnect loop; each sink
+		// connection retains its opener, while new connections load this key.
+		fmt.Printf(`blunt keygen recovery checklist (the sink accepts only this key from now on):
+  1. stop existing sink sessions (or close their connections)
+  2. distribute the replacement PSK (%s) to peer machines over a secure channel
+  3. restart persistent sources (they load the PSK once at startup)
+`, *out)
+		return nil
+	}
+	fmt.Println("copy this file to the peer")
 	return nil
 }
 
 func cmdRotateKey(args []string) error {
 	fs := flag.NewFlagSet("rotate-key", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	keyFlag := fs.String("key", "", "key path (overrides config key_path and the default)")
 	finish := fs.Bool("finish", false, "retire the old key, ending the grace window")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	// Resolve the key path from the config when one exists; otherwise rotate
-	// the default key location, mirroring keygen's default.
+	// the default key location, mirroring keygen's default. An explicit -key
+	// wins over both.
 	keyPath := filepath.Join(config.Dir(), "psk.key")
 	if _, statErr := os.Stat(*cfgPath); statErr == nil {
 		c, err := loadConfigWarn(*cfgPath)
@@ -209,6 +228,9 @@ func cmdRotateKey(args []string) error {
 			fmt.Fprintln(os.Stderr, "warning: rotation is meant to run on the sink, which accepts both keys during the grace window; a source holds only one key")
 		}
 	}
+	if *keyFlag != "" {
+		keyPath = *keyFlag
+	}
 	if *finish {
 		if err := keyfile.FinishRotation(keyPath); err != nil {
 			return err
@@ -220,14 +242,18 @@ func cmdRotateKey(args []string) error {
 	if err != nil {
 		return err
 	}
+	finishCmd := "agentpantry rotate-key -finish"
+	if *keyFlag != "" {
+		finishCmd = "agentpantry rotate-key -key " + keyPath + " -finish"
+	}
 	fmt.Printf(`rotated PSK at %s
 old key preserved at %s
 
 the sink accepts both keys for new connections, so sync keeps working:
   1. copy the new %s to the source machine
   2. restart the source (or let it reconnect)
-  3. run 'agentpantry rotate-key -finish' here to retire %s
-`, keyPath, oldPath, keyPath, oldPath)
+  3. run '%s' here to retire %s
+`, keyPath, oldPath, keyPath, finishCmd, oldPath)
 	return nil
 }
 

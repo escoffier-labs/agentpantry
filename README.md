@@ -352,14 +352,23 @@ you distribute the new key:
     # restart the source, or let it reconnect
     agentpantry rotate-key -finish    # on the sink, retires psk.key.old
 
+Key path resolution, in order: `-key` when set, else `key_path` from
+`-config` when that file exists and sets one, else the config dir's
+`psk.key`. Pass `-key` when you generated the file with `keygen -out`
+and it is not the path in config. The same `-key` applies to `-finish`;
+it only selects the file and does not change the dual-key grace window.
+
 `doctor` and `status` show a rotation in progress, and a running sink picks up
 the rotation without a restart. Finish promptly: until `-finish`, a holder of
 the old key is still accepted. `keygen` remains the blunt instrument; it backs
 up an existing key beside itself as `psk.key.bak.<timestamp>` before replacing
 it (pass `--backup=false` to skip that), but unlike `rotate-key` the sink
-accepts only the new key from that moment on. Delete `psk.key.bak.*` files once
-a rotation is confirmed, especially one prompted by suspected key exposure:
-they hold retired key material.
+accepts only the new key from that moment on. After replacement, stop existing
+sink sessions (or close their connections), distribute the new PSK to peers,
+then restart persistent sources — they load the key once at startup, so a
+running source keeps sealing with the old key until restarted. Delete
+`psk.key.bak.*` files once a rotation is confirmed, especially one prompted by
+suspected key exposure: they hold retired key material.
 
 ## Reliability
 
