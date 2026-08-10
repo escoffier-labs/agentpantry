@@ -139,8 +139,11 @@ deny = ["blocked.example"]
 	}
 
 	// Drop the live session so the sink builds a new opener from the replacement key.
+	// Keep the restarted sink in its own variable and stop it before TempDir cleanup:
+	// on Windows an open sidecar.db handle blocks RemoveAll (PR #65 CI failure).
 	sinkProc.stop(t)
-	sinkProc = startSinkProcess(t, bin, sinkCfg, addr)
+	restartedSink := startSinkProcess(t, bin, sinkCfg, addr)
+	defer restartedSink.stop(t)
 
 	if err := os.WriteFile(filepath.Join(srcSecrets, "api_token"), []byte("after-keygen"), 0o600); err != nil {
 		t.Fatal(err)
@@ -174,4 +177,6 @@ deny = ["blocked.example"]
 	case <-time.After(3 * time.Second):
 		t.Fatalf("source did not stop after cancellation\n%s", sourceOut())
 	}
+	// Release sidecar.db before t.TempDir cleanup (required on Windows).
+	restartedSink.stop(t)
 }
