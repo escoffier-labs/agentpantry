@@ -42,8 +42,10 @@ func runCLI(t *testing.T, bin string, args ...string) (int, string, string) {
 // loads the source PSK once before its reconnect loop while each sink connection
 // builds a fresh opener from the on-disk key (newSinkOpener). After blunt keygen
 // replaces the sink key, a persistent source still seals with the stale PSK and
-// cannot authenticate to new sink connections. Operators need to stop existing
-// sink sessions and restart persistent sources; keygen's recovery output must say so.
+// cannot authenticate to new sink connections. An unfinished rotate-key grace
+// file must not keep accepting that stale key after blunt recovery. Operators
+// need to stop existing sink sessions and restart persistent sources; keygen's
+// recovery output must say so.
 func TestKeygenReplacementRecoveryChecklist(t *testing.T) {
 	bin := agentpantryCLI(t)
 	dir := t.TempDir()
@@ -123,8 +125,23 @@ deny = ["blocked.example"]
 	if err != nil {
 		t.Fatal(err)
 	}
+	oldPath := keyPath + ".old"
 
-	// Blunt recovery procedure: replace the sink key in place.
+	// Leave an unfinished rotation behind: K0 is the still-running source key,
+	// K1 is the rotated key, and psk.key.old holds K0 for the grace window.
+	if code, _, stderr := runCLI(t, bin, "rotate-key", "--config", sinkCfg); code != 0 {
+		t.Fatalf("rotate-key failed: %s", stderr)
+	}
+	rotationOldKey, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatalf("read rotation old key: %v", err)
+	}
+	if string(rotationOldKey) != string(oldKey) {
+		t.Fatal("rotation old key must retain the pre-rotation source key")
+	}
+
+	// Blunt recovery procedure: replace the sink key in place with K2. It must
+	// also revoke the unfinished rotation's K0 grace key.
 	code, keygenStdout, keygenStderr := runCLI(t, bin, "keygen", "--out", keyPath)
 	if code != 0 {
 		t.Fatalf("replacement keygen failed: %s", keygenStderr)
@@ -165,6 +182,9 @@ deny = ["blocked.example"]
 	}
 	if !sawReconnect {
 		t.Fatalf("persistent source must attempt reconnect after sink session reset\nsource output:\n%s", sourceOut())
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("blunt keygen must remove the unfinished rotation key %s, stat error: %v", oldPath, err)
 	}
 
 	if !keygenRecoveryChecklistComplete(guidance) {

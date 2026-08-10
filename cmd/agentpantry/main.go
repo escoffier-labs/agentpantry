@@ -181,6 +181,10 @@ func cmdKeygen(args []string) error {
 	if err != nil {
 		return err
 	}
+	oldPath := keyfile.OldKeyPath(*out)
+	if err := os.Remove(oldPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("revoke unfinished rotation key %s: %w", oldPath, err)
+	}
 	if backupPath != "" {
 		fmt.Printf("backed up previous PSK to %s\n", backupPath)
 		fmt.Println("delete the backup once the rotation is confirmed; it is live key history, especially if you rotated because the old key may have been exposed")
