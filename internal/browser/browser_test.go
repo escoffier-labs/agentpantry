@@ -33,6 +33,16 @@ func TestResolveExplicitMissingErrors(t *testing.T) {
 	}
 }
 
+func startupURLs(args []string) []string {
+	var urls []string
+	for _, a := range args {
+		if !strings.HasPrefix(a, "--") {
+			urls = append(urls, a)
+		}
+	}
+	return urls
+}
+
 func TestArgsCarriesLoopbackDebugFlagsAndOrigins(t *testing.T) {
 	args := Args(Options{ProfileDir: "/tmp/p", Port: 9333, Headless: true, OpenURLs: []string{"https://github.com"}})
 	joined := strings.Join(args, " ")
@@ -42,10 +52,43 @@ func TestArgsCarriesLoopbackDebugFlagsAndOrigins(t *testing.T) {
 		"--user-data-dir=/tmp/p",
 		"--disable-blink-features=AutomationControlled",
 		"--headless=new",
-		"https://github.com",
+		"about:blank",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args missing %q: %v", want, args)
+		}
+	}
+	if strings.Contains(joined, "https://github.com") {
+		t.Fatalf("headless launch must not pass OpenURLs as startup tabs: %v", args)
+	}
+}
+
+func TestArgsHeadlessAppendsOnlyAboutBlankWithMultipleOpenURLs(t *testing.T) {
+	open := []string{
+		"https://github.com",
+		"https://example.com",
+		"http://127.0.0.1:8080",
+	}
+	args := Args(Options{ProfileDir: "/tmp/p", Port: 9333, Headless: true, OpenURLs: open})
+	got := startupURLs(args)
+	if len(got) != 1 || got[0] != "about:blank" {
+		t.Fatalf("headless startup URLs = %v, want exactly [about:blank]", got)
+	}
+}
+
+func TestArgsHeadedRetainsAllOriginStartupURLs(t *testing.T) {
+	open := []string{
+		"https://github.com",
+		"https://example.com",
+		"http://127.0.0.1:8080",
+	}
+	got := startupURLs(Args(Options{ProfileDir: "/tmp/p", Port: 9222, OpenURLs: open}))
+	if len(got) != len(open) {
+		t.Fatalf("headed startup URL count = %d, want %d: %v", len(got), len(open), got)
+	}
+	for i, want := range open {
+		if got[i] != want {
+			t.Fatalf("headed startup URLs[%d] = %q, want %q (full %v)", i, got[i], want, got)
 		}
 	}
 }

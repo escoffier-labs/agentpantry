@@ -1322,6 +1322,34 @@ func skipExpiredRestoreCookies(cookies []cookie.Cookie, now time.Time) ([]cookie
 	return out, skipped
 }
 
+// cookieWriter is the narrow write surface used by writeBrowserCookies replay.
+type cookieWriter interface {
+	WriteCookies(ctx context.Context, cookies []cookie.Cookie) (int, error)
+}
+
+// writeBrowserCookies applies cookies through writer, runs hydrate between two
+// idempotent writes. The hydration phase is bracketed by idempotent cookie writes
+// because origin page activity can leave an accepted cookie omitted from the first
+// bulk set. Chrome 151 can silently omit an otherwise accepted cookie from a bulk
+// set that also contains policy-rejected entries; replaying the same idempotent
+// slots restores accepted entries that were omitted on the first pass.
+func writeBrowserCookies(ctx context.Context, writer cookieWriter, cookies []cookie.Cookie, hydrate func() error) (int, error) {
+	if len(cookies) == 0 {
+		return 0, hydrate()
+	}
+	skipped, err := writer.WriteCookies(ctx, cookies)
+	if err != nil {
+		return 0, err
+	}
+	if err := hydrate(); err != nil {
+		return 0, err
+	}
+	if _, err := writer.WriteCookies(ctx, cookies); err != nil {
+		return skipped, err
+	}
+	return skipped, nil
+}
+
 type restoreCountRow struct {
 	Name   string `json:"name,omitempty"`
 	Host   string `json:"host,omitempty"`
@@ -1744,7 +1772,7 @@ func cmdBrowser(args []string) error {
 		ProfileDir: profileDir,
 		Port:       *port,
 		Headless:   *headless,
-		OpenURLs:   distinctStorageOrigins(storage), // a tab per origin gives it a live frame
+		OpenURLs:   distinctStorageOrigins(storage), // headed tabs; headless hydrates origins through CDP
 	})
 	if err != nil {
 		return err
@@ -1758,15 +1786,39 @@ func cmdBrowser(args []string) error {
 	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cdp := &cdpvault.CDP{BaseURL: base}
-	cookieSkipped, err := cdp.WriteCookies(rctx, cookies)
+	var written int
+	var bootstrapIDs []string
+	cookieSkipped, err := writeBrowserCookies(rctx, cdp, cookies, func() error {
+		var err error
+		if *headless && len(storage) > 0 {
+			bootstrapIDs, err = cdp.OpenStorageOrigins(rctx, distinctStorageOrigins(storage))
+			if err != nil {
+				return err
+			}
+		}
+
+		// Headed mode opens a tab per origin at launch; headless opens bootstrap
+		// targets above, then seeds localStorage in each frame.
+		written, err = cdp.WriteStorageViaFrames(rctx, storage)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	var cleanupErr error
+	if len(bootstrapIDs) > 0 {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupErr = cdp.CloseTargets(cleanupCtx, bootstrapIDs)
+		cleanupCancel()
+	}
+	if err != nil && cleanupErr != nil {
+		return errors.Join(err, fmt.Errorf("close bootstrap targets: %w", cleanupErr))
+	}
 	if err != nil {
 		return err
 	}
-	// This browser was launched with a tab open on each origin, so seed
-	// localStorage in the loaded frame (reliable), not via DOMStorage.
-	written, err := cdp.WriteStorageViaFrames(rctx, storage)
-	if err != nil {
-		return err
+	if cleanupErr != nil {
+		return fmt.Errorf("close bootstrap targets: %w", cleanupErr)
 	}
 	fmt.Printf("browser ready at %s\nrestored %d cookie(s) (%d expired skipped), wrote %d of %d localStorage item(s)\n",
 		base, len(cookies), cookieSkipped, written, len(storage))

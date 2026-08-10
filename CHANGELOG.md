@@ -47,13 +47,25 @@
 - `agentpantry browser` launches a dedicated automation Chrome (throwaway
   profile, loopback debugging port, `--headless=new` optional, launched with
   `--disable-blink-features=AutomationControlled` so `navigator.webdriver` stays
-  unset), opens a tab on
-  each origin, sets cookies browser-wide, seeds each origin's `localStorage` in
-  its loaded tab, and hands the DevTools endpoint back (`--keep-open` for a
-  scraper to attach). Because it owns the browser it seeds `localStorage`
-  reliably by navigating, unlike the best-effort `restore --to cdp=` path.
-  `--domains`, `--profile`, `--port`, `--chrome`, and `--verify` flags. Never
-  touches a real user profile. Values are never logged.
+  unset). Headed mode opens one startup tab per distinct storage origin.
+  Headless mode starts with a single `about:blank` target, waits for loopback
+  CDP, creates one temporary target per distinct validated HTTP or HTTPS storage
+  origin through the CDP HTTP target endpoint, seeds each origin's `localStorage`
+  after that frame is ready, closes only those temporary targets, and leaves the
+  original `about:blank` page for attachment. Cookies-only and empty-storage
+  headless runs create no origin targets. The command sets cookies browser-wide
+  and hands the DevTools endpoint back (`--keep-open` for a scraper to attach).
+  Because it owns the browser it seeds `localStorage` reliably, unlike the
+  best-effort `restore --to cdp=` path. `--domains`, `--profile`, `--port`,
+  `--chrome`, and `--verify` flags. Never touches a real user profile. Values are
+  never logged.
+
+### Fixed
+- `agentpantry browser --headless` no longer fails on Chrome 151 when the backup
+  has multiple storage origins. Chrome 151 rejects multiple headless startup
+  targets with "Multiple targets are not supported in headless mode". Headless
+  launches now use one `about:blank` startup target and create origin targets
+  over CDP after the debugging port is ready.
 
 ## v0.6.0 - 2026-07-08
 

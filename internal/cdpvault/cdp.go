@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -59,6 +60,7 @@ func ValidateLoopbackURL(raw string, allowedSchemes ...string) error {
 }
 
 type cdpTarget struct {
+	ID                   string `json:"id"`
 	Type                 string `json:"type"`
 	URL                  string `json:"url"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
@@ -66,7 +68,7 @@ type cdpTarget struct {
 
 // maxCDPJSONResponseBytes caps GET /json bodies read by frameWSForOrigin so a
 // hostile or buggy debugger port cannot force unbounded allocation during
-// target polling. Other CDP JSON readers are unchanged.
+// target polling and target creation. Other CDP JSON readers are unchanged.
 const maxCDPJSONResponseBytes = 1024 * 1024
 
 var errCDPJSONResponseTooLarge = errors.New("CDP JSON response too large")
@@ -83,6 +85,181 @@ func decodeLimitedJSON(body io.Reader, dst any) error {
 		return err
 	}
 	return nil
+}
+
+func validateStorageOrigin(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid storage origin")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("invalid storage origin")
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return fmt.Errorf("invalid storage origin")
+	}
+	if u.User != nil {
+		return fmt.Errorf("invalid storage origin")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("invalid storage origin")
+	}
+	if raw != u.Scheme+"://"+u.Host {
+		return fmt.Errorf("invalid storage origin")
+	}
+	if u.Host != strings.ToLower(u.Host) {
+		return fmt.Errorf("invalid storage origin")
+	}
+	return nil
+}
+
+func validateTargetID(id string) error {
+	if id == "" {
+		return fmt.Errorf("empty target ID")
+	}
+	if id[0] == '.' {
+		return fmt.Errorf("invalid target ID")
+	}
+	for i := 0; i < len(id); i++ {
+		b := id[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '_' || b == '.' {
+			continue
+		}
+		return fmt.Errorf("invalid target ID")
+	}
+	return nil
+}
+
+func dedupePreserveOrder(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+func (c *CDP) cdpHTTPClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// OpenStorageOrigins opens one page target per distinct storage origin via the
+// DevTools /json/new endpoint so localStorage can be seeded in that frame.
+func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) ([]string, error) {
+	if len(origins) == 0 {
+		return nil, nil
+	}
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return nil, fmt.Errorf("invalid CDP base URL: %w", err)
+	}
+	origins = dedupePreserveOrder(origins)
+	for _, origin := range origins {
+		if err := validateStorageOrigin(origin); err != nil {
+			return nil, err
+		}
+	}
+
+	client := c.cdpHTTPClient()
+	var created []string
+	defer func() {
+		if len(created) == 0 {
+			return
+		}
+		// Caller ctx may already be canceled; still attempt bounded cleanup.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = c.CloseTargets(cleanupCtx, created)
+	}()
+
+	for _, origin := range origins {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/json/new?"+origin, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("create CDP target request failed")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("create CDP target failed")
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("create CDP target returned status %d", resp.StatusCode)
+		}
+		var tgt cdpTarget
+		decErr := decodeLimitedJSON(resp.Body, &tgt)
+		_ = resp.Body.Close()
+		if decErr != nil {
+			return nil, fmt.Errorf("decode CDP target response: %w", decErr)
+		}
+		if tgt.ID == "" {
+			return nil, fmt.Errorf("create CDP target returned empty ID")
+		}
+		if err := validateTargetID(tgt.ID); err != nil {
+			return nil, err
+		}
+		created = append(created, tgt.ID)
+		if tgt.WebSocketDebuggerURL != "" {
+			if err := ValidateLoopbackURL(tgt.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+				return nil, fmt.Errorf("invalid CDP websocket URL")
+			}
+		}
+	}
+	out := created
+	created = nil // success: do not run deferred cleanup
+	return out, nil
+}
+
+// CloseTargets closes the given DevTools page targets via /json/close.
+func (c *CDP) CloseTargets(ctx context.Context, targetIDs []string) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return fmt.Errorf("invalid CDP base URL: %w", err)
+	}
+	targetIDs = dedupePreserveOrder(targetIDs)
+	for _, id := range targetIDs {
+		if err := validateTargetID(id); err != nil {
+			return err
+		}
+	}
+
+	client := c.cdpHTTPClient()
+	var errs []error
+	for _, id := range targetIDs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json/close/"+id, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				errs = append(errs, ctx.Err())
+			} else {
+				errs = append(errs, fmt.Errorf("close CDP target request failed"))
+			}
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				errs = append(errs, ctx.Err())
+			} else {
+				errs = append(errs, fmt.Errorf("close CDP target failed"))
+			}
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			errs = append(errs, fmt.Errorf("close CDP target returned status %d", resp.StatusCode))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *CDP) wsURL(ctx context.Context) (string, error) {

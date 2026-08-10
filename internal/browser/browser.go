@@ -19,7 +19,7 @@ type Options struct {
 	ProfileDir string   // --user-data-dir (a throwaway dir; never a real profile)
 	Port       int      // loopback --remote-debugging-port
 	Headless   bool     // use --headless=new (new headless, far less detectable)
-	OpenURLs   []string // initial tabs; opening each origin gives it a live frame
+	OpenURLs   []string // headed startup tabs; headless origins open after CDP is ready
 }
 
 // chromeCandidates lists binary names/paths to try when none is given, by OS.
@@ -83,8 +83,10 @@ func Args(opts Options) []string {
 	}
 	if opts.Headless {
 		args = append(args, "--headless=new")
+		args = append(args, "about:blank")
+	} else {
+		args = append(args, opts.OpenURLs...)
 	}
-	args = append(args, opts.OpenURLs...)
 	return args
 }
 

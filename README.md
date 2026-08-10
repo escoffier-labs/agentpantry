@@ -477,23 +477,31 @@ logged in, so a scraper attaches to a warm session instead of driving a login
     agentpantry browser -config ./sink.toml --keep-open
 
 It launches Chrome with a throwaway profile (never a real one) on a loopback
-debugging port, opens a tab on each origin in the backup, sets the cookies
-browser-wide, seeds each origin's `localStorage` in its loaded tab, and hands the
-DevTools endpoint back. Use `-sidecar` to name the store directly, or `-config`
-to derive the sidecar path and domain policy the same way `sink` and `restore`
-do (pass exactly one). Flags: `--headless` uses new headless (`--headless=new`),
-`--profile` names a persistent user-data-dir instead of a temp one, `--port` sets
-the debugging port, `--chrome` points at a specific binary, `--verify` reads
-cookies back through CDP, and `--keep-open` leaves the browser running (Ctrl-C to
-stop) for a scraper to attach.
+debugging port, sets cookies browser-wide, seeds each origin's `localStorage`
+after its tab or frame is ready, and hands the DevTools endpoint back. Headed
+mode passes one startup tab per distinct storage origin. Headless mode starts
+with a single `about:blank` target, waits for loopback CDP, then creates one
+temporary target per distinct validated HTTP or HTTPS storage origin through the
+CDP HTTP target endpoint, seeds `localStorage` once that origin's frame is ready,
+and closes only those temporary targets. The original `about:blank` page stays
+open for attachment. Cookies-only and empty-storage headless runs create no
+origin targets. That sequencing avoids Chrome 151 rejecting multiple headless
+startup targets with "Multiple targets are not supported in headless mode". Use
+`-sidecar` to name the store directly, or `-config` to derive the sidecar path
+and domain policy the same way `sink` and `restore` do (pass exactly one). Flags:
+`--headless` uses new headless (`--headless=new`), `--profile` names a
+persistent user-data-dir instead of a temp one, `--port` sets the debugging port,
+`--chrome` points at a specific binary, `--verify` reads cookies back through
+CDP, and `--keep-open` leaves the browser running (Ctrl-C to stop) for a scraper
+to attach.
 
-Because agentpantry owns this browser, it seeds `localStorage` reliably by
-navigating to each origin, which `restore --to cdp=` against a browser you
-already launched cannot do (that path is best-effort). The launch sets
-`--disable-blink-features=AutomationControlled` so `navigator.webdriver` stays
-unset. That flag is the extent of agentpantry's anti-bot posture. It delivers the
-authenticated session and gets out of the way. Fingerprint shims, human-paced
-input, and captcha handling belong to the tool driving the tab (a
+Because agentpantry owns this browser, it seeds `localStorage` reliably once
+each storage origin has a live frame, which `restore --to cdp=` against a
+browser you already launched cannot do (that path is best-effort). The launch
+sets `--disable-blink-features=AutomationControlled` so `navigator.webdriver`
+stays unset. That flag is the extent of agentpantry's anti-bot posture. It
+delivers the authenticated session and gets out of the way. Fingerprint shims,
+human-paced input, and captcha handling belong to the tool driving the tab (a
 Playwright/Puppeteer stealth layer). A session restored into a browser whose user
 agent, timezone, or language differ from where it was minted can still be
 flagged, so match those.
