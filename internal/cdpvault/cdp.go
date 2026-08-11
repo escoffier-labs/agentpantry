@@ -290,9 +290,11 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 		if tgt.Type != "page" {
 			return nil, fmt.Errorf("create CDP target returned non-page target")
 		}
-		returnedOrigin, ok := originOf(tgt.URL)
-		if !ok || returnedOrigin != origin {
-			return nil, fmt.Errorf("create CDP target returned mismatched origin")
+		if tgt.URL != "" && tgt.URL != "about:blank" {
+			returnedOrigin, ok := originOf(tgt.URL)
+			if !ok || returnedOrigin != origin {
+				return nil, fmt.Errorf("create CDP target returned mismatched origin")
+			}
 		}
 		if tgt.WebSocketDebuggerURL != "" {
 			if err := ValidateLoopbackURL(tgt.WebSocketDebuggerURL, "ws", "wss"); err != nil {
@@ -916,6 +918,8 @@ func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (
 				// Missing URL / about:blank / empty websocket: not ready yet.
 			}
 			// Missing target: retry until deadline.
+		} else if errors.Is(err, errCDPJSONResponseTooLarge) {
+			return "", err
 		} else if ctx.Err() != nil {
 			return "", ctx.Err()
 		}

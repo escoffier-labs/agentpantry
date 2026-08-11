@@ -3,6 +3,7 @@ package cdpvault
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -724,6 +725,59 @@ func TestFrameWSForTargetIDRetriesAboutBlankUntilCanonicalOrigin(t *testing.T) {
 	}
 }
 
+func TestFrameWSForTargetIDRetriesTransientListFailure(t *testing.T) {
+	const origin = "https://retry.example"
+	srv := newFakeCDPTargetServer(t)
+	targetID := srv.addUnrelatedPage(origin)
+	srv.failListOn = 1
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := (&CDP{BaseURL: srv.srv.URL}).frameWSForTargetID(ctx, targetID, origin)
+	if err != nil {
+		t.Fatalf("frameWSForTargetID after transient /json/list failure: %v", err)
+	}
+	if got == "" {
+		t.Fatal("websocket = empty after transient /json/list failure")
+	}
+	srv.mu.Lock()
+	attempts := srv.listAttempts
+	srv.mu.Unlock()
+	if attempts < 2 {
+		t.Fatalf("/json/list attempts = %d, want retry after transient failure", attempts)
+	}
+}
+
+func TestFrameWSForTargetIDRejectsOversizedListResponse(t *testing.T) {
+	const (
+		targetID = "TARGET-ID-SECRET"
+		origin   = "https://secret-origin.example"
+		marker   = "oversized-private-value"
+	)
+	srv := newFakeCDPTargetServer(t)
+	srv.oversizedListResponse = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	got, err := (&CDP{BaseURL: srv.srv.URL}).frameWSForTargetID(ctx, targetID, origin)
+	if err == nil {
+		t.Fatal("oversized /json/list response must fail")
+	}
+	if got != "" {
+		t.Fatalf("websocket = %q, want empty on oversized failure", got)
+	}
+	if !errors.Is(err, errCDPJSONResponseTooLarge) {
+		t.Fatalf("error = %v, want %v", err, errCDPJSONResponseTooLarge)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("oversized /json/list response returned after %v, want prompt failure", elapsed)
+	}
+	if msg := err.Error(); strings.Contains(msg, marker) {
+		t.Fatalf("oversized error leaked response content %q: %q", marker, msg)
+	}
+}
+
 func TestValidateStorageOriginCanonicalPorts(t *testing.T) {
 	for _, origin := range []string{
 		"https://example.com:443",
@@ -914,6 +968,47 @@ func TestOpenStorageOriginsVerifiesTargetOwnership(t *testing.T) {
 			t.Fatalf("valid new target IDs = %v, want [%s]", ids, targetID)
 		}
 	})
+}
+
+func TestOpenStorageOriginsDefersBlankNewResponseURLUntilTargetHydration(t *testing.T) {
+	const origin = "https://bootstrap.example"
+
+	for _, temporaryURL := range []string{"", "about:blank"} {
+		t.Run(fmt.Sprintf("new response URL %q", temporaryURL), func(t *testing.T) {
+			srv := newFakeCDPTargetServer(t)
+			const targetID = "bootstrap-target"
+			srv.newResponses = []cdpTarget{{ID: targetID, Type: "page", URL: temporaryURL}}
+			unrelated := srv.addUnrelatedPage(origin)
+			cdp := &CDP{BaseURL: srv.srv.URL}
+
+			ids, err := cdp.OpenStorageOrigins(context.Background(), []string{origin})
+			if err != nil {
+				t.Fatalf("OpenStorageOrigins with temporary URL %q: %v", temporaryURL, err)
+			}
+			if len(ids) != 1 || ids[0] != targetID {
+				t.Fatalf("OpenStorageOrigins IDs = %v, want [%s]", ids, targetID)
+			}
+
+			// /json/new may report a bootstrap URL before the target list reaches
+			// the requested canonical origin. Hydration must resolve this exact ID.
+			srv.setTargetURL(targetID, origin+"/")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			written, err := cdp.WriteStorageViaTargets(ctx, []webstorage.Item{{Origin: origin, Key: "owned", Value: "value"}}, ids)
+			if err != nil {
+				t.Fatalf("WriteStorageViaTargets: %v", err)
+			}
+			if written != 1 {
+				t.Fatalf("written = %d, want 1", written)
+			}
+			if got := srv.keysForTarget(targetID); len(got) != 1 || got[0] != "owned" {
+				t.Fatalf("bootstrap target keys = %v, want [owned]", got)
+			}
+			if got := srv.keysForTarget(unrelated); len(got) != 0 {
+				t.Fatalf("unrelated same-origin target keys = %v, want none", got)
+			}
+		})
+	}
 }
 
 func TestOpenStorageOriginsRejectsNonLoopbackWebSocket(t *testing.T) {
