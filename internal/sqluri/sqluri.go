@@ -7,6 +7,7 @@ package sqluri
 
 import (
 	"database/sql"
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -18,19 +19,54 @@ import (
 // ReadOnlyDSN returns a file: URI DSN that opens path in SQLite read-only mode.
 // The path is percent-encoded so spaces, "#", "?", Windows drive letters, and
 // UNC hosts survive URI parsing.
-func ReadOnlyDSN(path string) string {
+//
+// Windows drive-relative paths (e.g. C:sidecar.db) are resolved with Windows
+// filepath semantics when running on Windows; off Windows they are rejected
+// rather than silently reinterpreted as absolute C:/sidecar.db.
+func ReadOnlyDSN(path string) (string, error) {
 	return readOnlyDSN(path, runtime.GOOS)
 }
 
-func readOnlyDSN(path, goos string) string {
+func readOnlyDSN(path, goos string) (string, error) {
+	if goos == "windows" && isWindowsDriveRelative(path) {
+		if runtime.GOOS != "windows" {
+			return "", fmt.Errorf("windows drive-relative path %q cannot be resolved correctly on %s", path, runtime.GOOS)
+		}
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve windows drive-relative path %q: %w", path, err)
+		}
+		path = abs
+	}
+
 	u := fileURL(path, goos)
 	u.RawQuery = "mode=ro"
-	return u.String()
+	return u.String(), nil
 }
 
 // OpenReadOnly opens path with modernc.org/sqlite in URI read-only mode.
 func OpenReadOnly(path string) (*sql.DB, error) {
-	return sql.Open("sqlite", ReadOnlyDSN(path))
+	dsn, err := ReadOnlyDSN(path)
+	if err != nil {
+		return nil, err
+	}
+	return sql.Open("sqlite", dsn)
+}
+
+// isWindowsDriveRelative reports whether path is a Windows drive-relative form
+// such as C:sidecar.db or C: (drive letter + colon, without a directory separator).
+func isWindowsDriveRelative(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+		return false
+	}
+	if len(path) == 2 {
+		return true
+	}
+	return path[2] != '\\' && path[2] != '/'
 }
 
 // fileURL converts a filesystem path into a file: URL per SQLite's URI rules:
@@ -43,18 +79,14 @@ func fileURL(path, goos string) url.URL {
 		p = filepath.ToSlash(p)
 	}
 
-	// UNC: \\server\share\file -> file://server/share/file
+	// UNC: \\server\share\file -> file:////server/share/file (empty authority).
+	// file://server/... is rejected by modernc as "invalid uri authority".
 	if goos == "windows" && strings.HasPrefix(p, "//") {
-		rest := strings.TrimPrefix(p, "//")
-		host, pathPart, ok := strings.Cut(rest, "/")
-		if !ok {
-			return url.URL{Scheme: "file", Host: rest, Path: "/"}
-		}
-		return url.URL{Scheme: "file", Host: host, Path: "/" + pathPart}
+		return url.URL{Scheme: "file", Path: p}
 	}
 
-	// Windows drive letter: C:/foo -> file:///C:/foo
-	if goos == "windows" && len(p) >= 2 && p[1] == ':' {
+	// Windows absolute drive path: C:/foo -> file:///C:/foo
+	if goos == "windows" && len(p) >= 3 && p[1] == ':' && p[2] == '/' {
 		return url.URL{Scheme: "file", Path: "/" + p}
 	}
 
