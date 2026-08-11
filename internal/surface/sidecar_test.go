@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -101,6 +102,40 @@ func TestOpenSidecarReadOnly(t *testing.T) {
 	}
 	if info, _ := os.Stat(other); info.Size() != 0 {
 		t.Fatalf("read-only open mutated a non-store file: size %d", info.Size())
+	}
+}
+
+// TestOpenSidecarReadOnlyRejectsWrites pins issue #68: a plain path+"?mode=ro"
+// DSN is writable under modernc.org/sqlite; the read-only opener must use a
+// file: URI so SQLite returns SQLITE_READONLY (8) and the store stays unchanged.
+func TestOpenSidecarReadOnlyRejectsWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sidecar.db")
+	w, err := NewSidecar(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := cookie.Cookie{Host: "a.com", Name: "x", Path: "/", Value: "1"}
+	if err := w.Apply(cookie.Diff{Upserts: []cookie.Cookie{seed}}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	r, err := OpenSidecarReadOnly(path)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer r.Close()
+
+	write := cookie.Cookie{Host: "evil.com", Name: "y", Path: "/", Value: "2"}
+	err = r.Apply(cookie.Diff{Upserts: []cookie.Cookie{write}})
+	if err == nil {
+		t.Fatal("Apply through OpenSidecarReadOnly succeeded; want SQLITE_READONLY")
+	}
+	if !strings.Contains(err.Error(), "readonly") && !strings.Contains(err.Error(), "(8)") {
+		t.Fatalf("want SQLITE_READONLY (8) in error, got %v", err)
+	}
+	if n := countRows(t, path); n != 1 {
+		t.Fatalf("store changed after rejected write: count=%d want 1", n)
 	}
 }
 

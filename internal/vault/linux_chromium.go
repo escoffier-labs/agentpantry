@@ -2,14 +2,12 @@ package vault
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
-	_ "modernc.org/sqlite"
+	"github.com/escoffier-labs/agentpantry/internal/sqluri"
 )
 
 // LinuxChromium reads a Chromium-family cookie store on Linux.
@@ -32,7 +30,7 @@ func (v *LinuxChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, error
 	}
 	defer cleanup()
 
-	db, err := sql.Open("sqlite", filepath.ToSlash(tmp)+"?mode=ro")
+	db, err := sqluri.OpenReadOnly(tmp)
 	if err != nil {
 		return nil, err
 	}

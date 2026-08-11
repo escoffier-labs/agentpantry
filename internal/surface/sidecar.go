@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/sqluri"
 	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	_ "modernc.org/sqlite"
 )
@@ -78,7 +79,7 @@ func OpenSidecarReadOnly(path string) (*Sidecar, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("sidecar path %s is not a regular file", path)
 	}
-	db, err := sql.Open("sqlite", filepath.ToSlash(path)+"?mode=ro")
+	db, err := sqluri.OpenReadOnly(path)
 	if err != nil {
 		return nil, err
 	}

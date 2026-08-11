@@ -4,15 +4,14 @@ package vault
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
+	"github.com/escoffier-labs/agentpantry/internal/sqluri"
 	"github.com/escoffier-labs/agentpantry/internal/wincrypto"
-	_ "modernc.org/sqlite"
 )
 
 // WindowsChromium reads a Chromium-family cookie store on Windows (pre-app-bound).
@@ -98,7 +97,7 @@ func (v *WindowsChromium) ReadCookies(ctx context.Context) ([]cookie.Cookie, err
 	}
 	defer cleanup()
 
-	db, err := sql.Open("sqlite", filepath.ToSlash(tmp)+"?mode=ro")
+	db, err := sqluri.OpenReadOnly(tmp)
 	if err != nil {
 		return nil, err
 	}

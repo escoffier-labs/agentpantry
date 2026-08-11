@@ -2,12 +2,10 @@ package ffvault
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/dbcopy"
-	_ "modernc.org/sqlite"
+	"github.com/escoffier-labs/agentpantry/internal/sqluri"
 )
 
 // Firefox reads cookies from a Firefox profile's cookies.sqlite (plaintext values).
@@ -25,7 +23,7 @@ func (f *Firefox) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	}
 	defer cleanup()
 
-	db, err := sql.Open("sqlite", filepath.ToSlash(tmp)+"?mode=ro")
+	db, err := sqluri.OpenReadOnly(tmp)
 	if err != nil {
 		return nil, err
 	}

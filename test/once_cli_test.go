@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/escoffier-labs/agentpantry/internal/sqluri"
 	"github.com/escoffier-labs/agentpantry/internal/state"
 )
 
@@ -180,7 +181,7 @@ func waitForFile(t *testing.T, path string) string {
 // while the sink still holds the file open is unreliable on Windows.
 func openSidecarRO(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.ToSlash(path)+"?mode=ro")
+	db, err := sqluri.OpenReadOnly(path)
 	if err != nil {
 		t.Fatalf("open sidecar: %v", err)
 	}
