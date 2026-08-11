@@ -60,7 +60,7 @@ func isWindowsDriveRelative(path string) bool {
 		return false
 	}
 	c := path[0]
-	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+	if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
 		return false
 	}
 	if len(path) == 2 {

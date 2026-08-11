@@ -112,12 +112,21 @@ func TestReadOnlyDSNWindowsDriveRelative(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Must not silently become root-of-drive C:/sidecar.db.
-		if got == "file:///C:/sidecar.db?mode=ro" || got == "file:///C:sidecar.db?mode=ro" {
-			t.Fatalf("drive-relative path silently reinterpreted as absolute: %q", got)
+		// Reject the unresolved drive-relative URI form; Abs may legitimately
+		// yield the drive root (e.g. C:\sidecar.db) depending on process cwd.
+		if got == "file:///C:sidecar.db?mode=ro" {
+			t.Fatalf("unresolved drive-relative DSN: %q", got)
 		}
-		if !strings.HasPrefix(got, "file:///C:/") || !strings.HasSuffix(got, "?mode=ro") {
-			t.Fatalf("resolved DSN = %q, want absolute Windows file URI with mode=ro", got)
+		abs, err := filepath.Abs(driveRel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := readOnlyDSN(abs, "windows")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("resolved DSN = %q, want Abs-derived %q (from %q)", got, want, abs)
 		}
 		return
 	}
