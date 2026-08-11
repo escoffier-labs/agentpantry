@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +50,75 @@ func TestServeRoutesStorageToStorageSurface(t *testing.T) {
 	}
 	if len(cs.applied) != 1 || len(cs.applied[0].Upserts) != 1 || cs.applied[0].Upserts[0].Key != "k" {
 		t.Fatalf("storage surface not called correctly: %+v", cs.applied)
+	}
+}
+
+// TestServeFiltersInvalidStorageUpsertsAtBoundary pins shared-sink defense for
+// every StorageSurface (storagestate, sidecar, …): only exact-canonical HTTP(S)
+// upserts are applied; deletes stay intact so legacy unsafe rows can still be
+// removed; credential material never appears in errors or captured output.
+func TestServeFiltersInvalidStorageUpsertsAtBoundary(t *testing.T) {
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	var w bytes.Buffer
+
+	safe := []webstorage.Item{
+		{Origin: "https://example.com", Key: "a", Value: "1"},
+		{Origin: "https://192.0.2.1", Key: "b", Value: "2"},
+		{Origin: "https://[2001:db8::1]", Key: "c", Value: "3"},
+	}
+	unsafe := []webstorage.Item{
+		{Origin: "https://user:secret@example.com", Key: "cred", Value: "leak-me"},
+		{Origin: "https://example.com/path", Key: "path", Value: "nope"},
+		{Origin: "https://EXAMPLE.com", Key: "case", Value: "nope"},
+	}
+	deletes := []string{
+		webstorage.Key(webstorage.Item{Origin: "https://example.com", Key: "gone"}),
+		webstorage.Key(webstorage.Item{Origin: "https://user:legacy@example.com", Key: "old"}),
+		webstorage.Key(webstorage.Item{Origin: "https://example.com/path", Key: "legacy-path"}),
+	}
+	upserts := append(append([]webstorage.Item{}, safe...), unsafe...)
+	p := wire.Payload{Storage: webstorage.Diff{Upserts: upserts, Deletes: deletes}}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := sealer.Seal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.WriteFrame(&w, frame); err != nil {
+		t.Fatal(err)
+	}
+
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
+	cs := &capStorage{}
+	srv := &Server{Opener: opener, StorageSurfaces: []StorageSurface{cs}}
+	serveErr := srv.Serve(context.Background(), &w)
+	if serveErr != nil {
+		msg := serveErr.Error()
+		for _, leak := range []string{"secret", "leak-me", "user:secret"} {
+			if strings.Contains(msg, leak) {
+				t.Fatalf("Serve error leaked credential material %q: %v", leak, serveErr)
+			}
+		}
+	}
+	if len(cs.applied) != 1 {
+		t.Fatalf("storage surface apply count = %d, want 1; err=%v applied=%+v", len(cs.applied), serveErr, cs.applied)
+	}
+	got := cs.applied[0]
+	if !reflect.DeepEqual(got.Upserts, safe) {
+		t.Fatalf("capStorage upserts = %#v, want exactly safe canonical %#v", got.Upserts, safe)
+	}
+	if !reflect.DeepEqual(got.Deletes, deletes) {
+		t.Fatalf("capStorage deletes = %#v, want intact %#v", got.Deletes, deletes)
+	}
+	// Upsert path must not retain credentialed/path/noncanonical rows or their values.
+	for _, it := range got.Upserts {
+		if strings.Contains(it.Origin, "secret") || strings.Contains(it.Origin, "@") ||
+			strings.Contains(it.Value, "leak-me") || strings.Contains(it.Key, "cred") {
+			t.Fatalf("capStorage upsert retained credential material: %#v", it)
+		}
 	}
 }
 

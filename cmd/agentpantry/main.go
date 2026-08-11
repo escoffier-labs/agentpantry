@@ -1458,6 +1458,9 @@ func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cook
 // to the target. It returns the count of skipped-expired cookies and the count
 // of localStorage items written.
 func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie, storage []webstorage.Item) (int, int, error) {
+	// Filter before either storage-carrying target writes; cookie-only targets
+	// ignore storage. storageWritten / len-based results use the filtered slice.
+	storage = canonicalStorageItems(storage)
 	d := cookie.Diff{Upserts: cookies}
 	switch target.kind {
 	case restoreTargetNetscape:
@@ -1637,7 +1640,7 @@ func cmdRestore(args []string) error {
 		if lerr != nil {
 			return lerr
 		}
-		storageItems = narrowRestoreStorage(items, domains, configuredDomains)
+		storageItems = canonicalStorageItems(narrowRestoreStorage(items, domains, configuredDomains))
 	}
 
 	if *dryRun {
@@ -1681,13 +1684,27 @@ func cmdRestore(args []string) error {
 	return nil
 }
 
+// canonicalStorageItems keeps accepted webstorage.Item rows exactly and in
+// order (including duplicates and key/value data) and drops every row whose
+// origin fails cdpvault.ValidateStorageOrigin.
+func canonicalStorageItems(items []webstorage.Item) []webstorage.Item {
+	out := make([]webstorage.Item, 0, len(items))
+	for _, it := range items {
+		if cdpvault.ValidateStorageOrigin(it.Origin) != nil {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 // distinctStorageOrigins returns the sorted unique origins in items, so the
 // launch helper can open a tab on each one (giving it a live frame for
 // localStorage).
 func distinctStorageOrigins(items []webstorage.Item) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for _, it := range items {
+	for _, it := range canonicalStorageItems(items) {
 		if _, ok := seen[it.Origin]; ok {
 			continue
 		}
@@ -1696,6 +1713,26 @@ func distinctStorageOrigins(items []webstorage.Item) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// browserRestoreTimeout returns the outer restore budget for cmdBrowser.
+// Cookie write, target creation, and serial per-origin frame lookup + seed
+// share one context; scale 30s base + 20s per distinct origin, capped at 5m.
+func browserRestoreTimeout(originCount int) time.Duration {
+	const (
+		base      = 30 * time.Second
+		perOrigin = 20 * time.Second
+		maxBudget = 5 * time.Minute
+	)
+	if originCount <= 0 {
+		return base
+	}
+	// Cap before multiply so math.MaxInt (and other huge counts) cannot overflow.
+	maxOrigins := int((maxBudget - base) / perOrigin)
+	if originCount > maxOrigins {
+		return maxBudget
+	}
+	return base + time.Duration(originCount)*perOrigin
 }
 
 func cmdBrowser(args []string) error {
@@ -1750,7 +1787,8 @@ func cmdBrowser(args []string) error {
 	if err != nil {
 		return err
 	}
-	storage := narrowRestoreStorage(items, domains, configuredDomains)
+	storage := canonicalStorageItems(narrowRestoreStorage(items, domains, configuredDomains))
+	storageOrigins := distinctStorageOrigins(storage)
 
 	// A throwaway automation profile unless the operator names one. Never a real
 	// user profile.
@@ -1772,7 +1810,7 @@ func cmdBrowser(args []string) error {
 		ProfileDir: profileDir,
 		Port:       *port,
 		Headless:   *headless,
-		OpenURLs:   distinctStorageOrigins(storage), // headed tabs; headless hydrates origins through CDP
+		OpenURLs:   storageOrigins, // headed tabs; headless hydrates origins through CDP
 	})
 	if err != nil {
 		return err
@@ -1783,23 +1821,27 @@ func cmdBrowser(args []string) error {
 		return err
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, browserRestoreTimeout(len(storageOrigins)))
 	defer cancel()
 	cdp := &cdpvault.CDP{BaseURL: base}
 	var written int
 	var bootstrapIDs []string
 	cookieSkipped, err := writeBrowserCookies(rctx, cdp, cookies, func() error {
 		var err error
-		if *headless && len(storage) > 0 {
-			bootstrapIDs, err = cdp.OpenStorageOrigins(rctx, distinctStorageOrigins(storage))
-			if err != nil {
-				return err
+		if *headless {
+			if len(storage) > 0 {
+				bootstrapIDs, err = cdp.OpenStorageOrigins(rctx, storageOrigins)
+				if err != nil {
+					return err
+				}
 			}
+			// Bind hydration to the bootstrap target IDs OpenStorageOrigins
+			// returned; never resolve an arbitrary same-origin page.
+			written, err = cdp.WriteStorageViaTargets(rctx, storage, bootstrapIDs)
+		} else {
+			// Headed mode opens a tab per origin at launch, then seeds each frame.
+			written, err = cdp.WriteStorageViaFrames(rctx, storage)
 		}
-
-		// Headed mode opens a tab per origin at launch; headless opens bootstrap
-		// targets above, then seeds localStorage in each frame.
-		written, err = cdp.WriteStorageViaFrames(rctx, storage)
 		if err != nil {
 			return err
 		}

@@ -122,11 +122,32 @@ func (s *Server) apply(p wire.Payload) error {
 		}
 	}
 	if !p.Storage.IsEmpty() {
+		storage := filterStorageUpserts(p.Storage)
+		if storage.IsEmpty() {
+			return nil
+		}
 		for _, ws := range s.StorageSurfaces {
-			if err := ws.ApplyStorage(p.Storage); err != nil {
+			if err := ws.ApplyStorage(storage); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// filterStorageUpserts keeps only exact-canonical HTTP(S) upserts and leaves
+// Deletes intact so legacy unsafe rows remain deletable. Upserts are copied
+// into a fresh slice so the inbound payload is not mutated.
+func filterStorageUpserts(d webstorage.Diff) webstorage.Diff {
+	if len(d.Upserts) == 0 {
+		return d
+	}
+	filtered := make([]webstorage.Item, 0, len(d.Upserts))
+	for _, it := range d.Upserts {
+		if webstorage.ValidateOrigin(it.Origin) != nil {
+			continue
+		}
+		filtered = append(filtered, it)
+	}
+	return webstorage.Diff{Upserts: filtered, Deletes: d.Deletes}
 }

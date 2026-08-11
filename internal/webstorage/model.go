@@ -33,15 +33,16 @@ func NewSnapshot(items []Item) Snapshot {
 	return Snapshot{Items: m}
 }
 
-// OriginHost returns the hostname of an http(s) origin for domain-policy checks.
-// It reports false for a non-http(s) origin (e.g. chrome-extension://) or one
-// with no host, so such origins are dropped before they can sync.
+// OriginHost returns the hostname of an exact-canonical http(s) origin for
+// domain-policy checks. It requires ValidateOrigin first, so credentialed,
+// path/query/fragment, noncanonical, or non-http(s) origins are never
+// normalized into a host and are dropped before they can sync.
 func OriginHost(origin string) (string, bool) {
-	u, err := url.Parse(origin)
-	if err != nil {
+	if err := ValidateOrigin(origin); err != nil {
 		return "", false
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	u, err := url.Parse(origin)
+	if err != nil {
 		return "", false
 	}
 	host := u.Hostname()

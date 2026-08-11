@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -87,39 +87,13 @@ func decodeLimitedJSON(body io.Reader, dst any) error {
 	return nil
 }
 
-func validateStorageOrigin(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if u.Host == "" || u.Hostname() == "" {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if u.User != nil {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if raw != u.Scheme+"://"+u.Host {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if u.Host != strings.ToLower(u.Host) {
-		return fmt.Errorf("invalid storage origin")
-	}
-	if port := u.Port(); port != "" {
-		portNumber, err := strconv.Atoi(port)
-		if err != nil || strconv.Itoa(portNumber) != port {
-			return fmt.Errorf("invalid storage origin")
-		}
-		if (u.Scheme == "http" && portNumber == 80) || (u.Scheme == "https" && portNumber == 443) {
-			return fmt.Errorf("invalid storage origin")
-		}
-	}
-	return nil
+// ValidateStorageOrigin is a compatibility wrapper around
+// webstorage.ValidateOrigin. Only an exact canonical HTTP(S) origin is
+// accepted; unsafe input is never normalized. Errors are generic and never
+// echo the raw origin. CDP HTTP/WebSocket endpoints remain loopback-only via
+// ValidateLoopbackURL.
+func ValidateStorageOrigin(raw string) error {
+	return webstorage.ValidateOrigin(raw)
 }
 
 func validateTargetID(id string) error {
@@ -149,6 +123,16 @@ func dedupePreserveOrder(in []string) []string {
 		seen[s] = struct{}{}
 		out = append(out, s)
 	}
+	return out
+}
+
+// canonicalSortedStorageOrigins returns a new slice of unique origins in
+// lexicographic order. The caller's slice is never mutated. OpenStorageOrigins
+// and WriteStorageViaTargets share this contract so target IDs and item-origin
+// groups always pair in the same order.
+func canonicalSortedStorageOrigins(origins []string) []string {
+	out := dedupePreserveOrder(origins)
+	sort.Strings(out)
 	return out
 }
 
@@ -184,6 +168,12 @@ func (c *CDP) listTargets(ctx context.Context, client *http.Client) ([]cdpTarget
 
 // OpenStorageOrigins opens one page target per distinct storage origin via the
 // DevTools /json/new endpoint so localStorage can be seeded in that frame.
+// Distinct origins are created and returned in shared canonical sorted order
+// (deduplicated, lexicographic), matching WriteStorageViaTargets pairing.
+// Arbitrary caller input such as [B,A] yields target IDs in A,B order.
+// On non-nil error, returned IDs were created only by this call and may still
+// be open; the caller must pass them to CloseTargets. An empty slice means no
+// caller cleanup retry is needed.
 func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []string, retErr error) {
 	if len(origins) == 0 {
 		return nil, nil
@@ -191,9 +181,9 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
 		return nil, fmt.Errorf("invalid CDP base URL: %w", err)
 	}
-	origins = dedupePreserveOrder(origins)
+	origins = canonicalSortedStorageOrigins(origins)
 	for _, origin := range origins {
-		if err := validateStorageOrigin(origin); err != nil {
+		if err := ValidateStorageOrigin(origin); err != nil {
 			return nil, err
 		}
 	}
@@ -210,18 +200,54 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 		}
 	}
 
-	var created []string
+	// ownedForCleanup: IDs we created and must close on failure (never baseline/duplicates).
+	// verified: IDs that passed type, origin, and websocket checks.
+	var ownedForCleanup []string
+	var verified []string
 	defer func() {
-		if retErr == nil || len(created) == 0 {
+		if retErr == nil || len(ownedForCleanup) == 0 {
 			return
 		}
 		// Caller ctx may already be canceled; still attempt bounded cleanup.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if cleanupErr := c.CloseTargets(cleanupCtx, created); cleanupErr != nil {
-			retErr = errors.Join(retErr, fmt.Errorf("cleanup CDP targets: %w", cleanupErr))
+		// Close one owned ID at a time so successful closes drop out of the
+		// retry set. Never close or return baseline/duplicate/unsafe IDs.
+		var failed []string
+		var cleanupErrs []error
+		for _, id := range ownedForCleanup {
+			if err := c.CloseTargets(cleanupCtx, []string{id}); err != nil {
+				cleanupErrs = append(cleanupErrs, err)
+				failed = append(failed, id)
+			}
 		}
-		ids = append([]string(nil), created...)
+		if len(cleanupErrs) > 0 {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup CDP targets: %w", errors.Join(cleanupErrs...)))
+			// Reconcile against a fresh list: Chrome may have accepted /json/close
+			// even when the HTTP/transport response failed. Keep only failed owned
+			// IDs still present as type "page"; omit already-closed ones.
+			retry := append([]string(nil), failed...)
+			if cleanupCtx.Err() == nil {
+				if targets, listErr := c.listTargets(cleanupCtx, c.cdpHTTPClient()); listErr == nil {
+					presentPage := make(map[string]struct{}, len(targets))
+					for _, t := range targets {
+						if t.ID != "" && t.Type == "page" {
+							presentPage[t.ID] = struct{}{}
+						}
+					}
+					retry = retry[:0]
+					for _, id := range failed {
+						if _, ok := presentPage[id]; ok {
+							retry = append(retry, id)
+						}
+					}
+				}
+			}
+			ids = append([]string(nil), retry...)
+			return
+		}
+		// Cleanup succeeded: all owned targets are already closed; return zero IDs.
+		ids = nil
 	}()
 
 	for _, origin := range origins {
@@ -255,6 +281,12 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 		if err := validateTargetID(tgt.ID); err != nil {
 			return nil, err
 		}
+		if _, exists := knownIDs[tgt.ID]; exists {
+			return nil, fmt.Errorf("create CDP target returned non-new ID")
+		}
+		// Own the candidate for cleanup before type/origin/websocket verification.
+		ownedForCleanup = append(ownedForCleanup, tgt.ID)
+		knownIDs[tgt.ID] = struct{}{}
 		if tgt.Type != "page" {
 			return nil, fmt.Errorf("create CDP target returned non-page target")
 		}
@@ -262,18 +294,14 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 		if !ok || returnedOrigin != origin {
 			return nil, fmt.Errorf("create CDP target returned mismatched origin")
 		}
-		if _, exists := knownIDs[tgt.ID]; exists {
-			return nil, fmt.Errorf("create CDP target returned non-new ID")
-		}
-		created = append(created, tgt.ID)
-		knownIDs[tgt.ID] = struct{}{}
 		if tgt.WebSocketDebuggerURL != "" {
 			if err := ValidateLoopbackURL(tgt.WebSocketDebuggerURL, "ws", "wss"); err != nil {
 				return nil, fmt.Errorf("invalid CDP websocket URL")
 			}
 		}
+		verified = append(verified, tgt.ID)
 	}
-	return append([]string(nil), created...), nil
+	return append([]string(nil), verified...), nil
 }
 
 // CloseTargets closes the given DevTools page targets via /json/close.
@@ -782,6 +810,127 @@ func (c *CDP) WriteStorageViaFrames(ctx context.Context, items []webstorage.Item
 	return written, nil
 }
 
+// WriteStorageViaTargets seeds localStorage into exact DevTools page targets.
+// Items are grouped by distinct origin in the shared canonical sorted order
+// (deduplicated, lexicographic; same contract as OpenStorageOrigins) and paired
+// with targetIDs in that same order. Per-origin item order is preserved. Every
+// origin/target pair is preflighted before any seedFrame call so a mismatch
+// writes nothing. Errors are generic and never echo origins, URLs, target IDs,
+// keys, or values.
+func (c *CDP) WriteStorageViaTargets(ctx context.Context, items []webstorage.Item, targetIDs []string) (int, error) {
+	if len(items) == 0 && len(targetIDs) == 0 {
+		return 0, nil
+	}
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return 0, fmt.Errorf("invalid CDP base URL")
+	}
+
+	byOrigin := map[string][][2]string{}
+	var itemOrigins []string
+	for _, it := range items {
+		if err := ValidateStorageOrigin(it.Origin); err != nil {
+			return 0, err
+		}
+		itemOrigins = append(itemOrigins, it.Origin)
+		byOrigin[it.Origin] = append(byOrigin[it.Origin], [2]string{it.Key, it.Value})
+	}
+	order := canonicalSortedStorageOrigins(itemOrigins)
+
+	seenIDs := make(map[string]struct{}, len(targetIDs))
+	for _, id := range targetIDs {
+		if err := validateTargetID(id); err != nil {
+			return 0, fmt.Errorf("invalid target ID")
+		}
+		if _, dup := seenIDs[id]; dup {
+			return 0, fmt.Errorf("duplicate target ID")
+		}
+		seenIDs[id] = struct{}{}
+	}
+	if len(targetIDs) != len(order) {
+		return 0, fmt.Errorf("target ID count mismatch")
+	}
+
+	type seededOrigin struct {
+		ws     string
+		origin string
+		pairs  [][2]string
+	}
+	ready := make([]seededOrigin, 0, len(order))
+	for i, origin := range order {
+		ws, err := c.frameWSForTargetID(ctx, targetIDs[i], origin)
+		if err != nil {
+			return 0, err
+		}
+		ready = append(ready, seededOrigin{ws: ws, origin: origin, pairs: byOrigin[origin]})
+	}
+
+	written := 0
+	for _, entry := range ready {
+		n, err := c.seedFrame(ctx, entry.ws, entry.origin, entry.pairs)
+		if err != nil {
+			return written, err
+		}
+		written += n
+	}
+	return written, nil
+}
+
+// frameWSForTargetID resolves the websocket for one exact DevTools target ID,
+// retrying target-list readiness for up to 10s. It never selects a different
+// same-origin target. Missing targets and not-yet-ready about:blank / empty
+// websocket entries may retry; a present target whose type is not exactly
+// "page" (including empty), unsafe ID, non-loopback websocket, or a different
+// canonical HTTP(S) origin fails generically before any seed.
+func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (string, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	client := c.cdpHTTPClient()
+	for {
+		targets, err := c.listTargets(ctx, client)
+		if err == nil {
+			var found *cdpTarget
+			for i := range targets {
+				if targets[i].ID == targetID {
+					found = &targets[i]
+					break
+				}
+			}
+			if found != nil {
+				if err := validateTargetID(found.ID); err != nil {
+					return "", fmt.Errorf("invalid storage target")
+				}
+				if found.Type != "page" {
+					return "", fmt.Errorf("invalid storage target")
+				}
+				urlReady := found.URL != "" && found.URL != "about:blank"
+				wsReady := found.WebSocketDebuggerURL != ""
+				if urlReady && wsReady {
+					o, ok := originOf(found.URL)
+					if !ok || o != origin {
+						return "", fmt.Errorf("storage target ownership mismatch")
+					}
+					if err := ValidateLoopbackURL(found.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+						return "", fmt.Errorf("invalid CDP websocket URL")
+					}
+					return found.WebSocketDebuggerURL, nil
+				}
+				// Missing URL / about:blank / empty websocket: not ready yet.
+			}
+			// Missing target: retry until deadline.
+		} else if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("storage target not ready")
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
 // frameWSForOrigin finds the websocket of a page target whose URL origin matches,
 // retrying briefly because a freshly launched tab may not have its URL set yet.
 func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, error) {
@@ -870,13 +1019,18 @@ func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]strin
 		return 0, nil // the tab never became the origin document; skip
 	}
 
+	originLit, err := json.Marshal(origin)
+	if err != nil {
+		return 0, err
+	}
 	payload, err := json.Marshal(pairs)
 	if err != nil {
 		return 0, err
 	}
-	// The pairs are embedded as a JSON literal (valid JS). The script sets each
-	// item and returns the count as a string so evalValue can read it.
-	expr := `(function(){var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
+	// Embed expected origin and pairs as JSON literals (valid JS). The mutation
+	// expression is the authoritative race-safe guard: refuse setItem if
+	// location.origin drifted after the readiness loop. Never log keys/values/origin.
+	expr := `(function(){if(location.origin!==` + string(originLit) + `)return '0';var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
 	val, err := c.evalValue(conn, id, expr)
 	if err != nil {
 		return 0, err
