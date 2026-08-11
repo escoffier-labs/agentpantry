@@ -51,7 +51,7 @@ func writeTestVault(t *testing.T, dir, password string, entries []testEntry) (va
 	root.Name = "Root"
 	root.Groups = append(root.Groups, sub)
 
-	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion4())
+	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion40())
 	db.Credentials = creds
 	db.Content.Root = &gokeepasslib.RootData{Groups: []gokeepasslib.Group{root}}
 	if err := db.LockProtectedEntries(); err != nil {

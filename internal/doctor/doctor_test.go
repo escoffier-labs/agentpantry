@@ -400,7 +400,7 @@ func writeDoctorVault(t *testing.T, dir string) (vaultPath, keyPath string) {
 	root := gokeepasslib.NewGroup()
 	root.Name = "Root"
 	root.Entries = append(root.Entries, e)
-	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion4())
+	db := gokeepasslib.NewDatabase(gokeepasslib.WithDatabaseKDBXVersion40())
 	db.Credentials = creds
 	db.Content.Root = &gokeepasslib.RootData{Groups: []gokeepasslib.Group{root}}
 	if err := db.LockProtectedEntries(); err != nil {
