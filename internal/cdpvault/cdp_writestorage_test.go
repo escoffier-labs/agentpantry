@@ -3,6 +3,7 @@ package cdpvault
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -153,5 +154,84 @@ func TestWriteStorageViaFramesEmptyIsNoop(t *testing.T) {
 	written, err := (&CDP{BaseURL: "http://127.0.0.1:0"}).WriteStorageViaFrames(context.Background(), nil)
 	if err != nil || written != 0 {
 		t.Fatalf("WriteStorageViaFrames(nil) = (%d, %v), want (0, nil)", written, err)
+	}
+}
+
+// frameWSJSONResponse builds a /json target-list body of exactly size bytes.
+// size must be large enough to hold the fixed JSON envelope around pad.
+func frameWSJSONResponse(t *testing.T, origin, ws, pad string, size int) string {
+	t.Helper()
+	prefix := `[{"type":"page","id":"TARGET-ID-SECRET","url":"` + origin + `/","webSocketDebuggerUrl":"` + ws + `","pad":"`
+	suffix := `"}]`
+	need := size - len(prefix) - len(suffix)
+	if need < 0 {
+		t.Fatalf("size %d too small for envelope", size)
+	}
+	if pad == "" {
+		pad = "x"
+	}
+	body := prefix + strings.Repeat(pad, (need+len(pad)-1)/len(pad))
+	body = body[:size-len(suffix)] + suffix
+	if len(body) != size {
+		t.Fatalf("built body len %d, want %d", len(body), size)
+	}
+	return body
+}
+
+func TestFrameWSForOriginAcceptsResponseAtCap(t *testing.T) {
+	origin := "https://example.com"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ws := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/devtools/page/ABC"
+	body := frameWSJSONResponse(t, origin, ws, "a", maxCDPJSONResponseBytes)
+	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForOrigin(ctx, origin)
+	if err != nil {
+		t.Fatalf("frameWSForOrigin at cap: %v", err)
+	}
+	if got != ws {
+		t.Fatalf("websocket = %q, want %q", got, ws)
+	}
+}
+
+func TestFrameWSForOriginRejectsOversizedResponse(t *testing.T) {
+	origin := "https://secret-origin.example"
+	const marker = "oversized-private-value"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	wsURL := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/devtools/page/LEAK-TARGET"
+	body := frameWSJSONResponse(t, origin, wsURL, marker, maxCDPJSONResponseBytes+1)
+	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForOrigin(ctx, origin)
+	if err == nil {
+		t.Fatal("oversized /json response must fail")
+	}
+	if got != "" {
+		t.Fatalf("websocket = %q, want empty on oversized failure", got)
+	}
+	if !errors.Is(err, errCDPJSONResponseTooLarge) {
+		t.Fatalf("error = %v, want %v", err, errCDPJSONResponseTooLarge)
+	}
+	msg := err.Error()
+	for _, leak := range []string{marker, "TARGET-ID-SECRET", "LEAK-TARGET", origin, "secret-origin.example", wsURL, srv.URL} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("oversized error leaked %q: %q", leak, msg)
+		}
 	}
 }

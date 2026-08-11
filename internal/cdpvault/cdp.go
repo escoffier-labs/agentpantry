@@ -3,7 +3,9 @@ package cdpvault
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -60,6 +62,27 @@ type cdpTarget struct {
 	Type                 string `json:"type"`
 	URL                  string `json:"url"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+}
+
+// maxCDPJSONResponseBytes caps DevTools HTTP JSON bodies (/json, /json/list,
+// /json/new) so a hostile or buggy debugger port cannot force unbounded
+// allocation during decode. The same contract is shared across those endpoints.
+const maxCDPJSONResponseBytes = 1024 * 1024
+
+var errCDPJSONResponseTooLarge = errors.New("CDP JSON response too large")
+
+func decodeLimitedJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxCDPJSONResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read CDP JSON response: %w", err)
+	}
+	if len(data) > maxCDPJSONResponseBytes {
+		return errCDPJSONResponseTooLarge
+	}
+	if err := json.Unmarshal(data, dst); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *CDP) wsURL(ctx context.Context) (string, error) {
@@ -536,8 +559,11 @@ func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, erro
 		resp, err := http.DefaultClient.Do(req)
 		if err == nil {
 			var targets []cdpTarget
-			derr := json.NewDecoder(resp.Body).Decode(&targets)
+			derr := decodeLimitedJSON(resp.Body, &targets)
 			_ = resp.Body.Close()
+			if errors.Is(derr, errCDPJSONResponseTooLarge) {
+				return "", derr
+			}
 			if derr == nil {
 				for _, t := range targets {
 					if t.WebSocketDebuggerURL == "" || (t.Type != "page" && t.Type != "") {
