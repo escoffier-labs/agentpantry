@@ -110,6 +110,15 @@ func validateStorageOrigin(raw string) error {
 	if u.Host != strings.ToLower(u.Host) {
 		return fmt.Errorf("invalid storage origin")
 	}
+	if port := u.Port(); port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || strconv.Itoa(portNumber) != port {
+			return fmt.Errorf("invalid storage origin")
+		}
+		if (u.Scheme == "http" && portNumber == 80) || (u.Scheme == "https" && portNumber == 443) {
+			return fmt.Errorf("invalid storage origin")
+		}
+	}
 	return nil
 }
 
@@ -147,9 +156,35 @@ func (c *CDP) cdpHTTPClient() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
+func (c *CDP) listTargets(ctx context.Context, client *http.Client) ([]cdpTarget, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json/list", nil)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("list CDP targets request failed")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("list CDP targets failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list CDP targets returned status %d", resp.StatusCode)
+	}
+	var targets []cdpTarget
+	if err := decodeLimitedJSON(resp.Body, &targets); err != nil {
+		return nil, fmt.Errorf("decode CDP target list response: %w", err)
+	}
+	return targets, nil
+}
+
 // OpenStorageOrigins opens one page target per distinct storage origin via the
 // DevTools /json/new endpoint so localStorage can be seeded in that frame.
-func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) ([]string, error) {
+func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []string, retErr error) {
 	if len(origins) == 0 {
 		return nil, nil
 	}
@@ -164,15 +199,29 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) ([]strin
 	}
 
 	client := c.cdpHTTPClient()
+	existingTargets, err := c.listTargets(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	knownIDs := make(map[string]struct{}, len(existingTargets)+len(origins))
+	for _, target := range existingTargets {
+		if target.ID != "" {
+			knownIDs[target.ID] = struct{}{}
+		}
+	}
+
 	var created []string
 	defer func() {
-		if len(created) == 0 {
+		if retErr == nil || len(created) == 0 {
 			return
 		}
 		// Caller ctx may already be canceled; still attempt bounded cleanup.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = c.CloseTargets(cleanupCtx, created)
+		if cleanupErr := c.CloseTargets(cleanupCtx, created); cleanupErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup CDP targets: %w", cleanupErr))
+		}
+		ids = append([]string(nil), created...)
 	}()
 
 	for _, origin := range origins {
@@ -206,16 +255,25 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) ([]strin
 		if err := validateTargetID(tgt.ID); err != nil {
 			return nil, err
 		}
+		if tgt.Type != "page" {
+			return nil, fmt.Errorf("create CDP target returned non-page target")
+		}
+		returnedOrigin, ok := originOf(tgt.URL)
+		if !ok || returnedOrigin != origin {
+			return nil, fmt.Errorf("create CDP target returned mismatched origin")
+		}
+		if _, exists := knownIDs[tgt.ID]; exists {
+			return nil, fmt.Errorf("create CDP target returned non-new ID")
+		}
 		created = append(created, tgt.ID)
+		knownIDs[tgt.ID] = struct{}{}
 		if tgt.WebSocketDebuggerURL != "" {
 			if err := ValidateLoopbackURL(tgt.WebSocketDebuggerURL, "ws", "wss"); err != nil {
 				return nil, fmt.Errorf("invalid CDP websocket URL")
 			}
 		}
 	}
-	out := created
-	created = nil // success: do not run deferred cleanup
-	return out, nil
+	return append([]string(nil), created...), nil
 }
 
 // CloseTargets closes the given DevTools page targets via /json/close.

@@ -17,12 +17,13 @@ import (
 )
 
 type targetFixture struct {
-	id     string
-	url    string
-	wsPath string
-	closed bool
-	origin string
-	keys   []string
+	id         string
+	targetType string
+	url        string
+	wsPath     string
+	closed     bool
+	origin     string
+	keys       []string
 }
 
 type fakeCDPTargetServer struct {
@@ -36,6 +37,11 @@ type fakeCDPTargetServer struct {
 	failNewOn   int
 	newAttempts int
 	badWSHost   string
+
+	newResponses          []cdpTarget
+	oversizedNewResponse  bool
+	oversizedListResponse bool
+	failCloseCount        int
 }
 
 func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
@@ -62,43 +68,80 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 			http.Error(w, "injected new failure", http.StatusInternalServerError)
 			return
 		}
-		f.nextSeq++
-		id := fmt.Sprintf("target-%d", f.nextSeq)
-		origin, ok := originOf(originURL)
-		if !ok {
-			origin = originURL
+		if f.oversizedNewResponse {
+			f.mu.Unlock()
+			_, _ = fmt.Fprintf(w, `{"id":"%s`, strings.Repeat("oversized-private-value", 100000))
+			return
 		}
-		tg := &targetFixture{
-			id:     id,
-			url:    originURL,
-			wsPath: "/devtools/page/" + id,
-			origin: origin,
+
+		var response cdpTarget
+		if attempt <= len(f.newResponses) {
+			response = f.newResponses[attempt-1]
+			if response.ID != "" {
+				if _, exists := f.targets[response.ID]; !exists {
+					origin, ok := originOf(response.URL)
+					if !ok {
+						origin = response.URL
+					}
+					f.targets[response.ID] = &targetFixture{
+						id:         response.ID,
+						targetType: response.Type,
+						url:        response.URL,
+						wsPath:     "/devtools/page/" + response.ID,
+						origin:     origin,
+					}
+				}
+			}
+		} else {
+			f.nextSeq++
+			id := fmt.Sprintf("target-%d", f.nextSeq)
+			origin, ok := originOf(originURL)
+			if !ok {
+				origin = originURL
+			}
+			tg := &targetFixture{
+				id:         id,
+				targetType: "page",
+				url:        originURL,
+				wsPath:     "/devtools/page/" + id,
+				origin:     origin,
+			}
+			f.targets[id] = tg
+			ws := "ws://" + r.Host + tg.wsPath
+			if f.badWSHost != "" {
+				ws = "ws://" + f.badWSHost + tg.wsPath
+			}
+			response = cdpTarget{
+				ID:                   id,
+				Type:                 "page",
+				URL:                  originURL,
+				WebSocketDebuggerURL: ws,
+			}
 		}
-		f.targets[id] = tg
 		f.newOrigins = append(f.newOrigins, originURL)
-		ws := "ws://" + r.Host + tg.wsPath
-		if f.badWSHost != "" {
-			ws = "ws://" + f.badWSHost + tg.wsPath
-		}
 		f.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":                   id,
-			"type":                 "page",
-			"url":                  originURL,
-			"webSocketDebuggerUrl": ws,
-		})
+		_ = json.NewEncoder(w).Encode(response)
 	})
 
-	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+	listTargets := func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		f.mu.Lock()
+		if f.oversizedListResponse {
+			f.mu.Unlock()
+			_, _ = fmt.Fprintf(w, `[{"id":"%s`, strings.Repeat("oversized-private-value", 100000))
+			return
+		}
 		var list []map[string]any
 		for _, tg := range f.targets {
 			if tg.closed {
 				continue
+			}
+			targetType := tg.targetType
+			if targetType == "" {
+				targetType = "page"
 			}
 			ws := "ws://" + r.Host + tg.wsPath
 			if f.badWSHost != "" {
@@ -106,14 +149,16 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 			}
 			list = append(list, map[string]any{
 				"id":                   tg.id,
-				"type":                 "page",
+				"type":                 targetType,
 				"url":                  tg.url,
 				"webSocketDebuggerUrl": ws,
 			})
 		}
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(list)
-	})
+	}
+	mux.HandleFunc("/json", listTargets)
+	mux.HandleFunc("/json/list", listTargets)
 
 	mux.HandleFunc("/json/close/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -122,6 +167,12 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/json/close/")
 		f.mu.Lock()
+		if f.failCloseCount > 0 {
+			f.failCloseCount--
+			f.mu.Unlock()
+			http.Error(w, "injected close failure", http.StatusInternalServerError)
+			return
+		}
 		if tg, ok := f.targets[id]; ok {
 			tg.closed = true
 			f.closedIDs = append(f.closedIDs, id)
@@ -206,10 +257,11 @@ func (f *fakeCDPTargetServer) addUnrelatedPage(origin string) string {
 	f.nextSeq++
 	id := fmt.Sprintf("unrelated-%d", f.nextSeq)
 	f.targets[id] = &targetFixture{
-		id:     id,
-		url:    origin + "/",
-		wsPath: "/devtools/page/" + id,
-		origin: origin,
+		id:         id,
+		targetType: "page",
+		url:        origin + "/",
+		wsPath:     "/devtools/page/" + id,
+		origin:     origin,
 	}
 	return id
 }
@@ -350,6 +402,25 @@ func TestFrameWSForTargetIDRetriesAboutBlankUntilCanonicalOrigin(t *testing.T) {
 	}
 }
 
+func TestValidateStorageOriginCanonicalPorts(t *testing.T) {
+	for _, origin := range []string{
+		"https://example.com:443",
+		"http://example.com:80",
+		"https://example.com:0443",
+		"http://example.com:080",
+		"https://example.com:08443",
+	} {
+		if err := validateStorageOrigin(origin); err == nil {
+			t.Errorf("noncanonical port in %q must be rejected", origin)
+		}
+	}
+	for _, origin := range []string{"https://example.com:8443", "http://example.com:8080"} {
+		if err := validateStorageOrigin(origin); err != nil {
+			t.Errorf("nondefault port in %q must be accepted: %v", origin, err)
+		}
+	}
+}
+
 func TestOpenStorageOriginsDeduplicatesPreservesOrder(t *testing.T) {
 	srv := newFakeCDPTargetServer(t)
 	origins := []string{
@@ -394,6 +465,103 @@ func TestOpenStorageOriginsReturnsOnlyCreatedTargetIDs(t *testing.T) {
 			t.Fatalf("returned pre-existing unrelated target ID %q", id)
 		}
 	}
+}
+
+func TestOpenStorageOriginsVerifiesTargetOwnership(t *testing.T) {
+	const requestedOrigin = "https://requested.example"
+
+	t.Run("pre-existing ID", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		preExisting := srv.addUnrelatedPage(requestedOrigin)
+		srv.newResponses = []cdpTarget{{ID: preExisting, Type: "page", URL: requestedOrigin + "/"}}
+
+		ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{requestedOrigin})
+		if err == nil {
+			t.Fatalf("pre-existing target ID was accepted: %v", ids)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("pre-existing target returned as owned: %v", ids)
+		}
+		srv.mu.Lock()
+		closed := append([]string(nil), srv.closedIDs...)
+		srv.mu.Unlock()
+		if len(closed) != 0 {
+			t.Fatalf("pre-existing target was closed: %v", closed)
+		}
+		if strings.Contains(err.Error(), preExisting) || strings.Contains(err.Error(), requestedOrigin) {
+			t.Fatalf("ownership error leaked target or origin: %v", err)
+		}
+	})
+
+	t.Run("wrong type", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		const targetID = "worker-target"
+		srv.newResponses = []cdpTarget{{ID: targetID, Type: "service_worker", URL: requestedOrigin + "/"}}
+
+		ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{requestedOrigin})
+		if err == nil {
+			t.Fatalf("non-page target was accepted: %v", ids)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("non-page target returned as owned: %v", ids)
+		}
+		if strings.Contains(err.Error(), targetID) || strings.Contains(err.Error(), requestedOrigin) {
+			t.Fatalf("type error leaked target or origin: %v", err)
+		}
+	})
+
+	t.Run("wrong origin", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		const targetID = "wrong-origin-target"
+		const wrongOrigin = "https://other.example"
+		srv.newResponses = []cdpTarget{{ID: targetID, Type: "page", URL: wrongOrigin + "/"}}
+
+		ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{requestedOrigin})
+		if err == nil {
+			t.Fatalf("wrong-origin target was accepted: %v", ids)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("wrong-origin target returned as owned: %v", ids)
+		}
+		if strings.Contains(err.Error(), targetID) || strings.Contains(err.Error(), wrongOrigin) || strings.Contains(err.Error(), requestedOrigin) {
+			t.Fatalf("origin error leaked target or origin: %v", err)
+		}
+	})
+
+	t.Run("duplicate ID", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		const targetID = "duplicate-target"
+		const secondOrigin = "https://second.example"
+		srv.newResponses = []cdpTarget{
+			{ID: targetID, Type: "page", URL: requestedOrigin + "/"},
+			{ID: targetID, Type: "page", URL: secondOrigin + "/"},
+		}
+
+		ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{requestedOrigin, secondOrigin})
+		if err == nil {
+			t.Fatalf("duplicate target ID was accepted: %v", ids)
+		}
+		if len(ids) != 1 || ids[0] != targetID {
+			t.Fatalf("verified IDs on duplicate error = %v, want [%s]", ids, targetID)
+		}
+		if strings.Contains(err.Error(), targetID) || strings.Contains(err.Error(), secondOrigin) {
+			t.Fatalf("duplicate error leaked target or origin: %v", err)
+		}
+	})
+
+	t.Run("valid new page", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		const targetID = "valid-new-target"
+		srv.newResponses = []cdpTarget{{ID: targetID, Type: "page", URL: requestedOrigin + "/"}}
+
+		ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{requestedOrigin})
+		if err != nil {
+			t.Fatalf("valid new target rejected: %v", err)
+		}
+		if len(ids) != 1 || ids[0] != targetID {
+			t.Fatalf("valid new target IDs = %v, want [%s]", ids, targetID)
+		}
+	})
 }
 
 func TestOpenStorageOriginsRejectsNonLoopbackWebSocket(t *testing.T) {
@@ -466,6 +634,71 @@ func TestOpenStorageOriginsCleansUpOnPartialFailure(t *testing.T) {
 	if len(open) != 0 {
 		t.Fatalf("open targets after failed open = %v, want none left from bootstrap", open)
 	}
+}
+
+func TestOpenStorageOriginsReturnsIDsAndCleanupErrorOnPartialFailure(t *testing.T) {
+	srv := newFakeCDPTargetServer(t)
+	srv.failNewOn = 2
+	srv.failCloseCount = 1
+	cdp := &CDP{BaseURL: srv.srv.URL}
+
+	ids, err := cdp.OpenStorageOrigins(context.Background(), []string{
+		"https://one.example",
+		"https://two.example",
+	})
+	if err == nil {
+		t.Fatal("partial create with failed cleanup must error")
+	}
+	if len(ids) != 1 {
+		t.Fatalf("returned IDs after failed cleanup = %v, want the one verified target", ids)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "create CDP target returned status 500") {
+		t.Fatalf("error omitted create failure: %v", err)
+	}
+	if !strings.Contains(msg, "close CDP target returned status 500") {
+		t.Fatalf("error omitted cleanup failure: %v", err)
+	}
+	for _, private := range []string{ids[0], "one.example", "two.example"} {
+		if strings.Contains(msg, private) {
+			t.Fatalf("partial-create error leaked target or origin %q: %v", private, err)
+		}
+	}
+
+	if err := cdp.CloseTargets(context.Background(), ids); err != nil {
+		t.Fatalf("caller retry of returned IDs: %v", err)
+	}
+	if open := srv.openTargets(); len(open) != 0 {
+		t.Fatalf("open targets after caller retry = %v, want none", open)
+	}
+}
+
+func TestOpenStorageOriginsBoundsJSONResponses(t *testing.T) {
+	t.Run("target list", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		srv.oversizedListResponse = true
+
+		_, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{"https://example.com"})
+		if err == nil || !strings.Contains(err.Error(), "response too large") {
+			t.Fatalf("oversized target list error = %v, want explicit response-too-large error", err)
+		}
+		if strings.Contains(err.Error(), "oversized-private-value") {
+			t.Fatalf("oversized target list error leaked response content: %v", err)
+		}
+	})
+
+	t.Run("new target", func(t *testing.T) {
+		srv := newFakeCDPTargetServer(t)
+		srv.oversizedNewResponse = true
+
+		_, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{"https://example.com"})
+		if err == nil || !strings.Contains(err.Error(), "response too large") {
+			t.Fatalf("oversized new-target error = %v, want explicit response-too-large error", err)
+		}
+		if strings.Contains(err.Error(), "oversized-private-value") {
+			t.Fatalf("oversized new-target error leaked response content: %v", err)
+		}
+	})
 }
 
 func TestOpenStorageOriginsErrorsOmitSecretsAndPrivateURLs(t *testing.T) {
