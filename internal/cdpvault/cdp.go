@@ -64,9 +64,9 @@ type cdpTarget struct {
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
-// maxCDPJSONResponseBytes caps DevTools HTTP JSON bodies (/json, /json/list,
-// /json/new) so a hostile or buggy debugger port cannot force unbounded
-// allocation during decode. The same contract is shared across those endpoints.
+// maxCDPJSONResponseBytes caps GET /json bodies read by frameWSForOrigin so a
+// hostile or buggy debugger port cannot force unbounded allocation during
+// target polling. Other CDP JSON readers are unchanged.
 const maxCDPJSONResponseBytes = 1024 * 1024
 
 var errCDPJSONResponseTooLarge = errors.New("CDP JSON response too large")

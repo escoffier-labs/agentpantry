@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -233,5 +234,52 @@ func TestFrameWSForOriginRejectsOversizedResponse(t *testing.T) {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("oversized error leaked %q: %q", leak, msg)
 		}
+	}
+}
+
+func TestFrameWSForOriginRetriesOrdinaryDecodeFailure(t *testing.T) {
+	origin := "https://example.com"
+	const marker = "malformed-poll-private-value"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ws := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/devtools/page/ABC"
+	var polls atomic.Int32
+	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if polls.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"not-a-target-list":"` + marker))
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"type": "page", "url": origin + "/", "webSocketDebuggerUrl": ws},
+		})
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForOrigin(ctx, origin)
+	if err != nil {
+		msg := err.Error()
+		for _, leak := range []string{marker, "not-a-target-list", origin, ws, srv.URL} {
+			if strings.Contains(msg, leak) {
+				t.Fatalf("decode-retry error leaked %q: %q", leak, msg)
+			}
+		}
+		t.Fatalf("frameWSForOrigin after ordinary decode failure: %v", err)
+	}
+	if got != ws {
+		t.Fatalf("websocket = %q, want %q", got, ws)
+	}
+	if got != "" {
+		for _, leak := range []string{marker, "not-a-target-list"} {
+			if strings.Contains(got, leak) {
+				t.Fatalf("websocket leaked poll body %q: %q", leak, got)
+			}
+		}
+	}
+	if polls.Load() < 2 {
+		t.Fatalf("polls = %d, want at least 2 (retry after ordinary decode failure)", polls.Load())
 	}
 }
