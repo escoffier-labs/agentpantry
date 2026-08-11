@@ -1,0 +1,4 @@
+{
+  "name": "agentpantry",
+  "install": "go mod download && go build ./..."
+}
