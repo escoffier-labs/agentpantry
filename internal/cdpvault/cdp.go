@@ -66,8 +66,8 @@ type cdpTarget struct {
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
-// maxCDPJSONResponseBytes caps GET /json bodies read by frameWSForOrigin so a
-// hostile or buggy debugger port cannot force unbounded allocation during
+// maxCDPJSONResponseBytes caps GET /json and /json/list target-list bodies so
+// a hostile or buggy debugger port cannot force unbounded allocation during
 // target polling and target creation. Other CDP JSON readers are unchanged.
 const maxCDPJSONResponseBytes = 1024 * 1024
 
@@ -884,10 +884,22 @@ func (c *CDP) WriteStorageViaTargets(ctx context.Context, items []webstorage.Ite
 // "page" (including empty), unsafe ID, non-loopback websocket, or a different
 // canonical HTTP(S) origin fails generically before any seed.
 func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (string, error) {
-	deadline := time.Now().Add(10 * time.Second)
+	return c.frameWSForTargetIDUntil(ctx, targetID, origin, time.Now().Add(10*time.Second))
+}
+
+func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin string, deadline time.Time) (string, error) {
+	readinessCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	client := c.cdpHTTPClient()
 	for {
-		targets, err := c.listTargets(ctx, client)
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("storage target not ready")
+		}
+
+		targets, err := c.listTargets(readinessCtx, client)
 		if err == nil {
 			var found *cdpTarget
 			for i := range targets {
@@ -908,7 +920,10 @@ func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (
 				if urlReady && wsReady {
 					o, ok := originOf(found.URL)
 					if !ok || o != origin {
-						return "", fmt.Errorf("storage target ownership mismatch")
+						// A newly created target can briefly report an intermediate
+						// origin while navigation settles. Never use it until the
+						// exact requested origin is listed.
+						goto retry
 					}
 					if err := ValidateLoopbackURL(found.WebSocketDebuggerURL, "ws", "wss"); err != nil {
 						return "", fmt.Errorf("invalid CDP websocket URL")
@@ -924,13 +939,24 @@ func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (
 			return "", ctx.Err()
 		}
 
-		if time.Now().After(deadline) {
+	retry:
+		if !time.Now().Before(deadline) {
 			return "", fmt.Errorf("storage target not ready")
 		}
+		wait := time.NewTimer(200 * time.Millisecond)
 		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-readinessCtx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("storage target not ready")
+		case <-wait.C:
 		}
 	}
 }
@@ -938,13 +964,29 @@ func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (
 // frameWSForOrigin finds the websocket of a page target whose URL origin matches,
 // retrying briefly because a freshly launched tab may not have its URL set yet.
 func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, error) {
-	deadline := time.Now().Add(10 * time.Second)
+	return c.frameWSForOriginUntil(ctx, origin, time.Now().Add(10*time.Second))
+}
+
+func (c *CDP) frameWSForOriginUntil(ctx context.Context, origin string, deadline time.Time) (string, error) {
+	readinessCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	client := c.cdpHTTPClient()
 	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json", nil)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		resp, err := http.DefaultClient.Do(req)
+		if !time.Now().Before(deadline) {
+			return "", nil
+		}
+
+		req, err := http.NewRequestWithContext(readinessCtx, http.MethodGet, c.BaseURL+"/json", nil)
+		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", err
+		}
+		resp, err := client.Do(req)
 		if err == nil {
 			var targets []cdpTarget
 			derr := decodeLimitedJSON(resp.Body, &targets)
@@ -966,13 +1008,26 @@ func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, erro
 				}
 			}
 		}
-		if time.Now().After(deadline) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !time.Now().Before(deadline) {
 			return "", nil
 		}
+		wait := time.NewTimer(200 * time.Millisecond)
 		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-readinessCtx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		case <-wait.C:
 		}
 	}
 }
@@ -980,26 +1035,57 @@ func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, erro
 // seedFrame waits for the origin's document to be ready, then sets its
 // localStorage entries in one evaluate. Returns the number set.
 func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]string) (int, error) {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	return c.seedFrameUntil(ctx, ws, origin, pairs, time.Time{})
+}
+
+// seedFrameUntil is seedFrame with an injectable readiness deadline for tests.
+func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]string, readinessBy time.Time) (int, error) {
+	if readinessBy.IsZero() {
+		readinessBy = time.Now().Add(10 * time.Second)
+	}
+	outerDeadline, ok := ctx.Deadline()
+	if !ok {
+		outerDeadline = time.Now().Add(30 * time.Second)
+	}
+	readinessDeadline := readinessBy
+	if outerDeadline.Before(readinessDeadline) {
+		readinessDeadline = outerDeadline
+	}
+	readinessCtx, cancelReadiness := context.WithDeadline(ctx, readinessDeadline)
+	defer cancelReadiness()
+	conn, _, err := websocket.DefaultDialer.DialContext(readinessCtx, ws, nil)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if readinessCtx.Err() != nil {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("dial devtools websocket: %w", err)
 	}
 	defer conn.Close()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(30 * time.Second)
-	}
-	if err := conn.SetReadDeadline(deadline); err != nil {
+	if err := conn.SetReadDeadline(readinessDeadline); err != nil {
 		return 0, fmt.Errorf("set read deadline: %w", err)
 	}
 
 	id := 1
 	ready := false
-	readyBy := time.Now().Add(10 * time.Second)
 	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		if !time.Now().Before(readinessDeadline) {
+			return 0, nil
+		}
 		val, err := c.evalValue(conn, id, `JSON.stringify({o:location.origin,r:document.readyState})`)
 		id++
 		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+			if !time.Now().Before(readinessDeadline) {
+				return 0, nil
+			}
 			return 0, err
 		}
 		var st struct {
@@ -1010,17 +1096,33 @@ func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]strin
 			ready = true
 			break
 		}
-		if time.Now().After(readyBy) {
+		if !time.Now().Before(readinessDeadline) {
 			break
 		}
+		wait := time.NewTimer(200 * time.Millisecond)
 		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-readinessCtx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+			return 0, nil
+		case <-wait.C:
 		}
 	}
 	if !ready {
 		return 0, nil // the tab never became the origin document; skip
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := conn.SetReadDeadline(outerDeadline); err != nil {
+		return 0, fmt.Errorf("set read deadline: %w", err)
 	}
 
 	originLit, err := json.Marshal(origin)
@@ -1037,6 +1139,9 @@ func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]strin
 	expr := `(function(){if(location.origin!==` + string(originLit) + `)return '0';var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
 	val, err := c.evalValue(conn, id, expr)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return 0, err
 	}
 	n, _ := strconv.Atoi(val)

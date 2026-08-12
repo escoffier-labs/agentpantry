@@ -725,6 +725,75 @@ func TestFrameWSForTargetIDRetriesAboutBlankUntilCanonicalOrigin(t *testing.T) {
 	}
 }
 
+func TestFrameWSForTargetIDRetriesWrongOriginUntilExpectedOrigin(t *testing.T) {
+	const (
+		targetID = "bootstrap-target"
+		origin   = "https://example.com"
+		wrong    = "https://other.example"
+	)
+
+	var polls atomic.Int32
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ws := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/devtools/page/" + targetID
+	mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+		url := wrong + "/"
+		if polls.Add(1) > 1 {
+			url = origin + "/"
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{{
+			"id":                   targetID,
+			"type":                 "page",
+			"url":                  url,
+			"webSocketDebuggerUrl": ws,
+		}})
+	})
+
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForTargetIDUntil(context.Background(), targetID, origin, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatalf("frameWSForTargetIDUntil: %v", err)
+	}
+	if got != ws {
+		t.Fatalf("websocket = %q, want loopback websocket %q", got, ws)
+	}
+	if polls.Load() < 2 {
+		t.Fatalf("polls = %d, want retry after a temporary wrong origin", polls.Load())
+	}
+}
+
+func TestFrameWSForTargetIDPermanentWrongOriginExpiresWithoutWebsocket(t *testing.T) {
+	const (
+		targetID = "bootstrap-target"
+		origin   = "https://example.com"
+		wrong    = "https://other.example"
+	)
+
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ws := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/devtools/page/" + targetID
+	mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]map[string]any{{
+			"id":                   targetID,
+			"type":                 "page",
+			"url":                  wrong + "/",
+			"webSocketDebuggerUrl": ws,
+		}})
+	})
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForTargetIDUntil(context.Background(), targetID, origin, deadline)
+	if got != "" {
+		t.Fatalf("websocket = %q, want empty for a permanent ownership mismatch", got)
+	}
+	if err == nil || err.Error() != "storage target not ready" {
+		t.Fatalf("error = %v, want generic readiness error", err)
+	}
+}
+
 func TestFrameWSForTargetIDRetriesTransientListFailure(t *testing.T) {
 	const origin = "https://retry.example"
 	srv := newFakeCDPTargetServer(t)
@@ -745,6 +814,41 @@ func TestFrameWSForTargetIDRetriesTransientListFailure(t *testing.T) {
 	srv.mu.Unlock()
 	if attempts < 2 {
 		t.Fatalf("/json/list attempts = %d, want retry after transient failure", attempts)
+	}
+}
+
+func TestFrameWSForTargetIDReadinessDeadlineBoundsInFlightListRequest(t *testing.T) {
+	const (
+		targetID = "bootstrap-target"
+		origin   = "https://example.com"
+	)
+
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+	defer srv.Close()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForTargetIDUntil(context.Background(), targetID, origin, deadline)
+	if got != "" {
+		t.Fatalf("websocket = %q, want empty", got)
+	}
+	if err == nil || err.Error() != "storage target not ready" {
+		t.Fatalf("error = %v, want generic readiness error", err)
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("/json/list request did not start")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("readiness deadline did not cancel in-flight /json/list request")
 	}
 }
 
@@ -1546,10 +1650,8 @@ func TestWriteStorageViaTargetsRevalidatesTargetOriginOwnership(t *testing.T) {
 	t.Run("target current origin differs", func(t *testing.T) {
 		srv := newFakeCDPTargetServer(t)
 		cdp := &CDP{BaseURL: srv.srv.URL}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 
-		ids, err := cdp.OpenStorageOrigins(ctx, []string{originA, originB})
+		ids, err := cdp.OpenStorageOrigins(context.Background(), []string{originA, originB})
 		if err != nil {
 			t.Fatalf("OpenStorageOrigins: %v", err)
 		}
@@ -1558,6 +1660,8 @@ func TestWriteStorageViaTargetsRevalidatesTargetOriginOwnership(t *testing.T) {
 		}
 		const drifted = "https://other.example"
 		srv.setTargetURL(ids[0], drifted+"/")
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
 		written, err := cdp.WriteStorageViaTargets(ctx, items, ids)
 		if err == nil {
 			t.Fatalf("drifted target origin must error, wrote %d", written)

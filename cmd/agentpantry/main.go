@@ -1735,6 +1735,19 @@ func browserRestoreTimeout(originCount int) time.Duration {
 	return base + time.Duration(originCount)*perOrigin
 }
 
+func handleBrowserRestoreAndCleanup(restoreErr, cleanupErr error, warnf func(string, ...any)) error {
+	if restoreErr != nil && cleanupErr != nil {
+		return errors.Join(restoreErr, fmt.Errorf("close bootstrap targets: %w", cleanupErr))
+	}
+	if restoreErr != nil {
+		return restoreErr
+	}
+	if cleanupErr != nil {
+		warnf("warning: unable to close bootstrap browser targets\n")
+	}
+	return nil
+}
+
 func cmdBrowser(args []string) error {
 	fs := flag.NewFlagSet("browser", flag.ExitOnError)
 	sidecarPath := fs.String("sidecar", "", "path to a sidecar.db store")
@@ -1853,14 +1866,10 @@ func cmdBrowser(args []string) error {
 		cleanupErr = cdp.CloseTargets(cleanupCtx, bootstrapIDs)
 		cleanupCancel()
 	}
-	if err != nil && cleanupErr != nil {
-		return errors.Join(err, fmt.Errorf("close bootstrap targets: %w", cleanupErr))
-	}
-	if err != nil {
-		return err
-	}
-	if cleanupErr != nil {
-		return fmt.Errorf("close bootstrap targets: %w", cleanupErr)
+	if resultErr := handleBrowserRestoreAndCleanup(err, cleanupErr, func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format, args...)
+	}); resultErr != nil {
+		return resultErr
 	}
 	fmt.Printf("browser ready at %s\nrestored %d cookie(s) (%d expired skipped), wrote %d of %d localStorage item(s)\n",
 		base, len(cookies), cookieSkipped, written, len(storage))
