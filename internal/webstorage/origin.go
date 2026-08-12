@@ -101,9 +101,6 @@ func isLegacyIPv4NumberCandidate(label string) bool {
 		return false
 	}
 	if len(label) >= 2 && label[0] == '0' && (label[1] == 'x' || label[1] == 'X') {
-		if len(label) == 2 {
-			return false
-		}
 		for i := 2; i < len(label); i++ {
 			c := label[i]
 			isDigit := c >= '0' && c <= '9'

@@ -43,6 +43,18 @@ type fakeCookieWriter struct {
 	onRead                  func()
 }
 
+type blockingCookieReader struct {
+	started chan struct{}
+	ctx     context.Context
+}
+
+func (r *blockingCookieReader) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
+	r.ctx = ctx
+	close(r.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func (f *fakeCookieWriter) ReadCookies(ctx context.Context) ([]cookie.Cookie, error) {
 	f.readCalls++
 	f.readContexts = append(f.readContexts, ctx)
@@ -425,5 +437,39 @@ func TestWriteBrowserCookiesReplayCallerCancellationIsFatal(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context canceled", err)
+	}
+}
+
+func TestReadBrowserVerifyCookiesUsesFreshSignalBoundedContext(t *testing.T) {
+	restoreCtx, cancelRestore := context.WithCancel(context.Background())
+	cancelRestore()
+	if err := restoreCtx.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("restore context = %v, want canceled", err)
+	}
+
+	signalParent, cancelSignal := context.WithCancel(context.Background())
+	defer cancelSignal()
+	reader := &blockingCookieReader{started: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := readBrowserVerifyCookies(signalParent, reader)
+		done <- err
+	}()
+
+	<-reader.started
+	if reader.ctx == restoreCtx {
+		t.Fatal("verify read must not reuse the canceled restore context")
+	}
+	if err := reader.ctx.Err(); err != nil {
+		t.Fatalf("verify read context = %v, want active", err)
+	}
+	deadline, hasDeadline := reader.ctx.Deadline()
+	if !hasDeadline || time.Until(deadline) <= 0 || time.Until(deadline) > 30*time.Second {
+		t.Fatalf("verify read deadline = %v, bounded=%v, want fresh 30-second deadline", deadline, hasDeadline)
+	}
+
+	cancelSignal()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("verify read error = %v, want signal cancellation", err)
 	}
 }

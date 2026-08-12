@@ -54,10 +54,12 @@ func TestValidateOriginExactCanonicalContract(t *testing.T) {
 		"https://127.1",
 		"https://2130706433",
 		"https://0x7f000001",
+		"https://0x",
 		"https://256.0.0.1",
 		// mixed-label hosts: numeric final label routes WHATWG parsing through IPv4
 		"https://foo.123",
 		"https://a.0x1",
+		"https://a.0x",
 		"https://[0:0:0:0:0:0:0:1]",
 		"https://[::ffff:127.0.0.1]",
 		"https://[::ffff:7f00:1]",

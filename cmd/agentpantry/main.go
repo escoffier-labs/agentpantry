@@ -1328,7 +1328,13 @@ type cookieWriter interface {
 	ReadCookies(ctx context.Context) ([]cookie.Cookie, error)
 }
 
+type cookieReader interface {
+	ReadCookies(ctx context.Context) ([]cookie.Cookie, error)
+}
+
 const browserCookieReplayTimeout = 10 * time.Second
+
+const browserVerifyTimeout = 30 * time.Second
 
 // cookieReplayWarning reports a non-fatal retry failure without exposing CDP
 // transport details, which may contain browser session information.
@@ -1402,6 +1408,12 @@ func writeBrowserCookies(restoreCtx, signalCtx context.Context, writer cookieWri
 		return skipped, &cookieReplayWarning{}
 	}
 	return skipped, nil
+}
+
+func readBrowserVerifyCookies(signalCtx context.Context, reader cookieReader) ([]cookie.Cookie, error) {
+	verifyCtx, cancelVerify := context.WithTimeout(signalCtx, browserVerifyTimeout)
+	defer cancelVerify()
+	return reader.ReadCookies(verifyCtx)
 }
 
 type restoreCountRow struct {
@@ -1934,7 +1946,7 @@ func cmdBrowser(args []string) error {
 		base, len(cookies), cookieSkipped, written, len(storage))
 
 	if *verify {
-		present, verr := cdp.ReadCookies(rctx)
+		present, verr := readBrowserVerifyCookies(ctx, cdp)
 		if verr != nil {
 			return fmt.Errorf("verify readback: %w", verr)
 		}
