@@ -2,6 +2,8 @@ package cdpvault
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -59,15 +62,23 @@ func ValidateLoopbackURL(raw string, allowedSchemes ...string) error {
 }
 
 type cdpTarget struct {
+	ID                   string `json:"id"`
 	Type                 string `json:"type"`
 	URL                  string `json:"url"`
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 }
 
-// maxCDPJSONResponseBytes caps GET /json bodies read by frameWSForOrigin so a
-// hostile or buggy debugger port cannot force unbounded allocation during
-// target polling. Other CDP JSON readers are unchanged.
+// maxCDPJSONResponseBytes caps GET /json and /json/list target-list bodies so
+// a hostile or buggy debugger port cannot force unbounded allocation during
+// target polling and target creation. Other CDP JSON readers are unchanged.
 const maxCDPJSONResponseBytes = 1024 * 1024
+
+const (
+	cdpBootstrapMarkerParam = "agentpantry-bootstrap"
+	cdpBootstrapMarkerBytes = 16
+	cdpReconcileTimeout     = time.Second
+	cdpReconcileInterval    = 50 * time.Millisecond
+)
 
 var errCDPJSONResponseTooLarge = errors.New("CDP JSON response too large")
 
@@ -83,6 +94,372 @@ func decodeLimitedJSON(body io.Reader, dst any) error {
 		return err
 	}
 	return nil
+}
+
+// ValidateStorageOrigin is a compatibility wrapper around
+// webstorage.ValidateOrigin. Only an exact canonical HTTP(S) origin is
+// accepted; unsafe input is never normalized. Errors are generic and never
+// echo the raw origin. CDP HTTP/WebSocket endpoints remain loopback-only via
+// ValidateLoopbackURL.
+func ValidateStorageOrigin(raw string) error {
+	return webstorage.ValidateOrigin(raw)
+}
+
+func validateTargetID(id string) error {
+	if id == "" {
+		return fmt.Errorf("empty target ID")
+	}
+	if id[0] == '.' {
+		return fmt.Errorf("invalid target ID")
+	}
+	for i := 0; i < len(id); i++ {
+		b := id[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '-' || b == '_' || b == '.' {
+			continue
+		}
+		return fmt.Errorf("invalid target ID")
+	}
+	return nil
+}
+
+func dedupePreserveOrder(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// canonicalSortedStorageOrigins returns a new slice of unique origins in
+// lexicographic order. The caller's slice is never mutated. OpenStorageOrigins
+// and WriteStorageViaTargets share this contract so target IDs and item-origin
+// groups always pair in the same order.
+func canonicalSortedStorageOrigins(origins []string) []string {
+	out := dedupePreserveOrder(origins)
+	sort.Strings(out)
+	return out
+}
+
+func (c *CDP) cdpHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func (c *CDP) listTargets(ctx context.Context, client *http.Client) ([]cdpTarget, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json/list", nil)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("list CDP targets request failed")
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("list CDP targets failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list CDP targets returned status %d", resp.StatusCode)
+	}
+	var targets []cdpTarget
+	if err := decodeLimitedJSON(resp.Body, &targets); err != nil {
+		return nil, fmt.Errorf("decode CDP target list response: %w", err)
+	}
+	return targets, nil
+}
+
+func newCDPBootstrapMarker() (string, error) {
+	b := make([]byte, cdpBootstrapMarkerBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate CDP target marker: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func cdpBootstrapURL(origin, marker string) string {
+	return origin + "/#" + cdpBootstrapMarkerParam + "=" + marker
+}
+
+func isMarkedCDPBootstrapTarget(target cdpTarget, origin, marker string) bool {
+	if target.Type != "page" || validateTargetID(target.ID) != nil {
+		return false
+	}
+	u, err := url.Parse(target.URL)
+	if err != nil {
+		return false
+	}
+	targetOrigin, ok := originOf(target.URL)
+	return ok && targetOrigin == origin && u.Fragment == cdpBootstrapMarkerParam+"="+marker
+}
+
+// reconcileCDPBootstrapTarget finds the one page target created by a single
+// /json/new attempt after its response cannot establish ownership. It uses a
+// detached bounded context because the caller's context may have ended after
+// Chrome accepted the create request. Only a non-baseline, valid, marked page
+// target on the requested origin is eligible for cleanup.
+func (c *CDP) reconcileCDPBootstrapTarget(origin, marker string, baseline, owned map[string]struct{}) string {
+	ctx, cancel := context.WithTimeout(context.Background(), cdpReconcileTimeout)
+	defer cancel()
+	client := c.cdpHTTPClient()
+	for {
+		if targets, err := c.listTargets(ctx, client); err == nil {
+			candidates := make(map[string]int)
+			for _, target := range targets {
+				if _, exists := baseline[target.ID]; exists || !isMarkedCDPBootstrapTarget(target, origin, marker) {
+					continue
+				}
+				if _, exists := owned[target.ID]; exists {
+					continue
+				}
+				candidates[target.ID]++
+			}
+			if len(candidates) == 1 {
+				for id, count := range candidates {
+					if count == 1 {
+						return id
+					}
+				}
+			}
+		}
+
+		wait := time.NewTimer(cdpReconcileInterval)
+		select {
+		case <-ctx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			return ""
+		case <-wait.C:
+		}
+	}
+}
+
+// OpenStorageOrigins opens one page target per distinct storage origin via the
+// DevTools /json/new endpoint so localStorage can be seeded in that frame.
+// Distinct origins are created and returned in shared canonical sorted order
+// (deduplicated, lexicographic), matching WriteStorageViaTargets pairing.
+// Arbitrary caller input such as [B,A] yields target IDs in A,B order.
+// On non-nil error, returned IDs were created only by this call and may still
+// be open; the caller must pass them to CloseTargets. An empty slice means no
+// caller cleanup retry is needed.
+func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []string, retErr error) {
+	if len(origins) == 0 {
+		return nil, nil
+	}
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return nil, fmt.Errorf("invalid CDP base URL: %w", err)
+	}
+	origins = canonicalSortedStorageOrigins(origins)
+	for _, origin := range origins {
+		if err := ValidateStorageOrigin(origin); err != nil {
+			return nil, err
+		}
+	}
+
+	client := c.cdpHTTPClient()
+	existingTargets, err := c.listTargets(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	baselineIDs := make(map[string]struct{}, len(existingTargets))
+	knownIDs := make(map[string]struct{}, len(existingTargets)+len(origins))
+	for _, target := range existingTargets {
+		if target.ID != "" {
+			baselineIDs[target.ID] = struct{}{}
+			knownIDs[target.ID] = struct{}{}
+		}
+	}
+
+	// ownedForCleanup: IDs we created and must close on failure (never baseline/duplicates).
+	// verified: IDs that passed type, origin, and websocket checks.
+	var ownedForCleanup []string
+	var verified []string
+	ownedIDs := make(map[string]struct{}, len(origins))
+	addOwned := func(id string) {
+		if _, baseline := baselineIDs[id]; baseline {
+			return
+		}
+		if _, owned := ownedIDs[id]; owned {
+			return
+		}
+		ownedIDs[id] = struct{}{}
+		ownedForCleanup = append(ownedForCleanup, id)
+	}
+	defer func() {
+		if retErr == nil || len(ownedForCleanup) == 0 {
+			return
+		}
+		// Caller ctx may already be canceled; still attempt bounded cleanup.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// Close one owned ID at a time so successful closes drop out of the
+		// retry set. Never close or return baseline/duplicate/unsafe IDs.
+		var failed []string
+		var cleanupErrs []error
+		for _, id := range ownedForCleanup {
+			if err := c.CloseTargets(cleanupCtx, []string{id}); err != nil {
+				cleanupErrs = append(cleanupErrs, err)
+				failed = append(failed, id)
+			}
+		}
+		if len(cleanupErrs) > 0 {
+			retErr = errors.Join(retErr, fmt.Errorf("cleanup CDP targets: %w", errors.Join(cleanupErrs...)))
+			// Reconcile against a fresh list: Chrome may have accepted /json/close
+			// even when the HTTP/transport response failed. Keep only failed owned
+			// IDs still present as type "page"; omit already-closed ones.
+			retry := append([]string(nil), failed...)
+			if cleanupCtx.Err() == nil {
+				if targets, listErr := c.listTargets(cleanupCtx, c.cdpHTTPClient()); listErr == nil {
+					presentPage := make(map[string]struct{}, len(targets))
+					for _, t := range targets {
+						if t.ID != "" && t.Type == "page" {
+							presentPage[t.ID] = struct{}{}
+						}
+					}
+					retry = retry[:0]
+					for _, id := range failed {
+						if _, ok := presentPage[id]; ok {
+							retry = append(retry, id)
+						}
+					}
+				}
+			}
+			ids = append([]string(nil), retry...)
+			return
+		}
+		// Cleanup succeeded: all owned targets are already closed; return zero IDs.
+		ids = nil
+	}()
+
+	for _, origin := range origins {
+		marker, err := newCDPBootstrapMarker()
+		if err != nil {
+			return nil, fmt.Errorf("create CDP target marker failed")
+		}
+		bootstrapURL := cdpBootstrapURL(origin, marker)
+		fail := func(err error) ([]string, error) {
+			if id := c.reconcileCDPBootstrapTarget(origin, marker, baselineIDs, ownedIDs); id != "" {
+				addOwned(id)
+			}
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/json/new?"+url.QueryEscape(bootstrapURL), nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("create CDP target request failed")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return fail(ctx.Err())
+			}
+			return fail(fmt.Errorf("create CDP target failed"))
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return fail(fmt.Errorf("create CDP target returned status %d", resp.StatusCode))
+		}
+		var tgt cdpTarget
+		decErr := decodeLimitedJSON(resp.Body, &tgt)
+		_ = resp.Body.Close()
+		if decErr != nil {
+			return fail(fmt.Errorf("decode CDP target response: %w", decErr))
+		}
+		if tgt.ID == "" {
+			return fail(fmt.Errorf("create CDP target returned empty ID"))
+		}
+		if err := validateTargetID(tgt.ID); err != nil {
+			return fail(err)
+		}
+		if _, exists := knownIDs[tgt.ID]; exists {
+			return fail(fmt.Errorf("create CDP target returned non-new ID"))
+		}
+		if tgt.Type != "page" {
+			return fail(fmt.Errorf("create CDP target returned non-page target"))
+		}
+		if tgt.URL == "" || tgt.URL == "about:blank" {
+			if id := c.reconcileCDPBootstrapTarget(origin, marker, baselineIDs, ownedIDs); id != "" {
+				addOwned(id)
+				knownIDs[id] = struct{}{}
+				verified = append(verified, id)
+				continue
+			}
+			return fail(fmt.Errorf("create CDP target returned mismatched bootstrap target"))
+		}
+		if !isMarkedCDPBootstrapTarget(tgt, origin, marker) {
+			return fail(fmt.Errorf("create CDP target returned mismatched bootstrap target"))
+		}
+		if tgt.WebSocketDebuggerURL != "" {
+			if err := ValidateLoopbackURL(tgt.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+				return fail(fmt.Errorf("invalid CDP websocket URL"))
+			}
+		}
+		addOwned(tgt.ID)
+		knownIDs[tgt.ID] = struct{}{}
+		verified = append(verified, tgt.ID)
+	}
+	return append([]string(nil), verified...), nil
+}
+
+// CloseTargets closes the given DevTools page targets via /json/close.
+func (c *CDP) CloseTargets(ctx context.Context, targetIDs []string) error {
+	if len(targetIDs) == 0 {
+		return nil
+	}
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return fmt.Errorf("invalid CDP base URL: %w", err)
+	}
+	targetIDs = dedupePreserveOrder(targetIDs)
+	for _, id := range targetIDs {
+		if err := validateTargetID(id); err != nil {
+			return err
+		}
+	}
+
+	client := c.cdpHTTPClient()
+	var errs []error
+	for _, id := range targetIDs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json/close/"+id, nil)
+		if err != nil {
+			if ctx.Err() != nil {
+				errs = append(errs, ctx.Err())
+			} else {
+				errs = append(errs, fmt.Errorf("close CDP target request failed"))
+			}
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				errs = append(errs, ctx.Err())
+			} else {
+				errs = append(errs, fmt.Errorf("close CDP target failed"))
+			}
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			errs = append(errs, fmt.Errorf("close CDP target returned status %d", resp.StatusCode))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *CDP) wsURL(ctx context.Context) (string, error) {
@@ -547,16 +924,189 @@ func (c *CDP) WriteStorageViaFrames(ctx context.Context, items []webstorage.Item
 	return written, nil
 }
 
+// WriteStorageViaTargets seeds localStorage into exact DevTools page targets.
+// Items are grouped by distinct origin in the shared canonical sorted order
+// (deduplicated, lexicographic; same contract as OpenStorageOrigins) and paired
+// with targetIDs in that same order. Per-origin item order is preserved. Every
+// origin/target pair is preflighted before any seedFrame call so a mismatch
+// writes nothing. Errors are generic and never echo origins, URLs, target IDs,
+// keys, or values.
+func (c *CDP) WriteStorageViaTargets(ctx context.Context, items []webstorage.Item, targetIDs []string) (int, error) {
+	if len(items) == 0 && len(targetIDs) == 0 {
+		return 0, nil
+	}
+	if err := ValidateLoopbackURL(c.BaseURL, "http", "https"); err != nil {
+		return 0, fmt.Errorf("invalid CDP base URL")
+	}
+
+	byOrigin := map[string][][2]string{}
+	var itemOrigins []string
+	for _, it := range items {
+		if err := ValidateStorageOrigin(it.Origin); err != nil {
+			return 0, err
+		}
+		itemOrigins = append(itemOrigins, it.Origin)
+		byOrigin[it.Origin] = append(byOrigin[it.Origin], [2]string{it.Key, it.Value})
+	}
+	order := canonicalSortedStorageOrigins(itemOrigins)
+
+	seenIDs := make(map[string]struct{}, len(targetIDs))
+	for _, id := range targetIDs {
+		if err := validateTargetID(id); err != nil {
+			return 0, fmt.Errorf("invalid target ID")
+		}
+		if _, dup := seenIDs[id]; dup {
+			return 0, fmt.Errorf("duplicate target ID")
+		}
+		seenIDs[id] = struct{}{}
+	}
+	if len(targetIDs) != len(order) {
+		return 0, fmt.Errorf("target ID count mismatch")
+	}
+
+	type seededOrigin struct {
+		ws     string
+		origin string
+		pairs  [][2]string
+	}
+	ready := make([]seededOrigin, 0, len(order))
+	for i, origin := range order {
+		ws, err := c.frameWSForTargetID(ctx, targetIDs[i], origin)
+		if err != nil {
+			return 0, err
+		}
+		if ws == "" {
+			continue
+		}
+		ready = append(ready, seededOrigin{ws: ws, origin: origin, pairs: byOrigin[origin]})
+	}
+
+	written := 0
+	for _, entry := range ready {
+		n, err := c.seedFrame(ctx, entry.ws, entry.origin, entry.pairs)
+		if err != nil {
+			return written, err
+		}
+		written += n
+	}
+	return written, nil
+}
+
+// frameWSForTargetID resolves the websocket for one exact DevTools target ID,
+// retrying target-list readiness for up to 10s. It never selects a different
+// same-origin target. Missing targets and not-yet-ready about:blank / empty
+// websocket entries may retry; a present target whose type is not exactly
+// "page" (including empty), unsafe ID, non-loopback websocket, or a different
+// canonical HTTP(S) origin fails generically before any seed.
+func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (string, error) {
+	return c.frameWSForTargetIDUntil(ctx, targetID, origin, time.Now().Add(10*time.Second))
+}
+
+func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin string, deadline time.Time) (string, error) {
+	if err := validateTargetID(targetID); err != nil {
+		return "", fmt.Errorf("invalid storage target")
+	}
+	readinessCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	client := c.cdpHTTPClient()
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !time.Now().Before(deadline) {
+			return "", nil
+		}
+
+		targets, err := c.listTargets(readinessCtx, client)
+		if err == nil {
+			var found *cdpTarget
+			for i := range targets {
+				if targets[i].ID == targetID {
+					found = &targets[i]
+					break
+				}
+			}
+			if found != nil {
+				if err := validateTargetID(found.ID); err != nil {
+					return "", fmt.Errorf("invalid storage target")
+				}
+				if found.Type != "page" {
+					return "", fmt.Errorf("invalid storage target")
+				}
+				if found.WebSocketDebuggerURL != "" {
+					if err := ValidateLoopbackURL(found.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+						return "", fmt.Errorf("invalid CDP websocket URL")
+					}
+				}
+				urlReady := found.URL != "" && found.URL != "about:blank"
+				wsReady := found.WebSocketDebuggerURL != ""
+				if urlReady && wsReady {
+					o, ok := originOf(found.URL)
+					if !ok || o != origin {
+						// A newly created target can briefly report an intermediate
+						// origin while navigation settles. Never use it until the
+						// exact requested origin is listed.
+						goto retry
+					}
+					return found.WebSocketDebuggerURL, nil
+				}
+				// Missing URL / about:blank / empty websocket: not ready yet.
+			}
+			// Missing target: retry until deadline.
+		} else if errors.Is(err, errCDPJSONResponseTooLarge) {
+			return "", err
+		} else if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+
+	retry:
+		if !time.Now().Before(deadline) {
+			return "", nil
+		}
+		wait := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-readinessCtx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		case <-wait.C:
+		}
+	}
+}
+
 // frameWSForOrigin finds the websocket of a page target whose URL origin matches,
 // retrying briefly because a freshly launched tab may not have its URL set yet.
 func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, error) {
-	deadline := time.Now().Add(10 * time.Second)
+	return c.frameWSForOriginUntil(ctx, origin, time.Now().Add(10*time.Second))
+}
+
+func (c *CDP) frameWSForOriginUntil(ctx context.Context, origin string, deadline time.Time) (string, error) {
+	readinessCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	client := c.cdpHTTPClient()
 	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/json", nil)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		resp, err := http.DefaultClient.Do(req)
+		if !time.Now().Before(deadline) {
+			return "", nil
+		}
+
+		req, err := http.NewRequestWithContext(readinessCtx, http.MethodGet, c.BaseURL+"/json", nil)
+		if err != nil {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", err
+		}
+		resp, err := client.Do(req)
 		if err == nil {
 			var targets []cdpTarget
 			derr := decodeLimitedJSON(resp.Body, &targets)
@@ -578,13 +1128,26 @@ func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, erro
 				}
 			}
 		}
-		if time.Now().After(deadline) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if !time.Now().Before(deadline) {
 			return "", nil
 		}
+		wait := time.NewTimer(200 * time.Millisecond)
 		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-readinessCtx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		case <-wait.C:
 		}
 	}
 }
@@ -592,26 +1155,71 @@ func (c *CDP) frameWSForOrigin(ctx context.Context, origin string) (string, erro
 // seedFrame waits for the origin's document to be ready, then sets its
 // localStorage entries in one evaluate. Returns the number set.
 func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]string) (int, error) {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, ws, nil)
+	return c.seedFrameUntil(ctx, ws, origin, pairs, time.Time{})
+}
+
+// seedFrameUntil is seedFrame with an injectable readiness deadline for tests.
+func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]string, readinessBy time.Time) (int, error) {
+	if readinessBy.IsZero() {
+		readinessBy = time.Now().Add(10 * time.Second)
+	}
+	callerDeadline, callerHasDeadline := ctx.Deadline()
+	outerDeadline := callerDeadline
+	if !callerHasDeadline {
+		outerDeadline = time.Now().Add(30 * time.Second)
+	}
+	readinessDeadline := readinessBy
+	callerDeadlineWins := callerHasDeadline && !readinessBy.Before(callerDeadline)
+	if callerDeadlineWins {
+		readinessDeadline = callerDeadline
+	}
+	readinessExpiry := func() (error, bool) {
+		if err := ctx.Err(); err != nil {
+			return err, true
+		}
+		if !time.Now().Before(readinessDeadline) {
+			if callerDeadlineWins {
+				return context.DeadlineExceeded, true
+			}
+			return nil, true
+		}
+		return nil, false
+	}
+	readinessCtx, cancelReadiness := context.WithDeadline(ctx, readinessDeadline)
+	defer cancelReadiness()
+	conn, _, err := websocket.DefaultDialer.DialContext(readinessCtx, ws, nil)
 	if err != nil {
+		if expiryErr, expired := readinessExpiry(); expired {
+			if expiryErr != nil {
+				return 0, expiryErr
+			}
+			var networkErr net.Error
+			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkErr) && networkErr.Timeout()) {
+				return 0, nil
+			}
+		}
+		if errors.Is(readinessCtx.Err(), context.Canceled) {
+			return 0, context.Canceled
+		}
 		return 0, fmt.Errorf("dial devtools websocket: %w", err)
 	}
 	defer conn.Close()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(30 * time.Second)
-	}
-	if err := conn.SetReadDeadline(deadline); err != nil {
+	if err := conn.SetReadDeadline(readinessDeadline); err != nil {
 		return 0, fmt.Errorf("set read deadline: %w", err)
 	}
 
 	id := 1
 	ready := false
-	readyBy := time.Now().Add(10 * time.Second)
 	for {
+		if expiryErr, expired := readinessExpiry(); expired {
+			return 0, expiryErr
+		}
 		val, err := c.evalValue(conn, id, `JSON.stringify({o:location.origin,r:document.readyState})`)
 		id++
 		if err != nil {
+			if expiryErr, expired := readinessExpiry(); expired {
+				return 0, expiryErr
+			}
 			return 0, err
 		}
 		var st struct {
@@ -622,28 +1230,60 @@ func (c *CDP) seedFrame(ctx context.Context, ws, origin string, pairs [][2]strin
 			ready = true
 			break
 		}
-		if time.Now().After(readyBy) {
-			break
+		if expiryErr, expired := readinessExpiry(); expired {
+			return 0, expiryErr
 		}
+		wait := time.NewTimer(200 * time.Millisecond)
 		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-readinessCtx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			expiryErr, _ := readinessExpiry()
+			return 0, expiryErr
+		case <-wait.C:
 		}
 	}
 	if !ready {
-		return 0, nil // the tab never became the origin document; skip
+		expiryErr, _ := readinessExpiry()
+		return 0, expiryErr // the tab never became the origin document; skip
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if err := conn.SetReadDeadline(outerDeadline); err != nil {
+		return 0, fmt.Errorf("set read deadline: %w", err)
 	}
 
+	originLit, err := json.Marshal(origin)
+	if err != nil {
+		return 0, err
+	}
 	payload, err := json.Marshal(pairs)
 	if err != nil {
 		return 0, err
 	}
-	// The pairs are embedded as a JSON literal (valid JS). The script sets each
-	// item and returns the count as a string so evalValue can read it.
-	expr := `(function(){var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
+	// Embed expected origin and pairs as JSON literals (valid JS). The mutation
+	// expression is the authoritative race-safe guard: refuse setItem if
+	// location.origin drifted after the readiness loop. Never log keys/values/origin.
+	expr := `(function(){if(location.origin!==` + string(originLit) + `)return '0';var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
+	mutationDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetReadDeadline(time.Now())
+		case <-mutationDone:
+		}
+	}()
 	val, err := c.evalValue(conn, id, expr)
+	close(mutationDone)
 	if err != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return 0, err
 	}
 	n, _ := strconv.Atoi(val)

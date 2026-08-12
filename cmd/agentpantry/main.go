@@ -1322,6 +1322,100 @@ func skipExpiredRestoreCookies(cookies []cookie.Cookie, now time.Time) ([]cookie
 	return out, skipped
 }
 
+// cookieWriter is the narrow CDP cookie surface used by writeBrowserCookies.
+type cookieWriter interface {
+	WriteCookies(ctx context.Context, cookies []cookie.Cookie) (int, error)
+	ReadCookies(ctx context.Context) ([]cookie.Cookie, error)
+}
+
+type cookieReader interface {
+	ReadCookies(ctx context.Context) ([]cookie.Cookie, error)
+}
+
+const browserCookieReplayTimeout = 10 * time.Second
+
+const browserVerifyTimeout = 30 * time.Second
+
+// cookieReplayWarning reports a non-fatal retry failure without exposing CDP
+// transport details, which may contain browser session information.
+type cookieReplayWarning struct{}
+
+func (*cookieReplayWarning) Error() string {
+	return "cookie replay after storage hydration failed"
+}
+
+// cookieReplaySlot identifies a replay slot after Chromium's domain-cookie
+// canonicalization. It is intentionally local to replay matching: cookie.Key
+// preserves host-only versus domain-cookie semantics for other callers.
+func cookieReplaySlot(ck cookie.Cookie) string {
+	ck.Host = strings.TrimPrefix(ck.Host, ".")
+	return cookie.Key(ck)
+}
+
+// writeBrowserCookies applies cookies through writer, runs hydrate, then replays
+// only slots no longer present. This restores cookies Chrome omitted from the
+// first bulk set without overwriting values a site rotated while hydrating.
+func writeBrowserCookies(restoreCtx, signalCtx context.Context, writer cookieWriter, cookies []cookie.Cookie, hydrate func() error) (int, error) {
+	if len(cookies) == 0 {
+		return 0, hydrate()
+	}
+	skipped, err := writer.WriteCookies(restoreCtx, cookies)
+	if err != nil {
+		return 0, err
+	}
+	if err := hydrate(); err != nil {
+		return 0, err
+	}
+	replayCtx, cancelReplay := context.WithTimeout(signalCtx, browserCookieReplayTimeout)
+	defer cancelReplay()
+	if err := signalCtx.Err(); err != nil {
+		return skipped, err
+	}
+	present, err := writer.ReadCookies(replayCtx)
+	if err != nil {
+		if signalErr := signalCtx.Err(); signalErr != nil {
+			return skipped, signalErr
+		}
+		return skipped, &cookieReplayWarning{}
+	}
+	presentSlots := make(map[string]struct{}, len(present))
+	for _, ck := range present {
+		presentSlots[cookieReplaySlot(ck)] = struct{}{}
+	}
+	backupSlots := make(map[string]struct{}, len(cookies))
+	for _, ck := range cookies {
+		backupSlots[cookieReplaySlot(ck)] = struct{}{}
+	}
+	missingSlots := make(map[string]struct{}, len(backupSlots))
+	for slot := range backupSlots {
+		if _, exists := presentSlots[slot]; !exists {
+			missingSlots[slot] = struct{}{}
+		}
+	}
+	missing := make([]cookie.Cookie, 0, len(cookies))
+	for _, ck := range cookies {
+		if _, exists := missingSlots[cookieReplaySlot(ck)]; exists {
+			missing = append(missing, ck)
+		}
+	}
+	if len(missing) == 0 {
+		return skipped, nil
+	}
+	if _, err := writer.WriteCookies(replayCtx, missing); err != nil {
+		if signalErr := signalCtx.Err(); signalErr != nil {
+			return skipped, signalErr
+		}
+		return skipped, &cookieReplayWarning{}
+	}
+	return skipped, nil
+}
+
+func readBrowserVerifyCookies(signalCtx context.Context, reader cookieReader) ([]cookie.Cookie, error) {
+	verifyCtx, cancelVerify := context.WithTimeout(signalCtx, browserVerifyTimeout)
+	defer cancelVerify()
+	return reader.ReadCookies(verifyCtx)
+}
+
 type restoreCountRow struct {
 	Name   string `json:"name,omitempty"`
 	Host   string `json:"host,omitempty"`
@@ -1430,6 +1524,9 @@ func printRestoreDryRun(sidecarPath string, target restoreTarget, cookies []cook
 // to the target. It returns the count of skipped-expired cookies and the count
 // of localStorage items written.
 func restoreApply(ctx context.Context, target restoreTarget, cookies []cookie.Cookie, storage []webstorage.Item) (int, int, error) {
+	// Filter before either storage-carrying target writes; cookie-only targets
+	// ignore storage. storageWritten / len-based results use the filtered slice.
+	storage = canonicalStorageItems(storage)
 	d := cookie.Diff{Upserts: cookies}
 	switch target.kind {
 	case restoreTargetNetscape:
@@ -1609,7 +1706,7 @@ func cmdRestore(args []string) error {
 		if lerr != nil {
 			return lerr
 		}
-		storageItems = narrowRestoreStorage(items, domains, configuredDomains)
+		storageItems = canonicalStorageItems(narrowRestoreStorage(items, domains, configuredDomains))
 	}
 
 	if *dryRun {
@@ -1653,13 +1750,27 @@ func cmdRestore(args []string) error {
 	return nil
 }
 
+// canonicalStorageItems keeps accepted webstorage.Item rows exactly and in
+// order (including duplicates and key/value data) and drops every row whose
+// origin fails cdpvault.ValidateStorageOrigin.
+func canonicalStorageItems(items []webstorage.Item) []webstorage.Item {
+	out := make([]webstorage.Item, 0, len(items))
+	for _, it := range items {
+		if cdpvault.ValidateStorageOrigin(it.Origin) != nil {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 // distinctStorageOrigins returns the sorted unique origins in items, so the
 // launch helper can open a tab on each one (giving it a live frame for
 // localStorage).
 func distinctStorageOrigins(items []webstorage.Item) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for _, it := range items {
+	for _, it := range canonicalStorageItems(items) {
 		if _, ok := seen[it.Origin]; ok {
 			continue
 		}
@@ -1668,6 +1779,39 @@ func distinctStorageOrigins(items []webstorage.Item) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// browserRestoreTimeout returns the outer restore budget for cmdBrowser.
+// Cookie write, target creation, and serial per-origin frame lookup + seed
+// share one context; scale 30s base + 20s per distinct origin, capped at 5m.
+func browserRestoreTimeout(originCount int) time.Duration {
+	const (
+		base      = 30 * time.Second
+		perOrigin = 20 * time.Second
+		maxBudget = 5 * time.Minute
+	)
+	if originCount <= 0 {
+		return base
+	}
+	// Cap before multiply so math.MaxInt (and other huge counts) cannot overflow.
+	maxOrigins := int((maxBudget - base) / perOrigin)
+	if originCount > maxOrigins {
+		return maxBudget
+	}
+	return base + time.Duration(originCount)*perOrigin
+}
+
+func handleBrowserRestoreAndCleanup(restoreErr, cleanupErr error, warnf func(string, ...any)) error {
+	if restoreErr != nil && cleanupErr != nil {
+		return errors.Join(restoreErr, fmt.Errorf("close bootstrap targets: %w", cleanupErr))
+	}
+	if restoreErr != nil {
+		return restoreErr
+	}
+	if cleanupErr != nil {
+		warnf("warning: unable to close bootstrap browser targets\n")
+	}
+	return nil
 }
 
 func cmdBrowser(args []string) error {
@@ -1722,7 +1866,8 @@ func cmdBrowser(args []string) error {
 	if err != nil {
 		return err
 	}
-	storage := narrowRestoreStorage(items, domains, configuredDomains)
+	storage := canonicalStorageItems(narrowRestoreStorage(items, domains, configuredDomains))
+	storageOrigins := distinctStorageOrigins(storage)
 
 	// A throwaway automation profile unless the operator names one. Never a real
 	// user profile.
@@ -1744,7 +1889,7 @@ func cmdBrowser(args []string) error {
 		ProfileDir: profileDir,
 		Port:       *port,
 		Headless:   *headless,
-		OpenURLs:   distinctStorageOrigins(storage), // a tab per origin gives it a live frame
+		OpenURLs:   storageOrigins, // headed tabs; headless hydrates origins through CDP
 	})
 	if err != nil {
 		return err
@@ -1755,24 +1900,53 @@ func cmdBrowser(args []string) error {
 		return err
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, browserRestoreTimeout(len(storageOrigins)))
 	defer cancel()
 	cdp := &cdpvault.CDP{BaseURL: base}
-	cookieSkipped, err := cdp.WriteCookies(rctx, cookies)
-	if err != nil {
-		return err
+	var written int
+	var bootstrapIDs []string
+	cookieSkipped, err := writeBrowserCookies(rctx, ctx, cdp, cookies, func() error {
+		var err error
+		if *headless {
+			if len(storage) > 0 {
+				bootstrapIDs, err = cdp.OpenStorageOrigins(rctx, storageOrigins)
+				if err != nil {
+					return err
+				}
+			}
+			// Bind hydration to the bootstrap target IDs OpenStorageOrigins
+			// returned; never resolve an arbitrary same-origin page.
+			written, err = cdp.WriteStorageViaTargets(rctx, storage, bootstrapIDs)
+		} else {
+			// Headed mode opens a tab per origin at launch, then seeds each frame.
+			written, err = cdp.WriteStorageViaFrames(rctx, storage)
+		}
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	var replayWarning *cookieReplayWarning
+	if errors.As(err, &replayWarning) {
+		fmt.Fprintln(os.Stderr, "warning: cookie replay after storage hydration failed")
+		err = nil
 	}
-	// This browser was launched with a tab open on each origin, so seed
-	// localStorage in the loaded frame (reliable), not via DOMStorage.
-	written, err := cdp.WriteStorageViaFrames(rctx, storage)
-	if err != nil {
-		return err
+	var cleanupErr error
+	if len(bootstrapIDs) > 0 {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupErr = cdp.CloseTargets(cleanupCtx, bootstrapIDs)
+		cleanupCancel()
+	}
+	if resultErr := handleBrowserRestoreAndCleanup(err, cleanupErr, func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format, args...)
+	}); resultErr != nil {
+		return resultErr
 	}
 	fmt.Printf("browser ready at %s\nrestored %d cookie(s) (%d expired skipped), wrote %d of %d localStorage item(s)\n",
 		base, len(cookies), cookieSkipped, written, len(storage))
 
 	if *verify {
-		present, verr := cdp.ReadCookies(rctx)
+		present, verr := readBrowserVerifyCookies(ctx, cdp)
 		if verr != nil {
 			return fmt.Errorf("verify readback: %w", verr)
 		}
