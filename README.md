@@ -496,8 +496,10 @@ CDP, and `--keep-open` leaves the browser running (Ctrl-C to stop) for a scraper
 to attach.
 
 Because agentpantry owns this browser, it seeds `localStorage` reliably once
-each storage origin has a live frame, which `restore --to cdp=` against a
-browser you already launched cannot do (that path is best-effort). The launch
+each storage origin has a live frame, then replays accepted cookies after that
+hydration step. A replay failure warns but does not discard storage hydration.
+By contrast, `restore --to cdp=` against a browser you already launched remains
+best-effort. The launch
 sets `--disable-blink-features=AutomationControlled` so `navigator.webdriver`
 stays unset. That flag is the extent of agentpantry's anti-bot posture. It
 delivers the authenticated session and gets out of the way. Fingerprint shims,

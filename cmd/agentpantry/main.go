@@ -1322,30 +1322,84 @@ func skipExpiredRestoreCookies(cookies []cookie.Cookie, now time.Time) ([]cookie
 	return out, skipped
 }
 
-// cookieWriter is the narrow write surface used by writeBrowserCookies replay.
+// cookieWriter is the narrow CDP cookie surface used by writeBrowserCookies.
 type cookieWriter interface {
 	WriteCookies(ctx context.Context, cookies []cookie.Cookie) (int, error)
+	ReadCookies(ctx context.Context) ([]cookie.Cookie, error)
 }
 
-// writeBrowserCookies applies cookies through writer, runs hydrate between two
-// idempotent writes. The hydration phase is bracketed by idempotent cookie writes
-// because origin page activity can leave an accepted cookie omitted from the first
-// bulk set. Chrome 151 can silently omit an otherwise accepted cookie from a bulk
-// set that also contains policy-rejected entries; replaying the same idempotent
-// slots restores accepted entries that were omitted on the first pass.
-func writeBrowserCookies(ctx context.Context, writer cookieWriter, cookies []cookie.Cookie, hydrate func() error) (int, error) {
+const browserCookieReplayTimeout = 10 * time.Second
+
+// cookieReplayWarning reports a non-fatal retry failure without exposing CDP
+// transport details, which may contain browser session information.
+type cookieReplayWarning struct{}
+
+func (*cookieReplayWarning) Error() string {
+	return "cookie replay after storage hydration failed"
+}
+
+// cookieReplaySlot identifies a replay slot after Chromium's domain-cookie
+// canonicalization. It is intentionally local to replay matching: cookie.Key
+// preserves host-only versus domain-cookie semantics for other callers.
+func cookieReplaySlot(ck cookie.Cookie) string {
+	ck.Host = strings.TrimPrefix(ck.Host, ".")
+	return cookie.Key(ck)
+}
+
+// writeBrowserCookies applies cookies through writer, runs hydrate, then replays
+// only slots no longer present. This restores cookies Chrome omitted from the
+// first bulk set without overwriting values a site rotated while hydrating.
+func writeBrowserCookies(restoreCtx, signalCtx context.Context, writer cookieWriter, cookies []cookie.Cookie, hydrate func() error) (int, error) {
 	if len(cookies) == 0 {
 		return 0, hydrate()
 	}
-	skipped, err := writer.WriteCookies(ctx, cookies)
+	skipped, err := writer.WriteCookies(restoreCtx, cookies)
 	if err != nil {
 		return 0, err
 	}
 	if err := hydrate(); err != nil {
 		return 0, err
 	}
-	if _, err := writer.WriteCookies(ctx, cookies); err != nil {
+	replayCtx, cancelReplay := context.WithTimeout(signalCtx, browserCookieReplayTimeout)
+	defer cancelReplay()
+	if err := signalCtx.Err(); err != nil {
 		return skipped, err
+	}
+	present, err := writer.ReadCookies(replayCtx)
+	if err != nil {
+		if signalErr := signalCtx.Err(); signalErr != nil {
+			return skipped, signalErr
+		}
+		return skipped, &cookieReplayWarning{}
+	}
+	presentSlots := make(map[string]struct{}, len(present))
+	for _, ck := range present {
+		presentSlots[cookieReplaySlot(ck)] = struct{}{}
+	}
+	backupSlots := make(map[string]struct{}, len(cookies))
+	for _, ck := range cookies {
+		backupSlots[cookieReplaySlot(ck)] = struct{}{}
+	}
+	missingSlots := make(map[string]struct{}, len(backupSlots))
+	for slot := range backupSlots {
+		if _, exists := presentSlots[slot]; !exists {
+			missingSlots[slot] = struct{}{}
+		}
+	}
+	missing := make([]cookie.Cookie, 0, len(cookies))
+	for _, ck := range cookies {
+		if _, exists := missingSlots[cookieReplaySlot(ck)]; exists {
+			missing = append(missing, ck)
+		}
+	}
+	if len(missing) == 0 {
+		return skipped, nil
+	}
+	if _, err := writer.WriteCookies(replayCtx, missing); err != nil {
+		if signalErr := signalCtx.Err(); signalErr != nil {
+			return skipped, signalErr
+		}
+		return skipped, &cookieReplayWarning{}
 	}
 	return skipped, nil
 }
@@ -1839,7 +1893,7 @@ func cmdBrowser(args []string) error {
 	cdp := &cdpvault.CDP{BaseURL: base}
 	var written int
 	var bootstrapIDs []string
-	cookieSkipped, err := writeBrowserCookies(rctx, cdp, cookies, func() error {
+	cookieSkipped, err := writeBrowserCookies(rctx, ctx, cdp, cookies, func() error {
 		var err error
 		if *headless {
 			if len(storage) > 0 {
@@ -1860,6 +1914,11 @@ func cmdBrowser(args []string) error {
 		}
 		return nil
 	})
+	var replayWarning *cookieReplayWarning
+	if errors.As(err, &replayWarning) {
+		fmt.Fprintln(os.Stderr, "warning: cookie replay after storage hydration failed")
+		err = nil
+	}
 	var cleanupErr error
 	if len(bootstrapIDs) > 0 {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)

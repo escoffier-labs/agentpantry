@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,6 +45,13 @@ type fakeCDPTargetServer struct {
 	failNewOn   int
 	newAttempts int
 	badWSHost   string
+	// dropNewResponseOn and corruptNewResponseOn create a target, then make
+	// the /json/new response unavailable to the caller.
+	dropNewResponseOn    int
+	corruptNewResponseOn int
+	// createThenNon200NewOn creates the target, then returns a non-200
+	// response, simulating Chrome accepting /json/new before an error reply.
+	createThenNon200NewOn int
 
 	newResponses          []cdpTarget
 	oversizedNewResponse  bool
@@ -56,6 +64,7 @@ type fakeCDPTargetServer struct {
 	// baseline list in OpenStorageOrigins succeeds and the cleanup
 	// reconciliation list fails.
 	failListOn   int
+	failListFrom int
 	listAttempts int
 }
 
@@ -70,7 +79,11 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		originURL := r.URL.RawQuery
+		originURL, err := url.QueryUnescape(r.URL.RawQuery)
+		if err != nil {
+			http.Error(w, "invalid origin", http.StatusBadRequest)
+			return
+		}
 		if originURL == "" {
 			http.Error(w, "missing origin", http.StatusBadRequest)
 			return
@@ -94,14 +107,14 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 			response = f.newResponses[attempt-1]
 			if response.ID != "" {
 				if _, exists := f.targets[response.ID]; !exists {
-					origin, ok := originOf(response.URL)
+					origin, ok := originOf(originURL)
 					if !ok {
-						origin = response.URL
+						origin = originURL
 					}
 					f.targets[response.ID] = &targetFixture{
 						id:         response.ID,
-						targetType: response.Type,
-						url:        response.URL,
+						targetType: "page",
+						url:        originURL,
 						wsPath:     "/devtools/page/" + response.ID,
 						origin:     origin,
 					}
@@ -134,7 +147,21 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 			}
 		}
 		f.newOrigins = append(f.newOrigins, originURL)
+		dropResponse := f.dropNewResponseOn == attempt
+		corruptResponse := f.corruptNewResponseOn == attempt
+		non200Response := f.createThenNon200NewOn == attempt
 		f.mu.Unlock()
+		if dropResponse {
+			panic(http.ErrAbortHandler)
+		}
+		if corruptResponse {
+			_, _ = w.Write([]byte(`{"id":`))
+			return
+		}
+		if non200Response {
+			http.Error(w, "injected new failure after target creation", http.StatusInternalServerError)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(response)
 	})
 
@@ -145,7 +172,8 @@ func newFakeCDPTargetServer(t *testing.T) *fakeCDPTargetServer {
 		}
 		f.mu.Lock()
 		f.listAttempts++
-		if f.failListOn > 0 && f.listAttempts == f.failListOn {
+		if (f.failListOn > 0 && f.listAttempts == f.failListOn) ||
+			(f.failListFrom > 0 && f.listAttempts >= f.failListFrom) {
 			f.mu.Unlock()
 			http.Error(w, "injected list failure", http.StatusInternalServerError)
 			return
@@ -485,6 +513,41 @@ func (f *fakeCDPTargetServer) setEmitEmptyType(id string, empty bool) {
 	tg.emitEmptyType = empty
 }
 
+func TestCDPBootstrapTargetMarkerUsesExactFragment(t *testing.T) {
+	const (
+		origin = "https://example.com"
+		marker = "0123456789abcdef0123456789abcdef"
+	)
+
+	bootstrapURL := cdpBootstrapURL(origin, marker)
+	u, err := url.Parse(bootstrapURL)
+	if err != nil {
+		t.Fatalf("bootstrap URL parse failed: %v", err)
+	}
+	if got, want := u.Fragment, cdpBootstrapMarkerParam+"="+marker; got != want {
+		t.Fatalf("bootstrap fragment = %q, want %q", got, want)
+	}
+	if strings.Contains(u.RawQuery, cdpBootstrapMarkerParam) {
+		t.Fatalf("bootstrap query contains marker: %q", u.RawQuery)
+	}
+	if got, ok := originOf(bootstrapURL); !ok || got != origin {
+		t.Fatalf("bootstrap location.origin = %q, valid = %t, want %q", got, ok, origin)
+	}
+
+	target := cdpTarget{ID: "bootstrap-target", Type: "page", URL: bootstrapURL}
+	if !isMarkedCDPBootstrapTarget(target, origin, marker) {
+		t.Fatal("exact bootstrap fragment was not recognized")
+	}
+	target.URL = origin + "/?" + cdpBootstrapMarkerParam + "=" + marker
+	if isMarkedCDPBootstrapTarget(target, origin, marker) {
+		t.Fatal("query marker was accepted as bootstrap ownership")
+	}
+	target.URL = origin + "/#" + cdpBootstrapMarkerParam + "=" + marker + "-other"
+	if isMarkedCDPBootstrapTarget(target, origin, marker) {
+		t.Fatal("non-exact bootstrap fragment was accepted as ownership")
+	}
+}
+
 func TestOpenStorageOriginsRejectsNonLoopbackBase(t *testing.T) {
 	_, err := (&CDP{BaseURL: "http://198.51.100.10:9222"}).OpenStorageOrigins(context.Background(), []string{"https://example.com"})
 	if err == nil {
@@ -674,9 +737,80 @@ func TestOpenStorageOriginsAcceptsCanonicalOrigins(t *testing.T) {
 		t.Fatalf("new origins = %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("new origins[%d] = %q, want %q (full %v)", i, got[i], want[i], got)
+		targetURL, err := url.Parse(got[i])
+		if err != nil {
+			t.Fatalf("new target URL[%d] parse failed: %v", i, err)
 		}
+		gotOrigin, ok := originOf(got[i])
+		if !ok || gotOrigin != want[i] {
+			t.Fatalf("new target URL[%d] origin = %q, want %q (full %v)", i, gotOrigin, want[i], got)
+		}
+		if strings.Contains(targetURL.RawQuery, cdpBootstrapMarkerParam) {
+			t.Fatalf("new target URL[%d] query contains bootstrap marker", i)
+		}
+		if !strings.HasPrefix(targetURL.Fragment, cdpBootstrapMarkerParam+"=") {
+			t.Fatalf("new target URL[%d] fragment is missing its bootstrap marker", i)
+		}
+	}
+}
+
+func TestOpenStorageOriginsRejectsNewRedirectWithoutDialingDestination(t *testing.T) {
+	var destinationHits atomic.Int32
+	var destinationReferer atomic.Value
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		destinationHits.Add(1)
+		destinationReferer.Store(r.Referer())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer destination.Close()
+
+	const targetID = "redirect-created-target"
+	var mu sync.Mutex
+	var bootstrapURL string
+	closed := false
+	mux := http.NewServeMux()
+	source := httptest.NewServer(mux)
+	defer source.Close()
+	mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if bootstrapURL == "" || closed {
+			_ = json.NewEncoder(w).Encode([]cdpTarget{})
+			return
+		}
+		_ = json.NewEncoder(w).Encode([]cdpTarget{{ID: targetID, Type: "page", URL: bootstrapURL}})
+	})
+	mux.HandleFunc("/json/new", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		bootstrapURL, _ = url.QueryUnescape(r.URL.RawQuery)
+		mu.Unlock()
+		http.Redirect(w, r, destination.URL+"/unexpected", http.StatusFound)
+	})
+	mux.HandleFunc("/json/close/"+targetID, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		closed = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ids, err := (&CDP{BaseURL: source.URL}).OpenStorageOrigins(context.Background(), []string{"https://example.com"})
+	if err == nil || !strings.Contains(err.Error(), "returned status 302") {
+		t.Fatalf("OpenStorageOrigins error = %v, want retained 302 status", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("cleanup retry IDs = %v, want none after reconciled close", ids)
+	}
+	if destinationHits.Load() != 0 {
+		t.Fatalf("redirect destination hits = %d, want 0", destinationHits.Load())
+	}
+	if got, _ := destinationReferer.Load().(string); got != "" {
+		t.Fatalf("redirect destination Referer = %q, want empty", got)
+	}
+	mu.Lock()
+	wasClosed := closed
+	mu.Unlock()
+	if !wasClosed {
+		t.Fatal("reconciled target was not closed after redirect response")
 	}
 }
 
@@ -789,8 +923,8 @@ func TestFrameWSForTargetIDPermanentWrongOriginExpiresWithoutWebsocket(t *testin
 	if got != "" {
 		t.Fatalf("websocket = %q, want empty for a permanent ownership mismatch", got)
 	}
-	if err == nil || err.Error() != "storage target not ready" {
-		t.Fatalf("error = %v, want generic readiness error", err)
+	if err != nil {
+		t.Fatalf("error = %v, want nil on local readiness expiry", err)
 	}
 }
 
@@ -837,8 +971,8 @@ func TestFrameWSForTargetIDReadinessDeadlineBoundsInFlightListRequest(t *testing
 	if got != "" {
 		t.Fatalf("websocket = %q, want empty", got)
 	}
-	if err == nil || err.Error() != "storage target not ready" {
-		t.Fatalf("error = %v, want generic readiness error", err)
+	if err != nil {
+		t.Fatalf("error = %v, want nil on local readiness expiry", err)
 	}
 	select {
 	case <-requestStarted:
@@ -849,6 +983,42 @@ func TestFrameWSForTargetIDReadinessDeadlineBoundsInFlightListRequest(t *testing
 	case <-requestCanceled:
 	case <-time.After(time.Second):
 		t.Fatal("readiness deadline did not cancel in-flight /json/list request")
+	}
+}
+
+func TestFrameWSForTargetIDParentDeadlineRemainsAnError(t *testing.T) {
+	const (
+		targetID = "bootstrap-target"
+		origin   = "https://example.com"
+	)
+
+	requestStarted := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got, err := (&CDP{BaseURL: srv.URL}).frameWSForTargetIDUntil(ctx, targetID, origin, time.Now().Add(time.Second))
+	if got != "" {
+		t.Fatalf("websocket = %q, want empty", got)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want parent deadline exceeded", err)
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("/json/list request did not start")
+	}
+}
+
+func TestFrameWSForTargetIDRejectsUnsafeTargetID(t *testing.T) {
+	got, err := (&CDP{}).frameWSForTargetIDUntil(context.Background(), "../unsafe", "https://example.com", time.Now().Add(time.Second))
+	if got != "" || err == nil {
+		t.Fatalf("frameWSForTargetIDUntil = (%q, %v), want empty websocket and error", got, err)
 	}
 }
 
@@ -927,8 +1097,19 @@ func TestOpenStorageOriginsDeduplicatesAndCanonicalSorts(t *testing.T) {
 		t.Fatalf("new origins = %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("new origins[%d] = %q, want %q (full %v)", i, got[i], want[i], got)
+		targetURL, err := url.Parse(got[i])
+		if err != nil {
+			t.Fatalf("new target URL[%d] parse failed: %v", i, err)
+		}
+		gotOrigin, ok := originOf(got[i])
+		if !ok || gotOrigin != want[i] {
+			t.Fatalf("new target URL[%d] origin = %q, want %q (full %v)", i, gotOrigin, want[i], got)
+		}
+		if strings.Contains(targetURL.RawQuery, cdpBootstrapMarkerParam) {
+			t.Fatalf("new target URL[%d] query contains bootstrap marker", i)
+		}
+		if !strings.HasPrefix(targetURL.Fragment, cdpBootstrapMarkerParam+"=") {
+			t.Fatalf("new target URL[%d] fragment is missing its bootstrap marker", i)
 		}
 	}
 }
@@ -1061,15 +1242,13 @@ func TestOpenStorageOriginsVerifiesTargetOwnership(t *testing.T) {
 
 	t.Run("valid new page", func(t *testing.T) {
 		srv := newFakeCDPTargetServer(t)
-		const targetID = "valid-new-target"
-		srv.newResponses = []cdpTarget{{ID: targetID, Type: "page", URL: requestedOrigin + "/"}}
 
 		ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{requestedOrigin})
 		if err != nil {
 			t.Fatalf("valid new target rejected: %v", err)
 		}
-		if len(ids) != 1 || ids[0] != targetID {
-			t.Fatalf("valid new target IDs = %v, want [%s]", ids, targetID)
+		if len(ids) != 1 || srv.originForTarget(ids[0]) != requestedOrigin {
+			t.Fatalf("valid new target IDs = %v, want one target on %s", ids, requestedOrigin)
 		}
 	})
 }
@@ -1187,6 +1366,77 @@ func TestOpenStorageOriginsCleansUpOnPartialFailure(t *testing.T) {
 	open := srv.openTargets()
 	if len(open) != 0 {
 		t.Fatalf("open targets after failed open = %v, want none left from bootstrap", open)
+	}
+}
+
+func TestOpenStorageOriginsReconcilesCreatedTargetAfterIndeterminateNewResponse(t *testing.T) {
+	for _, responseFailure := range []struct {
+		name string
+		set  func(*fakeCDPTargetServer)
+	}{
+		{
+			name: "dropped response",
+			set: func(srv *fakeCDPTargetServer) {
+				srv.dropNewResponseOn = 1
+			},
+		},
+		{
+			name: "corrupt response",
+			set: func(srv *fakeCDPTargetServer) {
+				srv.corruptNewResponseOn = 1
+			},
+		},
+		{
+			name: "non-200 response after target creation",
+			set: func(srv *fakeCDPTargetServer) {
+				srv.createThenNon200NewOn = 1
+			},
+		},
+	} {
+		t.Run(responseFailure.name, func(t *testing.T) {
+			srv := newFakeCDPTargetServer(t)
+			baseline := srv.addUnrelatedPage("https://keep.example")
+			responseFailure.set(srv)
+
+			ids, err := (&CDP{BaseURL: srv.srv.URL}).OpenStorageOrigins(context.Background(), []string{"https://seed.example"})
+			if err == nil {
+				t.Fatal("indeterminate /json/new response must fail")
+			}
+			if len(ids) != 0 {
+				t.Fatalf("successful deferred cleanup returned retry IDs: %v", ids)
+			}
+
+			srv.mu.Lock()
+			closed := append([]string(nil), srv.closedIDs...)
+			var open []string
+			for id, target := range srv.targets {
+				if !target.closed {
+					open = append(open, id)
+				}
+			}
+			var createdOrigin string
+			if len(closed) == 1 {
+				createdOrigin = srv.targets[closed[0]].origin
+			}
+			srv.mu.Unlock()
+			if len(closed) != 1 {
+				t.Fatalf("closed IDs = %v, want exactly the marked created target", closed)
+			}
+			if closed[0] == baseline {
+				t.Fatalf("baseline target was closed: %v", closed)
+			}
+			if createdOrigin != "https://seed.example" {
+				t.Fatalf("created target origin = %q, want exact seed origin", createdOrigin)
+			}
+			if len(open) != 1 || open[0] != baseline {
+				t.Fatalf("open targets = %v, want only baseline %q", open, baseline)
+			}
+			for _, private := range []string{"seed.example", "keep.example", baseline, closed[0]} {
+				if strings.Contains(err.Error(), private) {
+					t.Fatalf("error leaked private target detail %q: %v", private, err)
+				}
+			}
+		})
 	}
 }
 
@@ -1600,6 +1850,36 @@ func TestWriteStorageViaTargetsBindsHydrationToOpenStorageOriginsIDs(t *testing.
 	}
 }
 
+func TestWriteStorageViaTargetsSeedsReadyOriginWhenPeerNeverBecomesReady(t *testing.T) {
+	srv := newFakeCDPTargetServer(t)
+	const (
+		originA = "https://a.example"
+		originB = "https://b.example"
+	)
+	neverReady := srv.addUnrelatedPage(originA)
+	ready := srv.addUnrelatedPage(originB)
+	srv.setTargetURL(neverReady, "about:blank")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	written, err := (&CDP{BaseURL: srv.srv.URL}).WriteStorageViaTargets(ctx, []webstorage.Item{
+		{Origin: originA, Key: "not-written", Value: "a"},
+		{Origin: originB, Key: "written", Value: "b"},
+	}, []string{neverReady, ready})
+	if err != nil {
+		t.Fatalf("WriteStorageViaTargets: %v", err)
+	}
+	if written != 1 {
+		t.Fatalf("written = %d, want 1 from the ready origin", written)
+	}
+	if got := srv.keysForTarget(neverReady); len(got) != 0 {
+		t.Fatalf("never-ready target keys = %v, want none", got)
+	}
+	if got := srv.keysForTarget(ready); len(got) != 1 || got[0] != "written" {
+		t.Fatalf("ready target keys = %v, want [written]", got)
+	}
+}
+
 // TestWriteStorageViaTargetsRevalidatesTargetOriginOwnership proves mismatched
 // target/origin pairing errors before any wrong-target seed, and that errors omit
 // origin URLs and target IDs.
@@ -1915,7 +2195,7 @@ func TestOpenStorageOriginsReconciliationListFailureReturnsPossiblyClosedRetryID
 	unrelated := srv.addUnrelatedPage("https://keep.example")
 	srv.failNewOn = 3
 	srv.failCloseAfterAcceptCount = 2
-	srv.failListOn = 2 // baseline list OK; reconciliation list fails
+	srv.failListFrom = 2 // baseline list OK; every reconciliation list fails
 	cdp := &CDP{BaseURL: srv.srv.URL}
 
 	const (

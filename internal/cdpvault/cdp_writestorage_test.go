@@ -221,6 +221,93 @@ func TestSeedFrameReadinessDeadlineBoundsStalledHandshake(t *testing.T) {
 	}
 }
 
+func TestSeedFrameCallerDeadlineWinsStalledHandshake(t *testing.T) {
+	handshakeStarted := make(chan struct{})
+	handshakeCanceled := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(handshakeStarted)
+		<-r.Context().Done()
+		close(handshakeCanceled)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 125*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	written, err := (&CDP{}).seedFrameUntil(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/devtools/page/ABC", "https://ready.example", [][2]string{{"private-key", "private-value"}}, time.Now().Add(700*time.Millisecond))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("seedFrameUntil error = %v, want caller deadline exceeded", err)
+	}
+	if written != 0 {
+		t.Fatalf("written = %d, want 0 when caller deadline ends the handshake", written)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("stalled WebSocket handshake took %v, want caller deadline", elapsed)
+	}
+	select {
+	case <-handshakeStarted:
+	default:
+		t.Fatal("WebSocket handshake did not start")
+	}
+	select {
+	case <-handshakeCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("caller deadline did not cancel the WebSocket handshake")
+	}
+}
+
+func TestSeedFrameCallerDeadlineWinsStalledReadinessEvaluate(t *testing.T) {
+	readinessStarted := make(chan struct{})
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
+		close(readinessStarted)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 125*time.Millisecond)
+	defer cancel()
+	written, err := (&CDP{}).seedFrameUntil(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/devtools/page/ABC", "https://ready.example", [][2]string{{"private-key", "private-value"}}, time.Now().Add(700*time.Millisecond))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("seedFrameUntil error = %v, want caller deadline exceeded", err)
+	}
+	if written != 0 {
+		t.Fatalf("written = %d, want 0 when caller deadline ends readiness", written)
+	}
+	select {
+	case <-readinessStarted:
+	default:
+		t.Fatal("readiness evaluation did not start")
+	}
+}
+
+func TestSeedFrameImmediateDialFailureRemainsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	ws := "ws" + strings.TrimPrefix(srv.URL, "http") + "/devtools/page/ABC"
+	srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	written, err := (&CDP{}).seedFrameUntil(ctx, ws, "https://ready.example", [][2]string{{"private-key", "private-value"}}, time.Now().Add(700*time.Millisecond))
+	if err == nil {
+		t.Fatal("immediate non-timeout dial failure must remain an error")
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		t.Fatalf("immediate dial failure = %v, want its original error", err)
+	}
+	if written != 0 {
+		t.Fatalf("written = %d, want 0 after dial failure", written)
+	}
+}
+
 func TestSeedFrameRestoresOuterDeadlineForMutation(t *testing.T) {
 	const origin = "https://ready.example"
 
@@ -271,6 +358,70 @@ func TestSeedFrameRestoresOuterDeadlineForMutation(t *testing.T) {
 	case <-mutationStarted:
 	default:
 		t.Fatal("localStorage mutation was not sent")
+	}
+}
+
+func TestSeedFrameMutationReadStopsOnCallerCancellation(t *testing.T) {
+	const origin = "https://ready.example"
+
+	mutationStarted := make(chan struct{})
+	up := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		for calls := 0; ; calls++ {
+			var command struct {
+				ID int `json:"id"`
+			}
+			if err := conn.ReadJSON(&command); err != nil {
+				return
+			}
+			if calls == 0 {
+				_ = conn.WriteJSON(map[string]any{
+					"id":     command.ID,
+					"result": map[string]any{"result": map[string]any{"type": "string", "value": `{"o":"https://ready.example","r":"complete"}`}},
+				})
+				continue
+			}
+			close(mutationStarted)
+			_, _, _ = conn.ReadMessage() // Wait for the canceled caller to close the socket.
+			return
+		}
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		written int
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		written, err := (&CDP{}).seedFrameUntil(ctx, "ws"+strings.TrimPrefix(srv.URL, "http")+"/devtools/page/ABC", origin, [][2]string{{"private-key", "private-value"}}, time.Now().Add(time.Second))
+		done <- result{written: written, err: err}
+	}()
+
+	select {
+	case <-mutationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("localStorage mutation was not sent")
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("seedFrameUntil error = %v, want context canceled", got.err)
+		}
+		if got.written != 0 {
+			t.Fatalf("written = %d, want 0 after caller cancellation", got.written)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("caller cancellation did not interrupt the stalled mutation read")
 	}
 }
 

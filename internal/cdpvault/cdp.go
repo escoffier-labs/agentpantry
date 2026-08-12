@@ -2,6 +2,8 @@ package cdpvault
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +73,13 @@ type cdpTarget struct {
 // target polling and target creation. Other CDP JSON readers are unchanged.
 const maxCDPJSONResponseBytes = 1024 * 1024
 
+const (
+	cdpBootstrapMarkerParam = "agentpantry-bootstrap"
+	cdpBootstrapMarkerBytes = 16
+	cdpReconcileTimeout     = time.Second
+	cdpReconcileInterval    = 50 * time.Millisecond
+)
+
 var errCDPJSONResponseTooLarge = errors.New("CDP JSON response too large")
 
 func decodeLimitedJSON(body io.Reader, dst any) error {
@@ -137,7 +146,12 @@ func canonicalSortedStorageOrigins(origins []string) []string {
 }
 
 func (c *CDP) cdpHTTPClient() *http.Client {
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func (c *CDP) listTargets(ctx context.Context, client *http.Client) ([]cdpTarget, error) {
@@ -164,6 +178,75 @@ func (c *CDP) listTargets(ctx context.Context, client *http.Client) ([]cdpTarget
 		return nil, fmt.Errorf("decode CDP target list response: %w", err)
 	}
 	return targets, nil
+}
+
+func newCDPBootstrapMarker() (string, error) {
+	b := make([]byte, cdpBootstrapMarkerBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate CDP target marker: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func cdpBootstrapURL(origin, marker string) string {
+	return origin + "/#" + cdpBootstrapMarkerParam + "=" + marker
+}
+
+func isMarkedCDPBootstrapTarget(target cdpTarget, origin, marker string) bool {
+	if target.Type != "page" || validateTargetID(target.ID) != nil {
+		return false
+	}
+	u, err := url.Parse(target.URL)
+	if err != nil {
+		return false
+	}
+	targetOrigin, ok := originOf(target.URL)
+	return ok && targetOrigin == origin && u.Fragment == cdpBootstrapMarkerParam+"="+marker
+}
+
+// reconcileCDPBootstrapTarget finds the one page target created by a single
+// /json/new attempt after its response cannot establish ownership. It uses a
+// detached bounded context because the caller's context may have ended after
+// Chrome accepted the create request. Only a non-baseline, valid, marked page
+// target on the requested origin is eligible for cleanup.
+func (c *CDP) reconcileCDPBootstrapTarget(origin, marker string, baseline, owned map[string]struct{}) string {
+	ctx, cancel := context.WithTimeout(context.Background(), cdpReconcileTimeout)
+	defer cancel()
+	client := c.cdpHTTPClient()
+	for {
+		if targets, err := c.listTargets(ctx, client); err == nil {
+			candidates := make(map[string]int)
+			for _, target := range targets {
+				if _, exists := baseline[target.ID]; exists || !isMarkedCDPBootstrapTarget(target, origin, marker) {
+					continue
+				}
+				if _, exists := owned[target.ID]; exists {
+					continue
+				}
+				candidates[target.ID]++
+			}
+			if len(candidates) == 1 {
+				for id, count := range candidates {
+					if count == 1 {
+						return id
+					}
+				}
+			}
+		}
+
+		wait := time.NewTimer(cdpReconcileInterval)
+		select {
+		case <-ctx.Done():
+			if !wait.Stop() {
+				select {
+				case <-wait.C:
+				default:
+				}
+			}
+			return ""
+		case <-wait.C:
+		}
+	}
 }
 
 // OpenStorageOrigins opens one page target per distinct storage origin via the
@@ -193,9 +276,11 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 	if err != nil {
 		return nil, err
 	}
+	baselineIDs := make(map[string]struct{}, len(existingTargets))
 	knownIDs := make(map[string]struct{}, len(existingTargets)+len(origins))
 	for _, target := range existingTargets {
 		if target.ID != "" {
+			baselineIDs[target.ID] = struct{}{}
 			knownIDs[target.ID] = struct{}{}
 		}
 	}
@@ -204,6 +289,17 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 	// verified: IDs that passed type, origin, and websocket checks.
 	var ownedForCleanup []string
 	var verified []string
+	ownedIDs := make(map[string]struct{}, len(origins))
+	addOwned := func(id string) {
+		if _, baseline := baselineIDs[id]; baseline {
+			return
+		}
+		if _, owned := ownedIDs[id]; owned {
+			return
+		}
+		ownedIDs[id] = struct{}{}
+		ownedForCleanup = append(ownedForCleanup, id)
+	}
 	defer func() {
 		if retErr == nil || len(ownedForCleanup) == 0 {
 			return
@@ -251,7 +347,18 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 	}()
 
 	for _, origin := range origins {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/json/new?"+origin, nil)
+		marker, err := newCDPBootstrapMarker()
+		if err != nil {
+			return nil, fmt.Errorf("create CDP target marker failed")
+		}
+		bootstrapURL := cdpBootstrapURL(origin, marker)
+		fail := func(err error) ([]string, error) {
+			if id := c.reconcileCDPBootstrapTarget(origin, marker, baselineIDs, ownedIDs); id != "" {
+				addOwned(id)
+			}
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/json/new?"+url.QueryEscape(bootstrapURL), nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -261,46 +368,51 @@ func (c *CDP) OpenStorageOrigins(ctx context.Context, origins []string) (ids []s
 		resp, err := client.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return fail(ctx.Err())
 			}
-			return nil, fmt.Errorf("create CDP target failed")
+			return fail(fmt.Errorf("create CDP target failed"))
 		}
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
-			return nil, fmt.Errorf("create CDP target returned status %d", resp.StatusCode)
+			return fail(fmt.Errorf("create CDP target returned status %d", resp.StatusCode))
 		}
 		var tgt cdpTarget
 		decErr := decodeLimitedJSON(resp.Body, &tgt)
 		_ = resp.Body.Close()
 		if decErr != nil {
-			return nil, fmt.Errorf("decode CDP target response: %w", decErr)
+			return fail(fmt.Errorf("decode CDP target response: %w", decErr))
 		}
 		if tgt.ID == "" {
-			return nil, fmt.Errorf("create CDP target returned empty ID")
+			return fail(fmt.Errorf("create CDP target returned empty ID"))
 		}
 		if err := validateTargetID(tgt.ID); err != nil {
-			return nil, err
+			return fail(err)
 		}
 		if _, exists := knownIDs[tgt.ID]; exists {
-			return nil, fmt.Errorf("create CDP target returned non-new ID")
+			return fail(fmt.Errorf("create CDP target returned non-new ID"))
 		}
-		// Own the candidate for cleanup before type/origin/websocket verification.
-		ownedForCleanup = append(ownedForCleanup, tgt.ID)
-		knownIDs[tgt.ID] = struct{}{}
 		if tgt.Type != "page" {
-			return nil, fmt.Errorf("create CDP target returned non-page target")
+			return fail(fmt.Errorf("create CDP target returned non-page target"))
 		}
-		if tgt.URL != "" && tgt.URL != "about:blank" {
-			returnedOrigin, ok := originOf(tgt.URL)
-			if !ok || returnedOrigin != origin {
-				return nil, fmt.Errorf("create CDP target returned mismatched origin")
+		if tgt.URL == "" || tgt.URL == "about:blank" {
+			if id := c.reconcileCDPBootstrapTarget(origin, marker, baselineIDs, ownedIDs); id != "" {
+				addOwned(id)
+				knownIDs[id] = struct{}{}
+				verified = append(verified, id)
+				continue
 			}
+			return fail(fmt.Errorf("create CDP target returned mismatched bootstrap target"))
+		}
+		if !isMarkedCDPBootstrapTarget(tgt, origin, marker) {
+			return fail(fmt.Errorf("create CDP target returned mismatched bootstrap target"))
 		}
 		if tgt.WebSocketDebuggerURL != "" {
 			if err := ValidateLoopbackURL(tgt.WebSocketDebuggerURL, "ws", "wss"); err != nil {
-				return nil, fmt.Errorf("invalid CDP websocket URL")
+				return fail(fmt.Errorf("invalid CDP websocket URL"))
 			}
 		}
+		addOwned(tgt.ID)
+		knownIDs[tgt.ID] = struct{}{}
 		verified = append(verified, tgt.ID)
 	}
 	return append([]string(nil), verified...), nil
@@ -863,6 +975,9 @@ func (c *CDP) WriteStorageViaTargets(ctx context.Context, items []webstorage.Ite
 		if err != nil {
 			return 0, err
 		}
+		if ws == "" {
+			continue
+		}
 		ready = append(ready, seededOrigin{ws: ws, origin: origin, pairs: byOrigin[origin]})
 	}
 
@@ -888,6 +1003,9 @@ func (c *CDP) frameWSForTargetID(ctx context.Context, targetID, origin string) (
 }
 
 func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin string, deadline time.Time) (string, error) {
+	if err := validateTargetID(targetID); err != nil {
+		return "", fmt.Errorf("invalid storage target")
+	}
 	readinessCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	client := c.cdpHTTPClient()
@@ -896,7 +1014,7 @@ func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin stri
 			return "", err
 		}
 		if !time.Now().Before(deadline) {
-			return "", fmt.Errorf("storage target not ready")
+			return "", nil
 		}
 
 		targets, err := c.listTargets(readinessCtx, client)
@@ -915,6 +1033,11 @@ func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin stri
 				if found.Type != "page" {
 					return "", fmt.Errorf("invalid storage target")
 				}
+				if found.WebSocketDebuggerURL != "" {
+					if err := ValidateLoopbackURL(found.WebSocketDebuggerURL, "ws", "wss"); err != nil {
+						return "", fmt.Errorf("invalid CDP websocket URL")
+					}
+				}
 				urlReady := found.URL != "" && found.URL != "about:blank"
 				wsReady := found.WebSocketDebuggerURL != ""
 				if urlReady && wsReady {
@@ -924,9 +1047,6 @@ func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin stri
 						// origin while navigation settles. Never use it until the
 						// exact requested origin is listed.
 						goto retry
-					}
-					if err := ValidateLoopbackURL(found.WebSocketDebuggerURL, "ws", "wss"); err != nil {
-						return "", fmt.Errorf("invalid CDP websocket URL")
 					}
 					return found.WebSocketDebuggerURL, nil
 				}
@@ -941,7 +1061,7 @@ func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin stri
 
 	retry:
 		if !time.Now().Before(deadline) {
-			return "", fmt.Errorf("storage target not ready")
+			return "", nil
 		}
 		wait := time.NewTimer(200 * time.Millisecond)
 		select {
@@ -955,7 +1075,7 @@ func (c *CDP) frameWSForTargetIDUntil(ctx context.Context, targetID, origin stri
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
-			return "", fmt.Errorf("storage target not ready")
+			return "", nil
 		case <-wait.C:
 		}
 	}
@@ -1043,23 +1163,43 @@ func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]
 	if readinessBy.IsZero() {
 		readinessBy = time.Now().Add(10 * time.Second)
 	}
-	outerDeadline, ok := ctx.Deadline()
-	if !ok {
+	callerDeadline, callerHasDeadline := ctx.Deadline()
+	outerDeadline := callerDeadline
+	if !callerHasDeadline {
 		outerDeadline = time.Now().Add(30 * time.Second)
 	}
 	readinessDeadline := readinessBy
-	if outerDeadline.Before(readinessDeadline) {
-		readinessDeadline = outerDeadline
+	callerDeadlineWins := callerHasDeadline && !readinessBy.Before(callerDeadline)
+	if callerDeadlineWins {
+		readinessDeadline = callerDeadline
+	}
+	readinessExpiry := func() (error, bool) {
+		if err := ctx.Err(); err != nil {
+			return err, true
+		}
+		if !time.Now().Before(readinessDeadline) {
+			if callerDeadlineWins {
+				return context.DeadlineExceeded, true
+			}
+			return nil, true
+		}
+		return nil, false
 	}
 	readinessCtx, cancelReadiness := context.WithDeadline(ctx, readinessDeadline)
 	defer cancelReadiness()
 	conn, _, err := websocket.DefaultDialer.DialContext(readinessCtx, ws, nil)
 	if err != nil {
-		if err := ctx.Err(); err != nil {
-			return 0, err
+		if expiryErr, expired := readinessExpiry(); expired {
+			if expiryErr != nil {
+				return 0, expiryErr
+			}
+			var networkErr net.Error
+			if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkErr) && networkErr.Timeout()) {
+				return 0, nil
+			}
 		}
-		if readinessCtx.Err() != nil {
-			return 0, nil
+		if errors.Is(readinessCtx.Err(), context.Canceled) {
+			return 0, context.Canceled
 		}
 		return 0, fmt.Errorf("dial devtools websocket: %w", err)
 	}
@@ -1071,20 +1211,14 @@ func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]
 	id := 1
 	ready := false
 	for {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		if !time.Now().Before(readinessDeadline) {
-			return 0, nil
+		if expiryErr, expired := readinessExpiry(); expired {
+			return 0, expiryErr
 		}
 		val, err := c.evalValue(conn, id, `JSON.stringify({o:location.origin,r:document.readyState})`)
 		id++
 		if err != nil {
-			if err := ctx.Err(); err != nil {
-				return 0, err
-			}
-			if !time.Now().Before(readinessDeadline) {
-				return 0, nil
+			if expiryErr, expired := readinessExpiry(); expired {
+				return 0, expiryErr
 			}
 			return 0, err
 		}
@@ -1096,8 +1230,8 @@ func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]
 			ready = true
 			break
 		}
-		if !time.Now().Before(readinessDeadline) {
-			break
+		if expiryErr, expired := readinessExpiry(); expired {
+			return 0, expiryErr
 		}
 		wait := time.NewTimer(200 * time.Millisecond)
 		select {
@@ -1108,15 +1242,14 @@ func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]
 				default:
 				}
 			}
-			if err := ctx.Err(); err != nil {
-				return 0, err
-			}
-			return 0, nil
+			expiryErr, _ := readinessExpiry()
+			return 0, expiryErr
 		case <-wait.C:
 		}
 	}
 	if !ready {
-		return 0, nil // the tab never became the origin document; skip
+		expiryErr, _ := readinessExpiry()
+		return 0, expiryErr // the tab never became the origin document; skip
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -1137,7 +1270,16 @@ func (c *CDP) seedFrameUntil(ctx context.Context, ws, origin string, pairs [][2]
 	// expression is the authoritative race-safe guard: refuse setItem if
 	// location.origin drifted after the readiness loop. Never log keys/values/origin.
 	expr := `(function(){if(location.origin!==` + string(originLit) + `)return '0';var it=` + string(payload) + `;var n=0;for(var i=0;i<it.length;i++){try{localStorage.setItem(it[i][0],it[i][1]);n++}catch(e){}}return ''+n;})()`
+	mutationDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetReadDeadline(time.Now())
+		case <-mutationDone:
+		}
+	}()
 	val, err := c.evalValue(conn, id, expr)
+	close(mutationDone)
 	if err != nil {
 		if err := ctx.Err(); err != nil {
 			return 0, err
