@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.7.0 - 2026-08-26
+
 ### Added
 - `rotate-key -key <path>` selects which key file to rotate or finish,
   overriding config `key_path` and the default `psk.key`. Grace-window
@@ -66,6 +68,24 @@
   targets with "Multiple targets are not supported in headless mode". Headless
   launches now use one `about:blank` startup target and create origin targets
   over CDP after the debugging port is ready.
+- CDP target polling during web storage restore now caps `/json` response bodies
+  at 1 MiB and fails closed when oversized, preventing unbounded memory allocation
+  on unresponsive or hostile DevTools ports while maintaining retry timing.
+- Read-only SQLite openers (`OpenSidecarReadOnly` and temporary Chromium cookie DB
+  readers) now format connections as percent-encoded `file:` URIs with `?mode=ro`,
+  ensuring `modernc.org/sqlite` enforces true read-only semantics (`SQLITE_READONLY`)
+  across Linux and Windows paths including UNC shares.
+- `keygen --out <path>` replacing an existing key file now revokes any unfinished
+  rotation grace key (`<path>.old`) and outputs an explicit 3-step checklist to
+  stop existing sink sessions, distribute the replacement key, and restart persistent
+  sources.
+- The Chromium cookie store sink surface now preserves existing `creation_utc`
+  timestamps on cookie updates, stamps Chrome-epoch timestamps on new rows, and
+  creates a private (`0600`) timestamped pre-transaction snapshot (`Cookies.bak.<timestamp>`)
+  before writes so failed transactions leave a usable backup.
+- Windows Chromium profile discovery walks up to 3 ancestor directories to locate
+  `Local State` and fails with an explicit error naming the cookie path if absent,
+  preventing incorrect path guessing.
 
 ## v0.6.0 - 2026-07-08
 
