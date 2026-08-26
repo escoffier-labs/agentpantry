@@ -63,6 +63,8 @@
   never logged.
 
 ### Fixed
+- Updated the Go toolchain to 1.25.13, resolving newly detected standard-library
+  vulnerabilities that blocked release packaging.
 - `agentpantry browser --headless` no longer fails on Chrome 151 when the backup
   has multiple storage origins. Chrome 151 rejects multiple headless startup
   targets with "Multiple targets are not supported in headless mode". Headless
