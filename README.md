@@ -192,6 +192,26 @@ dashboards can consume. The JSON payload includes cookie `name` and `host` for
 near-expiry rows (never values). It reports on existing stores only: if the path
 does not exist it exits 2 rather than create an empty one.
 
+`agentpantry run -- <command>` is the sink-side, memory-only way to hand synced
+secrets to a child process, in the style of 1Password `op run`. It reads the
+already-synced files under the sink config's `secrets_dir`, applies the same
+deny-wins `[secret_names]` policy, overlays the permitted values onto the
+parent environment, and runs `<command>`. Values are never written to a
+staging file. Names that sanitize to loader or interpreter variables such as
+`PATH` or `LD_PRELOAD` are refused. `-secret NAME` (repeatable) injects only
+those names, `-env NAME=ENVVAR` remaps a secret to a specific variable
+(default: uppercase sanitized name), and `-dry-run` prints the env var names
+that would be set without executing anything. Secret values are never logged. Prefer `run` when
+the consumer can take environment variables; keep the `secrets` surface for
+tools that must read files. A local process that can inspect the child
+(`/proc/<pid>/environ`, ptrace, or the Windows equivalent) can still see the
+injected values while it runs. On Unix the wrapper forwards SIGINT and
+SIGTERM to the child. On Windows signals are not forwarded.
+
+    agentpantry run --config ./sink.toml -- your-agent --flag
+    agentpantry run -secret gh_token -env gh_token=GH_TOKEN -- gh auth status
+    agentpantry run --dry-run
+
 `agentpantry restore` materializes cookies from an existing sidecar backup into
 one explicit target. This is the capture-once-materialize-anywhere path: keep a
 sidecar as the portable capture, then write it into the format a local tool or
@@ -436,6 +456,11 @@ destination. Each secret is written as a 0600 file named after the secret.
 Secret names are sanitized on the sink: any name containing a path separator,
 a `..` element, or an absolute path is skipped rather than written outside the
 secrets directory.
+
+When a command can take secrets from the environment, `agentpantry run --
+<command>` injects the same deny-wins set into that process only and does not
+stage values to another file. The on-disk `secrets` surface stays available
+for tools that must read files; `run` does not delete those files.
 
 Cookies and secrets travel together inside one AES-256-GCM frame, so a single
 peer connection carries both.

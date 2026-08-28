@@ -71,6 +71,8 @@ func main() {
 		err = cmdRestore(args)
 	case "browser":
 		err = cmdBrowser(args)
+	case "run":
+		err = cmdRun(args)
 	case "version":
 		err = cmdVersion(args)
 	case "rotate-key":
@@ -102,6 +104,7 @@ commands:
   inventory        summarize a backup store: per-host counts and near-expiry
   restore          materialize cookies from a sidecar backup to one target
   browser          launch an automation Chrome pre-seeded with a session
+  run              inject synced secrets into a child process environment
   install-service  install a systemd user unit (Windows: print a task command)
   version          print version and build metadata
 

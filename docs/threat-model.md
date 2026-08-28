@@ -37,6 +37,16 @@ what is explicitly out of scope.
   made, and read-back verification is available. The refusal directs the
   operator to stop the app, inspect with `--dry-run`, leave the profile
   unchanged, retain the sidecar, and use an existing supported target.
+- **Ephemeral env injection is memory-only for one child.** `agentpantry run`
+  loads already-synced named secrets into memory, re-filters them with
+  deny-wins `[secret_names]`, and starts one command with those values in the
+  environment. It never writes values to a staging file and adds no network
+  listener. Loader and interpreter variables (`PATH`, `LD_PRELOAD`,
+  `NODE_OPTIONS`, `PYTHONPATH`, and similar) are refused so a synced name
+  cannot hijack the child. On Unix, SIGINT and SIGTERM to the wrapper are
+  forwarded to the child so a signaled wrapper does not leave a secret-bearing
+  process running. On Windows, signals are not forwarded. Handshake, PSK, and
+  frame crypto are unchanged.
 
 ## Operator responsibilities
 
@@ -51,6 +61,10 @@ These are required for the guarantees above to hold:
 - **Treat a CDP debugging port as sensitive.** `kind = "cdp"` requires launching
   Chrome with `--remote-debugging-port`, which grants full browser control to
   anything that can reach it; bind it to loopback only.
+- **Prefer `run` over disk when the consumer can take env vars.** Keep
+  `[secret_names]` deny-wins tight; `run` has no bypass flags. Do not log child
+  argv in a way that echoes secret values (names are fine). A compromised sink
+  account still sees whatever was synced, whether via files or env.
 
 ## Key lifecycle checklist
 
@@ -127,3 +141,9 @@ SSH) for replay protection. Retired key material on disk (`psk.key.old`,
   protected channel such as SSH.
 - **Not a password manager.** Secrets are relayed and written to the surfaces you
   enable; agentpantry is not a vault of record.
+- **Ephemeral env injection is visible to local inspectors.** Any local process
+  that can `ptrace`, read `/proc/<pid>/environ`, or inspect the child on Windows
+  while it runs can see the injected values. The wrapper holds secret bytes in
+  memory for the invocation; zeroization is not implemented (same as PSK and
+  session keys). `run` does not shrink secrets already written by the on-disk
+  `secrets` surface.

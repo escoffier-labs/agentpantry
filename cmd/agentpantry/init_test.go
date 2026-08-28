@@ -64,7 +64,7 @@ func TestHelpListsCommands(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%v must exit 0, got %d", invocation, code)
 		}
-		for _, cmd := range []string{"init", "keygen", "source", "sink", "doctor", "status", "install-service", "version"} {
+		for _, cmd := range []string{"init", "keygen", "source", "sink", "doctor", "status", "install-service", "version", "run"} {
 			if !strings.Contains(stdout, cmd) {
 				t.Fatalf("%v output must list %q", invocation, cmd)
 			}
