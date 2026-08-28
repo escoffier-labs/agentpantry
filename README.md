@@ -173,6 +173,19 @@ Sink configs cannot use that sentinel. Each check prints `OK`, `WARN`, or
 `--json` for a machine-readable payload with check rows, fail/warn counts, and a
 safe config summary for operator dashboards such as Brigade.
 
+`agentpantry receipts` is an opt-in, local, append-only JSON Lines log of
+successful syncs. Enable `[receipts] enabled = true` on a source and/or sink
+(default path: `receipts.jsonl` beside the config). Each line records a UTC
+timestamp, source and sink identity, event type (`sync.send` or `sync.apply`),
+a SHA-256 digest of a value-free payload summary (counts and identifiers only),
+the previous receipt's hash, and an HMAC-SHA256 bound to the pre-shared key.
+Cookie values, secret values, and `localStorage` values are never written.
+`agentpantry receipts verify` walks the chain and checks every MAC (nonzero
+exit on failure). `agentpantry receipts show [--last N] [--json]` prints
+metadata only. Receipt files are mode `0600`. This is tamper-evident
+provenance against casual edits, not a defense against a compromised host that
+already has the PSK.
+
 `agentpantry status` reports the active role, peer, key path, surfaces, and the
 configured allow/deny domains. It also reports the last sync: the time of the
 most recent successful source cycle and the cookie, secret, and localStorage

@@ -27,8 +27,16 @@ what is explicitly out of scope.
   list before it is captured or sent, and a non-http(s) origin is dropped.
   Values are session secrets and are never logged, on either end or in CDP error
   text.
-- **On-disk perms.** The pre-shared key, plaintext sidecar, secret files, and
-  adapter outputs are `0600`; directories `0700`.
+- **On-disk perms.** The pre-shared key, plaintext sidecar, secret files,
+  receipt logs, and adapter outputs are `0600`; directories `0700`.
+- **Sync receipts attest event and digest, not confidentiality.** When
+  `[receipts]` is enabled, each successful send or apply appends one JSON line
+  with timestamp, source/sink identity, event type, a value-free payload
+  digest, the previous receipt hash, and an HMAC derived from the PSK.
+  `receipts verify` checks chain continuity and signatures. Receipts never
+  contain cookie values, secret values, or localStorage values. They do not
+  authenticate against a compromised signer key, and they do not keep synced
+  material confidential.
 - **Desktop app targets fail closed.** `desktop-app=codex|claude --dry-run`
   reads profile, lock, and cookie-path metadata only. It does not open the app's
   cookie database. Actual restore and read-back verification are rejected until
@@ -123,7 +131,9 @@ SSH) for replay protection. Retired key material on disk (`psk.key.old`,
 - **Cookie names and hosts may appear in logs.** The source warns on stderr when
   synced cookies are near expiry (`cookie name@host expires ...`). `inventory
   --json` includes `name` and `host` for near-expiry rows. Cookie values and
-  `localStorage` values are never logged.
+  `localStorage` values are never logged. Sync receipts hash identifiers into
+  `payload_hash` and store only that digest; they still leak that a sync
+  happened, when, and between which identities.
 - **No forward secrecy.** The pre-shared key is long-lived; if it leaks, past
   captured ciphertext from the same key is at risk (the session salt separates
   sessions but is derived from the same long-lived key). Rotation is

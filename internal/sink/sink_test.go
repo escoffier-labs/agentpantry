@@ -122,6 +122,32 @@ func TestServeFiltersInvalidStorageUpsertsAtBoundary(t *testing.T) {
 	}
 }
 
+func TestAfterApplyFiresOnNonEmptyPayload(t *testing.T) {
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	var w bytes.Buffer
+	p := wire.Payload{
+		Cookies: cookie.Diff{Upserts: []cookie.Cookie{{Host: "a.com", Name: "x", Path: "/", Value: "1"}}},
+	}
+	b, _ := json.Marshal(p)
+	frame, _ := sealer.Seal(b)
+	transport.WriteFrame(&w, frame)
+
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
+	var got []wire.Payload
+	srv := &Server{
+		Opener:         opener,
+		CookieSurfaces: []CookieSurface{&capCookie{}},
+		AfterApply:     func(p wire.Payload) { got = append(got, p) },
+	}
+	if err := srv.Serve(context.Background(), &w); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || len(got[0].Cookies.Upserts) != 1 {
+		t.Fatalf("AfterApply: %+v", got)
+	}
+}
+
 func TestServeRoutesPayloadToBothSurfaces(t *testing.T) {
 	key := make([]byte, 32)
 	sealer, _ := transport.NewSealer(key, make([]byte, 16))

@@ -201,6 +201,30 @@ func TestSidecarPathRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReceiptsSectionRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `role = "sink"
+peer = "127.0.0.1:8787"
+
+[receipts]
+enabled = true
+path = "receipts.jsonl"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, unknown, err := LoadChecked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("receipts keys must be known, got %v", unknown)
+	}
+	if !out.Receipts.Enabled || out.Receipts.Path != "receipts.jsonl" {
+		t.Fatalf("receipts section lost: %+v", out.Receipts)
+	}
+}
+
 func TestLoadCheckedReportsUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	body := `role = "source"

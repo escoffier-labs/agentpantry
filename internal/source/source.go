@@ -48,6 +48,9 @@ type Syncer struct {
 	// upsert counts in that frame (0 when nothing was sent).
 	AfterSync func(sent bool, cookies, secrets, storage int)
 
+	// AfterPayload, if set, is called after a non-empty frame is written.
+	AfterPayload func(p wire.Payload)
+
 	prev        cookie.Snapshot
 	prevSecrets secret.Snapshot
 	prevStorage webstorage.Snapshot
@@ -190,6 +193,9 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	}
 	commitPrev()
 	s.afterSync(true, len(cookieDiff.Upserts), len(secretDiff.Upserts), len(storageDiff.Upserts))
+	if s.AfterPayload != nil {
+		s.AfterPayload(p)
+	}
 	return nil
 }
 
