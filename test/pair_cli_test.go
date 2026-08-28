@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestPairThenOnceSync(t *testing.T) {
 	srcKey := filepath.Join(dir, "source.key")
 
 	sinkCmd := exec.Command(bin, "pair", "-role", "sink", "-key", sinkKey, "-bind", "127.0.0.1:0", "-timeout", "15s")
-	var sinkOut bytes.Buffer
+	var sinkOut syncBuffer
 	sinkCmd.Stdout = &sinkOut
 	sinkCmd.Stderr = &sinkOut
 	if err := sinkCmd.Start(); err != nil {
@@ -110,7 +111,26 @@ allow = ["example.com"]
 	}
 }
 
-func waitPairBanner(t *testing.T, out *bytes.Buffer) (code, addr string) {
+// syncBuffer is a mutex-guarded bytes.Buffer so the test can poll child
+// output while os/exec's copier goroutine is still writing.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func waitPairBanner(t *testing.T, out *syncBuffer) (code, addr string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
