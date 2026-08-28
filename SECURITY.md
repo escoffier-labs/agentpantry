@@ -40,6 +40,10 @@ or let it reconnect, then run `agentpantry rotate-key -finish` on the sink to
 retire `psk.key.old`. Finish promptly: until `-finish`, a holder of the old key
 is still accepted. `doctor` and `status` both show a rotation in progress.
 
+`agentpantry pair` only bootstraps a new `psk.key` (SPAKE2 short code plus a
+confirmation fingerprint). It is not a rotation mechanism; finish `rotate-key`
+windows before pairing.
+
 `agentpantry keygen` remains the stop-the-world alternative (the sink accepts
 only the new key from that moment on). After replacement, stop or close
 existing sink sessions, distribute the replacement PSK, then restart

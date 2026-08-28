@@ -1,0 +1,240 @@
+package pair
+
+import (
+	"bytes"
+	"context"
+	"encoding/hex"
+	"io"
+	"net"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestNormalizeCodeRoundTrip(t *testing.T) {
+	code, err := GenerateCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(code) != 9 || code[4] != '-' {
+		t.Fatalf("canonical form XXXX-XXXX, got %q", code)
+	}
+	got, err := NormalizeCode(strings.ToLower(strings.ReplaceAll(code, "-", "")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != code {
+		t.Fatalf("normalize(%q) = %q, want %q", code, got, code)
+	}
+}
+
+func TestNormalizeCodeMapsHomoglyphs(t *testing.T) {
+	got, err := NormalizeCode("OI1L-abcd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "0111-ABCD" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestNormalizeCodeRejectsBadInput(t *testing.T) {
+	for _, s := range []string{"", "ABC", "ABCD-EFGH-I", "XXXX-XXXU", "!!!!-!!!!"} {
+		if _, err := NormalizeCode(s); err == nil {
+			t.Fatalf("NormalizeCode(%q) must fail", s)
+		}
+	}
+}
+
+func TestExchangeRoundTrip(t *testing.T) {
+	code, err := GenerateCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, snk := net.Pipe()
+	defer src.Close()
+	defer snk.Close()
+	_ = src.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = snk.SetDeadline(time.Now().Add(5 * time.Second))
+
+	errc := make(chan error, 2)
+	var srcKey, snkKey []byte
+	go func() {
+		defer src.Close()
+		k, err := ExchangeSource(src, code)
+		srcKey = k
+		errc <- err
+	}()
+	go func() {
+		defer snk.Close()
+		k, err := ExchangeSink(snk, code)
+		snkKey = k
+		errc <- err
+	}()
+	for i := 0; i < 2; i++ {
+		if err := <-errc; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !bytes.Equal(srcKey, snkKey) {
+		t.Fatal("derived PSKs must match")
+	}
+	if len(srcKey) != 32 {
+		t.Fatalf("PSK must be 32 bytes, got %d", len(srcKey))
+	}
+	if Fingerprint(srcKey) != Fingerprint(snkKey) {
+		t.Fatal("fingerprints must match")
+	}
+}
+
+func TestExchangeWrongCodeFails(t *testing.T) {
+	src, snk := net.Pipe()
+	defer src.Close()
+	defer snk.Close()
+	_ = src.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = snk.SetDeadline(time.Now().Add(5 * time.Second))
+
+	errc := make(chan error, 2)
+	go func() {
+		defer src.Close()
+		_, err := ExchangeSource(src, "AAAA-AAAA")
+		errc <- err
+	}()
+	go func() {
+		defer snk.Close()
+		_, err := ExchangeSink(snk, "BBBB-BBBB")
+		errc <- err
+	}()
+	var sawFail bool
+	for i := 0; i < 2; i++ {
+		if err := <-errc; err != nil {
+			sawFail = true
+		}
+	}
+	if !sawFail {
+		t.Fatal("mismatched codes must fail confirmation")
+	}
+}
+
+func TestDialServeRoundTrip(t *testing.T) {
+	code, err := GenerateCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addrCh := make(chan string, 1)
+	errc := make(chan error, 1)
+	var sinkKey []byte
+	go func() {
+		k, err := Serve(ctx, ServeConfig{
+			Addr: "127.0.0.1:0",
+			Code: code,
+			OnListening: func(addr string) {
+				addrCh <- addr
+			},
+		})
+		sinkKey = k
+		errc <- err
+	}()
+
+	var addr string
+	select {
+	case addr = <-addrCh:
+	case err := <-errc:
+		t.Fatalf("serve exited before listen: %v", err)
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for listen")
+	}
+
+	srcKey, err := Dial(ctx, addr, code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(srcKey, sinkKey) {
+		t.Fatal("dial/serve PSKs must match")
+	}
+}
+
+func TestServeLocksAfterFailedAttempts(t *testing.T) {
+	code, err := GenerateCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addrCh := make(chan string, 1)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := Serve(ctx, ServeConfig{
+			Addr:     "127.0.0.1:0",
+			Code:     code,
+			Attempts: 2,
+			OnListening: func(addr string) {
+				addrCh <- addr
+			},
+		})
+		errc <- err
+	}()
+	addr := <-addrCh
+	for i := 0; i < 2; i++ {
+		if _, err := Dial(ctx, addr, "FFFF-FFFF"); err == nil {
+			t.Fatal("wrong code must fail")
+		}
+	}
+	err = <-errc
+	if err == nil || !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("want lockout, got %v", err)
+	}
+}
+
+func TestReadMsgRejectsOversizeAndBadVersion(t *testing.T) {
+	var buf bytes.Buffer
+	_ = writeFrame(&buf, bytes.Repeat([]byte{1}, maxFrame+1))
+	if _, err := readFrame(&buf); err == nil {
+		t.Fatal("oversize frame must be rejected")
+	}
+	buf.Reset()
+	_ = writeFrame(&buf, []byte{2, msgShare})
+	if _, _, err := readMsg(&buf); err == nil {
+		t.Fatal("unknown version must be rejected")
+	}
+	buf.Reset()
+	_ = writeFrame(&buf, []byte{protocolVersion, 9})
+	if _, _, err := readMsg(&buf); err == nil {
+		t.Fatal("unknown type must be rejected")
+	}
+}
+
+func TestFingerprintStableAndShort(t *testing.T) {
+	psk, _ := hex.DecodeString(strings.Repeat("ab", 32))
+	fp := Fingerprint(psk)
+	if fp != Fingerprint(psk) {
+		t.Fatal("fingerprint must be deterministic")
+	}
+	if len(fp) != 19 {
+		t.Fatalf("want abcd-ef01-style, got %q", fp)
+	}
+}
+
+func TestExchangeDoesNotWriteOnShortRead(t *testing.T) {
+	src, snk := net.Pipe()
+	defer src.Close()
+	errc := make(chan error, 1)
+	go func() { _, err := ExchangeSink(snk, "AAAA-AAAA"); errc <- err }()
+	_ = src.Close()
+	if err := <-errc; err == nil {
+		t.Fatal("closed pipe must fail")
+	}
+}
+
+func TestWriteMsgRejectsHugePayload(t *testing.T) {
+	if err := writeMsg(io.Discard, msgShare, bytes.Repeat([]byte{1}, maxFrame)); err == nil {
+		t.Fatal("huge pairing payload must be rejected")
+	}
+}

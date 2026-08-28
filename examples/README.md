@@ -5,7 +5,9 @@ These examples are starting points. Copy the one closest to your setup into
 `agentpantry doctor` before starting the source or sink.
 
 Use the same `psk.key` on both machines. Generate it on one side with
-`agentpantry keygen`, copy it over a secure channel, and keep it mode `0600`.
+`agentpantry keygen` and copy it over a secure channel, or bootstrap it with
+`agentpantry pair` and compare confirmation fingerprints. Keep the file mode
+`0600`.
 
 ## Files
 

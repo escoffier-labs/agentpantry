@@ -2,7 +2,8 @@
 
 Date: 2026-08-08
 Issue: [#52](https://github.com/escoffier-labs/agentpantry/issues/52)
-Status: **proposal / not approved for implementation**
+Status: **implemented additively** (issue #52). Session-salt handshake and
+HKDF session keys are unchanged; see `docs/threat-model.md` Pairing section.
 
 ## AGENTS.md gate (blocking)
 
@@ -154,5 +155,6 @@ On success:
 
 ## Status
 
-**proposal / not approved for implementation.** Blocked on threat-model rewrite
-and explicit AGENTS.md sign-off before any handshake-adjacent code.
+Implemented as `agentpantry pair` / `internal/pair`. Threat-model pairing
+section records the new setup phase. The session-salt handshake file was not
+changed.

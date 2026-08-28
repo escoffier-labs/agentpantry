@@ -10,6 +10,45 @@ import (
 	"time"
 )
 
+func TestWriteWithBackupThenLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "psk.key")
+	want := bytes32(t, 7)
+	if _, err := WriteWithBackup(path, want, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(got) != hex.EncodeToString(want) {
+		t.Fatal("WriteWithBackup must persist the supplied key")
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("key file must be 0600, got %v", info.Mode().Perm())
+		}
+	}
+}
+
+func TestWriteWithBackupRejectsWrongLength(t *testing.T) {
+	if _, err := WriteWithBackup(filepath.Join(t.TempDir(), "psk.key"), []byte("short"), false); err == nil {
+		t.Fatal("must reject a non-32-byte key")
+	}
+}
+
+func bytes32(t *testing.T, fill byte) []byte {
+	t.Helper()
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = fill
+	}
+	return key
+}
+
 func TestGenerateThenLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "psk.key")
 	if err := Generate(path); err != nil {
