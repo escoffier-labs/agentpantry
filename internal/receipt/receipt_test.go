@@ -168,10 +168,6 @@ func TestVerifyDetectsBrokenChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec.PrevHash = GenesisPrev
-	tampered, err := json.Marshal(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Resign so the failure is the chain link, not the MAC.
 	macKey, err := DeriveMACKey(log.Key)
 	if err != nil {
@@ -182,7 +178,7 @@ func TestVerifyDetectsBrokenChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec.Sig = sig
-	tampered, err = json.Marshal(rec)
+	tampered, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)
 	}
