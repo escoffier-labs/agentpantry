@@ -110,6 +110,30 @@ func TestPlanEnvMappingDeniedFails(t *testing.T) {
 	}
 }
 
+func TestPlanRejectsReservedEnvNames(t *testing.T) {
+	for _, name := range []string{"path", "ld_preload", "node_options", "pythonpath"} {
+		_, err := Plan([]secret.Secret{{Name: name, Value: "/tmp/payload"}}, policy.Names{}, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("secret %q must be rejected as reserved, got %v", name, err)
+		}
+		if strings.Contains(err.Error(), "/tmp/payload") {
+			t.Fatalf("reserved-name error leaked value for %q: %v", name, err)
+		}
+	}
+	_, err := Plan([]secret.Secret{{Name: "gh_token", Value: "tok"}}, policy.Names{}, nil, map[string]string{"gh_token": "LD_PRELOAD"})
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("-env mapping to LD_PRELOAD must fail, got %v", err)
+	}
+	_, err = Plan([]secret.Secret{{Name: "gh_token", Value: "tok"}}, policy.Names{}, nil, map[string]string{"gh_token": "Path"})
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("case-insensitive PATH mapping must fail, got %v", err)
+	}
+	got, err := Plan([]secret.Secret{{Name: "my_path", Value: "ok"}}, policy.Names{}, nil, nil)
+	if err != nil || len(got) != 1 || got[0].EnvVar != "MY_PATH" {
+		t.Fatalf("non-reserved name must still inject: %+v %v", got, err)
+	}
+}
+
 func TestPlanCollisionFailsClosed(t *testing.T) {
 	secrets := []secret.Secret{
 		{Name: "gh-token", Value: "a"},
@@ -212,6 +236,32 @@ func TestMergeEnvironParentPlusBindings(t *testing.T) {
 	}
 }
 
+func TestMergeEnvironDedupsParentKeys(t *testing.T) {
+	out := MergeEnviron(
+		[]string{"GH_TOKEN=old", "GH_TOKEN=also", "KEEP=1"},
+		[]Binding{{Name: "gh_token", EnvVar: "GH_TOKEN", Value: "fresh"}},
+	)
+	var tokens, keeps int
+	for _, kv := range out {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "GH_TOKEN":
+			tokens++
+			if v != "fresh" {
+				t.Fatalf("duplicate parent key must overlay once, got %q", v)
+			}
+		case "KEEP":
+			keeps++
+		}
+	}
+	if tokens != 1 || keeps != 1 {
+		t.Fatalf("want one GH_TOKEN and one KEEP, got %v", out)
+	}
+}
+
 func TestMergeEnvironAddsMissing(t *testing.T) {
 	out := MergeEnviron([]string{"PATH=/bin"}, []Binding{{Name: "k", EnvVar: "K", Value: "v"}})
 	m := envMap(out)
@@ -276,29 +326,7 @@ func buildHelper(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
-	body := `package main
-import ("fmt"; "os"; "strconv")
-func main() {
-	if len(os.Args) < 2 {
-		os.Exit(2)
-	}
-	switch os.Args[1] {
-	case "-print":
-		if len(os.Args) < 3 {
-			os.Exit(2)
-		}
-		fmt.Print(os.Getenv(os.Args[2]))
-	case "-exit":
-		n, err := strconv.Atoi(os.Args[2])
-		if err != nil {
-			os.Exit(2)
-		}
-		os.Exit(n)
-	default:
-		os.Exit(2)
-	}
-}
-`
+	body := helperSource
 	if err := os.WriteFile(src, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

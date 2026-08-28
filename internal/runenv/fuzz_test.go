@@ -30,6 +30,8 @@ func FuzzPlanDenyWins(f *testing.F) {
 	f.Add("gh_token", "tok", "", "gh_token")
 	f.Add("keep", "v", "keep", "drop")
 	f.Add("x", "y", "", "")
+	f.Add("path", "/bin", "", "")
+	f.Add("ld_preload", "x.so", "", "")
 	f.Fuzz(func(t *testing.T, name, value, allowRaw, denyRaw string) {
 		if name == "" || strings.IndexByte(name, 0) >= 0 {
 			return
@@ -38,11 +40,14 @@ func FuzzPlanDenyWins(f *testing.F) {
 		bindings, err := Plan([]secret.Secret{{Name: name, Value: value}}, pol, nil, nil)
 		if err != nil {
 			if pol.Permit(name) && strings.IndexByte(value, 0) < 0 {
-				if _, serr := SanitizeEnvName(name); serr == nil {
+				if env, serr := SanitizeEnvName(name); serr == nil && !ReservedEnvName(env) {
 					t.Fatalf("Plan failed for permitted secret %q: %v", name, err)
 				}
 			}
 			return
+		}
+		if env, serr := SanitizeEnvName(name); serr == nil && ReservedEnvName(env) {
+			t.Fatalf("reserved env %s was injected from %q", env, name)
 		}
 		if !pol.Permit(name) && len(bindings) != 0 {
 			t.Fatalf("denied secret %q was injected: %+v", name, bindings)

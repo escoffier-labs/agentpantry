@@ -90,6 +90,9 @@ func Plan(secrets []secret.Secret, pol policy.Names, only []string, envMap map[s
 		if err != nil {
 			return nil, err
 		}
+		if ReservedEnvName(envVar) {
+			return nil, fmt.Errorf("secret %q maps to reserved environment variable %s", name, envVar)
+		}
 		if prev, ok := used[envVar]; ok {
 			return nil, fmt.Errorf("env var collision: %s from %q and %q", envVar, prev, name)
 		}
@@ -174,6 +177,51 @@ func SanitizeEnvName(name string) (string, error) {
 	return s, nil
 }
 
+// reservedEnvNames are loader and interpreter variables that must not be
+// injected. A synced secret named path or ld_preload would otherwise become
+// PATH / LD_PRELOAD in every wrapped child.
+var reservedEnvNames = []string{
+	"PATH",
+	"PATHEXT",
+	"LD_PRELOAD",
+	"LD_LIBRARY_PATH",
+	"LD_AUDIT",
+	"DYLD_INSERT_LIBRARIES",
+	"DYLD_LIBRARY_PATH",
+	"DYLD_FRAMEWORK_PATH",
+	"DYLD_FALLBACK_LIBRARY_PATH",
+	"NODE_OPTIONS",
+	"PYTHONPATH",
+	"PYTHONHOME",
+	"PYTHONSTARTUP",
+	"PERL5LIB",
+	"PERL5OPT",
+	"RUBYLIB",
+	"RUBYOPT",
+	"CLASSPATH",
+	"JAVA_TOOL_OPTIONS",
+	"_JAVA_OPTIONS",
+	"JDK_JAVA_OPTIONS",
+	"BASH_ENV",
+	"ENV",
+	"SHELLOPTS",
+	"GCONV_PATH",
+	"IFS",
+	"GIT_SSH_COMMAND",
+	"GIT_EXEC_PATH",
+}
+
+// ReservedEnvName reports whether envVar is a loader or interpreter variable
+// that run refuses to inject, compared case-insensitively.
+func ReservedEnvName(envVar string) bool {
+	for _, r := range reservedEnvNames {
+		if strings.EqualFold(envVar, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadSecrets reads already-synced secret files from dir. It does not write.
 func LoadSecrets(dir string) ([]secret.Secret, error) {
 	r := &secretsrc.DirReader{Dir: dir}
@@ -198,12 +246,12 @@ func MergeEnviron(parent []string, bindings []Binding) []string {
 			continue
 		}
 		key := environKey(k)
+		if _, dup := seen[key]; dup {
+			continue
+		}
 		if val, inject := overlay[key]; inject {
 			out = append(out, canon[key]+"="+val)
 			seen[key] = struct{}{}
-			continue
-		}
-		if _, dup := seen[key]; dup {
 			continue
 		}
 		seen[key] = struct{}{}
@@ -240,13 +288,19 @@ func Invoke(argv []string, env []string) (int, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return 1, err
+	}
+	return waitCmd(cmd)
+}
+
+func childStatus(err error) (int, error) {
 	if err == nil {
 		return 0, nil
 	}
 	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode(), nil
+	if !errors.As(err, &ee) {
+		return 1, err
 	}
-	return 1, err
+	return signaledExit(ee)
 }

@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`).
+- `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`; refuses `PATH`/`LD_PRELOAD` and other loader vars).
 
 ## v0.7.0 - 2026-08-26
 

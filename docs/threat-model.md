@@ -41,7 +41,9 @@ what is explicitly out of scope.
   loads already-synced named secrets into memory, re-filters them with
   deny-wins `[secret_names]`, and starts one command with those values in the
   environment. It never writes values to a staging file and adds no network
-  listener. Handshake, PSK, and frame crypto are unchanged.
+  listener. Loader and interpreter variables (`PATH`, `LD_PRELOAD`,
+  `NODE_OPTIONS`, `PYTHONPATH`, and similar) are refused so a synced name
+  cannot hijack the child. Handshake, PSK, and frame crypto are unchanged.
 
 ## Operator responsibilities
 

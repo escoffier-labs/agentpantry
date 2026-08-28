@@ -34,20 +34,39 @@ func buildRunHelper(t *testing.T) string {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "main.go")
 	body := `package main
-import ("fmt"; "os"; "strconv")
+import (
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"time"
+)
 func main() {
 	if len(os.Args) < 2 {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "-print":
+		if len(os.Args) < 3 {
+			os.Exit(2)
+		}
 		fmt.Print(os.Getenv(os.Args[2]))
 	case "-exit":
+		if len(os.Args) < 3 {
+			os.Exit(2)
+		}
 		n, err := strconv.Atoi(os.Args[2])
 		if err != nil {
 			os.Exit(2)
 		}
 		os.Exit(n)
+	case "-cat":
+		_, _ = io.Copy(os.Stdout, os.Stdin)
+	case "-sleep":
+		if len(os.Args) >= 3 {
+			_ = os.WriteFile(os.Args[2], []byte(strconv.Itoa(os.Getpid())), 0o600)
+		}
+		time.Sleep(60 * time.Second)
 	default:
 		os.Exit(2)
 	}
@@ -208,22 +227,53 @@ func TestRunEnvMapping(t *testing.T) {
 	}
 }
 
-func TestRunFromDirOverride(t *testing.T) {
+func TestRunRejectsReservedEnvShadowing(t *testing.T) {
 	bin := buildBin(t)
 	helper := buildRunHelper(t)
 	dir := t.TempDir()
-	configured := filepath.Join(dir, "configured")
-	override := filepath.Join(dir, "override")
-	writeSecretFile(t, configured, "gh_token", "configured-value")
-	writeSecretFile(t, override, "gh_token", "override-value")
-	cfg := writeSinkRunConfig(t, dir, configured, "")
+	secrets := filepath.Join(dir, "secrets")
+	writeSecretFile(t, secrets, "path", "/tmp/evil-bin")
+	writeSecretFile(t, secrets, "ld_preload", "/tmp/evil.so")
+	cfg := writeSinkRunConfig(t, dir, secrets, "")
 
-	code, stdout, stderr := runRun(t, bin, nil, "--config", cfg, "--from-dir", override, "--", helper, "-print", "GH_TOKEN")
-	if code != 0 {
-		t.Fatalf("exit %d: %s", code, stderr)
+	for _, tc := range []struct{ secret, env string }{
+		{"path", "PATH"},
+		{"ld_preload", "LD_PRELOAD"},
+	} {
+		code, stdout, stderr := runRun(t, bin, nil, "--config", cfg, "--secret", tc.secret, "--", helper, "-print", tc.env)
+		if code == 0 {
+			t.Fatalf("%s must not inject, helper ran", tc.env)
+		}
+		if !strings.Contains(stderr, "reserved") {
+			t.Fatalf("%s error should mention reserved, got %q", tc.env, stderr)
+		}
+		if strings.Contains(stdout, "/tmp/evil") || strings.Contains(stderr, "/tmp/evil") {
+			t.Fatalf("%s leaked value: stdout=%q stderr=%q", tc.env, stdout, stderr)
+		}
 	}
-	if stdout != "override-value" {
-		t.Fatalf("from-dir: %q", stdout)
+}
+
+func TestRunStdinPassthrough(t *testing.T) {
+	bin := buildBin(t)
+	helper := buildRunHelper(t)
+	dir := t.TempDir()
+	secrets := filepath.Join(dir, "secrets")
+	if err := os.MkdirAll(secrets, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := writeSinkRunConfig(t, dir, secrets, "")
+
+	cmd := exec.Command(bin, "run", "--config", cfg, "--", helper, "-cat")
+	cmd.Stdin = strings.NewReader("stdin-payload")
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			t.Fatalf("stdin passthrough exit %d: %s", ee.ExitCode(), ee.Stderr)
+		}
+		t.Fatal(err)
+	}
+	if string(out) != "stdin-payload" {
+		t.Fatalf("stdin passthrough: got %q", out)
 	}
 }
 

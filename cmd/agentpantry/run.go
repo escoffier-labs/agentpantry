@@ -23,7 +23,6 @@ func (s *stringList) Set(v string) error {
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
-	fromDir := fs.String("from-dir", "", "secret files directory (default: config secrets_dir)")
 	dryRun := fs.Bool("dry-run", false, "print env var names that would be injected, then exit")
 	var only stringList
 	var envFlags stringList
@@ -49,11 +48,8 @@ func cmdRun(args []string) error {
 	}
 
 	dir := c.SecretsDir
-	if *fromDir != "" {
-		dir = *fromDir
-	}
 	if dir == "" {
-		return fmt.Errorf("run needs secrets_dir in config or -from-dir")
+		return fmt.Errorf("run needs secrets_dir in config")
 	}
 
 	envMap := make(map[string]string, len(envFlags))

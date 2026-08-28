@@ -194,13 +194,14 @@ does not exist it exits 2 rather than create an empty one.
 
 `agentpantry run -- <command>` is the sink-side, memory-only way to hand synced
 secrets to a child process, in the style of 1Password `op run`. It reads the
-already-synced files under `secrets_dir` (or `-from-dir`), applies the same
+already-synced files under the sink config's `secrets_dir`, applies the same
 deny-wins `[secret_names]` policy, overlays the permitted values onto the
 parent environment, and runs `<command>`. Values are never written to a
-staging file. `-secret NAME` (repeatable) injects only those names, `-env
-NAME=ENVVAR` remaps a secret to a specific variable (default: uppercase
-sanitized name), and `-dry-run` prints the env var names that would be set
-without executing anything. Secret values are never logged. Prefer `run` when
+staging file. Names that sanitize to loader or interpreter variables such as
+`PATH` or `LD_PRELOAD` are refused. `-secret NAME` (repeatable) injects only
+those names, `-env NAME=ENVVAR` remaps a secret to a specific variable
+(default: uppercase sanitized name), and `-dry-run` prints the env var names
+that would be set without executing anything. Secret values are never logged. Prefer `run` when
 the consumer can take environment variables; keep the `secrets` surface for
 tools that must read files. A local process that can inspect the child
 (`/proc/<pid>/environ`, ptrace, or the Windows equivalent) can still see the
