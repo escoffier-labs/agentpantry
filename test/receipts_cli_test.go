@@ -87,13 +87,18 @@ path = %q
 	if _, err := os.Stat(sourceReceipts); err != nil {
 		t.Fatalf("source receipt missing: %v\n%s", err, out)
 	}
+	if _, err := os.Stat(receipt.HeadPath(sourceReceipts)); err != nil {
+		t.Fatalf("source receipt tip missing: %v\n%s", err, out)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := os.Stat(sinkReceipts); err == nil {
+		_, logErr := os.Stat(sinkReceipts)
+		_, tipErr := os.Stat(receipt.HeadPath(sinkReceipts))
+		if logErr == nil && tipErr == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("sink receipt missing\n%s\n%s", out, sinkProc.out.String())
+			t.Fatalf("sink receipt or tip missing\n%s\n%s", out, sinkProc.out.String())
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

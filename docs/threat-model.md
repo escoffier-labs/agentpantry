@@ -31,12 +31,16 @@ what is explicitly out of scope.
   receipt logs, and adapter outputs are `0600`; directories `0700`.
 - **Sync receipts attest event and digest, not confidentiality.** When
   `[receipts]` is enabled, each successful send or apply appends one JSON line
-  with timestamp, source/sink identity, event type, a value-free payload
-  digest, the previous receipt hash, and an HMAC derived from the PSK.
-  `receipts verify` checks chain continuity and signatures. Receipts never
-  contain cookie values, secret values, or localStorage values. They do not
-  authenticate against a compromised signer key, and they do not keep synced
-  material confidential.
+  with timestamp, this node's configured identity (default: hostname), event
+  type, a value-free payload digest, a monotonic `seq`, the previous receipt
+  hash, and an HMAC derived from the PSK. A `0600` tip file beside the log
+  (`receipts.head`) stores the last seq and hash so a deleted or truncated log
+  fails `receipts verify`. The transport is PSK-only: identity is asserted by
+  the writer, not proven. Receipts never contain cookie values, secret values,
+  or localStorage values. They do not authenticate against a compromised
+  signer key, and they do not keep synced material confidential. `payload_hash`
+  is hashed, not confidential: hosts and secret names in the summary are
+  guessable by recomputation.
 - **Desktop app targets fail closed.** `desktop-app=codex|claude --dry-run`
   reads profile, lock, and cookie-path metadata only. It does not open the app's
   cookie database. Actual restore and read-back verification are rejected until
@@ -132,8 +136,9 @@ SSH) for replay protection. Retired key material on disk (`psk.key.old`,
   synced cookies are near expiry (`cookie name@host expires ...`). `inventory
   --json` includes `name` and `host` for near-expiry rows. Cookie values and
   `localStorage` values are never logged. Sync receipts hash identifiers into
-  `payload_hash` and store only that digest; they still leak that a sync
-  happened, when, and between which identities.
+  `payload_hash` and store only that digest (`payload_hash` is hashed, not
+  confidential). They still leak that a sync happened, when, and the asserted
+  local identity.
 - **No forward secrecy.** The pre-shared key is long-lived; if it leaks, past
   captured ciphertext from the same key is at risk (the session salt separates
   sessions but is derived from the same long-lived key). Rotation is

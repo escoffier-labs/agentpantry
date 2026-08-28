@@ -20,11 +20,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
+	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
@@ -54,6 +56,7 @@ const (
 // localStorage values — only identities, event metadata, and digests.
 type Record struct {
 	V           int    `json:"v"`
+	Seq         int    `json:"seq"`
 	TS          string `json:"ts"`
 	Role        string `json:"role"`
 	SourceID    string `json:"source_id"`
@@ -67,6 +70,7 @@ type Record struct {
 // signBody is the canonical encoding covered by Sig. Field order is load-bearing.
 type signBody struct {
 	V           int    `json:"v"`
+	Seq         int    `json:"seq"`
 	TS          string `json:"ts"`
 	Role        string `json:"role"`
 	SourceID    string `json:"source_id"`
@@ -74,6 +78,19 @@ type signBody struct {
 	Event       string `json:"event"`
 	PayloadHash string `json:"payload_hash"`
 	PrevHash    string `json:"prev_hash"`
+}
+
+// tipFile is the 0600 pointer stored beside the log so a deleted or truncated
+// chain cannot verify as intact.
+type tipFile struct {
+	Seq  int    `json:"seq"`
+	Hash string `json:"hash"`
+	Sig  string `json:"sig"`
+}
+
+type tipBody struct {
+	Seq  int    `json:"seq"`
+	Hash string `json:"hash"`
 }
 
 // summary is the canonical, value-free description hashed into payload_hash.
@@ -111,6 +128,32 @@ func ResolvePath(c config.Config, cfgPath string) string {
 		return filepath.Join(filepath.Dir(cfgPath), "receipts.jsonl")
 	}
 	return filepath.Join(config.Dir(), "receipts.jsonl")
+}
+
+// HeadPath returns the tip-pointer path beside the log (`receipts.jsonl` →
+// `receipts.head`).
+func HeadPath(logPath string) string {
+	if strings.HasSuffix(logPath, ".jsonl") {
+		return strings.TrimSuffix(logPath, ".jsonl") + ".head"
+	}
+	return logPath + ".head"
+}
+
+// Identity returns the configured per-node identity, or the hostname when
+// unset. The transport is PSK-only, so this string is asserted, not proven.
+func Identity(c config.Config) string {
+	if s := strings.TrimSpace(c.Receipts.Identity); s != "" {
+		return s
+	}
+	h, err := os.Hostname()
+	if err != nil {
+		return "agentpantry"
+	}
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return "agentpantry"
+	}
+	return h
 }
 
 // DeriveMACKey returns a 32-byte HMAC key from the 32-byte transport PSK.
@@ -202,12 +245,13 @@ func (l *Log) Append(event string, p wire.Payload) error {
 	if err := os.MkdirAll(filepath.Dir(l.Path), dirPerm); err != nil {
 		return err
 	}
-	prev, err := lastRecordHash(l.Path)
+	prev, lastSeq, err := lastState(l.Path)
 	if err != nil {
 		return err
 	}
 	rec := Record{
 		V:           SchemaVersion,
+		Seq:         lastSeq + 1,
 		TS:          l.now().UTC().Format(time.RFC3339),
 		Role:        l.Role,
 		SourceID:    l.SourceID,
@@ -228,12 +272,16 @@ func (l *Log) Append(event string, p wire.Payload) error {
 	if len(line) > maxLine {
 		return fmt.Errorf("receipt line exceeds %d bytes", maxLine)
 	}
-	return appendLine(l.Path, line)
+	if err := appendLine(l.Path, line); err != nil {
+		return err
+	}
+	return writeTip(HeadPath(l.Path), macKey, rec.Seq, recordHash(line))
 }
 
 func sign(macKey []byte, rec Record) (string, error) {
 	body := signBody{
 		V:           rec.V,
+		Seq:         rec.Seq,
 		TS:          rec.TS,
 		Role:        rec.Role,
 		SourceID:    rec.SourceID,
@@ -280,18 +328,22 @@ func recordHash(line []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func lastRecordHash(path string) (string, error) {
+func lastState(path string) (string, int, error) {
 	line, err := lastLine(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return GenesisPrev, nil
+			return GenesisPrev, 0, nil
 		}
-		return "", err
+		return "", 0, err
 	}
 	if len(line) == 0 {
-		return GenesisPrev, nil
+		return GenesisPrev, 0, nil
 	}
-	return recordHash(line), nil
+	rec, err := parseRecord(line)
+	if err != nil {
+		return "", 0, err
+	}
+	return recordHash(line), rec.Seq, nil
 }
 
 func lastLine(path string) ([]byte, error) {
@@ -383,15 +435,20 @@ func appendLine(path string, line []byte) error {
 	return f.Sync()
 }
 
-// Verify walks path and checks schema, prev_hash links, and HMAC over keys.
-// An empty or missing file is a valid empty chain. Failure is a non-nil error.
+// Verify walks path and checks schema, seq, prev_hash links, HMAC, and the
+// external tip pointer. A missing log with no tip is an empty chain. A missing
+// or truncated log that still has a tip fails.
 func Verify(path string, keys ...[]byte) (int, error) {
 	if len(keys) == 0 {
 		return 0, errors.New("receipt verify requires at least one key")
 	}
+	headPath := HeadPath(path)
 	f, err := os.Open(path) // #nosec G304 -- receipt path is operator-selected.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if _, tipErr := os.Lstat(headPath); tipErr == nil {
+				return 0, errors.New("receipt log missing but tip is present")
+			}
 			return 0, nil
 		}
 		return 0, err
@@ -414,6 +471,8 @@ func Verify(path string, keys ...[]byte) (int, error) {
 	sc.Buffer(make([]byte, 64*1024), maxLine)
 	prev := GenesisPrev
 	n := 0
+	lastHash := ""
+	lastSeq := 0
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -423,19 +482,24 @@ func Verify(path string, keys ...[]byte) (int, error) {
 		if err != nil {
 			return n, fmt.Errorf("receipt %d: %w", n+1, err)
 		}
+		if rec.Seq != n+1 {
+			return n, fmt.Errorf("receipt %d: seq %d, want %d", n+1, rec.Seq, n+1)
+		}
 		if rec.PrevHash != prev {
 			return n, fmt.Errorf("receipt %d: prev_hash mismatch", n+1)
 		}
 		if err := verifySig(keys, rec); err != nil {
 			return n, fmt.Errorf("receipt %d: %w", n+1, err)
 		}
-		prev = recordHash(line)
+		lastHash = recordHash(line)
+		lastSeq = rec.Seq
+		prev = lastHash
 		n++
 	}
 	if err := sc.Err(); err != nil {
 		return n, err
 	}
-	return n, nil
+	return n, checkTip(headPath, keys, n, lastSeq, lastHash)
 }
 
 func parseRecord(line []byte) (Record, error) {
@@ -447,6 +511,9 @@ func parseRecord(line []byte) (Record, error) {
 	}
 	if rec.V != SchemaVersion {
 		return Record{}, fmt.Errorf("unsupported schema version %d", rec.V)
+	}
+	if rec.Seq < 1 {
+		return Record{}, errors.New("seq must be >= 1")
 	}
 	if rec.TS == "" || rec.Role == "" || rec.Event == "" {
 		return Record{}, errors.New("missing required fields")
@@ -493,7 +560,7 @@ func ReadAll(path string) ([]Record, error) {
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
-			continue
+			return out, fmt.Errorf("receipt %d: empty line", len(out)+1)
 		}
 		rec, err := parseRecord(line)
 		if err != nil {
@@ -530,6 +597,114 @@ func shortHash(h string) string {
 		return h
 	}
 	return h[:16] + "…"
+}
+
+func writeTip(path string, macKey []byte, seq int, hash string) error {
+	sig, err := signTip(macKey, seq, hash)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(tipFile{Seq: seq, Hash: hash, Sig: sig})
+	if err != nil {
+		return err
+	}
+	return privfile.Write(path, append(raw, '\n'))
+}
+
+func signTip(macKey []byte, seq int, hash string) (string, error) {
+	raw, err := json.Marshal(tipBody{Seq: seq, Hash: hash})
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, macKey)
+	_, _ = mac.Write(raw)
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func readTip(path string) (tipFile, error) {
+	var tip tipFile
+	info, err := os.Lstat(path)
+	if err != nil {
+		return tip, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return tip, fmt.Errorf("refusing symlinked receipt tip %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return tip, fmt.Errorf("receipt tip %s is not a regular file", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return tip, fmt.Errorf("receipt tip perms %v are too open, want 0600", info.Mode().Perm())
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- tip path is derived from the operator-selected receipt path.
+	if err != nil {
+		return tip, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&tip); err != nil {
+		return tip, fmt.Errorf("receipt tip: %w", err)
+	}
+	if err := checkHex("tip.hash", tip.Hash); err != nil {
+		return tip, err
+	}
+	if err := checkHex("tip.sig", tip.Sig); err != nil {
+		return tip, err
+	}
+	if tip.Seq < 1 {
+		return tip, errors.New("receipt tip seq must be >= 1")
+	}
+	return tip, nil
+}
+
+func verifyTipSig(keys [][]byte, tip tipFile) error {
+	var last error
+	for _, key := range keys {
+		macKey, err := DeriveMACKey(key)
+		if err != nil {
+			last = err
+			continue
+		}
+		want, err := signTip(macKey, tip.Seq, tip.Hash)
+		if err != nil {
+			last = err
+			continue
+		}
+		if hmac.Equal([]byte(tip.Sig), []byte(want)) {
+			return nil
+		}
+		last = errors.New("receipt tip signature mismatch")
+	}
+	if last == nil {
+		return errors.New("receipt tip signature mismatch")
+	}
+	return last
+}
+
+func checkTip(headPath string, keys [][]byte, n, lastSeq int, lastHash string) error {
+	tip, err := readTip(headPath)
+	if n == 0 {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return errors.New("receipt tip present but log is empty")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("receipt tip missing")
+	}
+	if err != nil {
+		return err
+	}
+	if err := verifyTipSig(keys, tip); err != nil {
+		return err
+	}
+	if tip.Seq != lastSeq || tip.Hash != lastHash {
+		return errors.New("receipt tip mismatch")
+	}
+	return nil
 }
 
 // CheckPath is the doctor helper: when receipts are enabled, the target

@@ -87,6 +87,9 @@ func TestAppendChainsAndVerify(t *testing.T) {
 	if recs[0].SourceID != "source" || recs[0].SinkID != "127.0.0.1:8787" {
 		t.Fatalf("identities: %+v", recs[0])
 	}
+	if recs[0].Seq != 1 || recs[1].Seq != 2 {
+		t.Fatalf("seq: %d, %d", recs[0].Seq, recs[1].Seq)
+	}
 	if recs[0].PayloadHash != recs[1].PayloadHash {
 		t.Fatal("same payload must produce the same content hash")
 	}
@@ -297,9 +300,86 @@ func TestAppendCreatesPrivateFile(t *testing.T) {
 }
 
 func TestParseRejectsUnknownFields(t *testing.T) {
-	line := []byte(`{"v":1,"ts":"2026-01-01T00:00:00Z","role":"source","source_id":"s","sink_id":"k","event":"sync.send","payload_hash":"` + strings.Repeat("a", 64) + `","prev_hash":"` + GenesisPrev + `","sig":"` + strings.Repeat("b", 64) + `","value":"nope"}`)
+	line := []byte(`{"v":1,"seq":1,"ts":"2026-01-01T00:00:00Z","role":"source","source_id":"s","sink_id":"k","event":"sync.send","payload_hash":"` + strings.Repeat("a", 64) + `","prev_hash":"` + GenesisPrev + `","sig":"` + strings.Repeat("b", 64) + `","value":"nope"}`)
 	if _, err := parseRecord(line); err == nil {
 		t.Fatal("unknown fields must be rejected so values cannot be smuggled in")
+	}
+}
+
+func TestVerifyFailsWhenLogRemoved(t *testing.T) {
+	log := testLog(t, time.Unix(6, 0).UTC())
+	if err := log.Append(EventSend, testPayload()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(log.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(log.Path, log.Key); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("rm of log must fail verify while tip remains, got %v", err)
+	}
+}
+
+func TestVerifyFailsWhenLogTruncated(t *testing.T) {
+	log := testLog(t, time.Unix(7, 0).UTC())
+	p := testPayload()
+	for i := 0; i < 3; i++ {
+		if err := log.Append(EventSend, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(log.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if err := os.WriteFile(log.Path, []byte(lines[0]+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(log.Path, log.Key); err == nil || !strings.Contains(err.Error(), "tip") {
+		t.Fatalf("head-truncation must fail tip check, got %v", err)
+	}
+}
+
+func TestVerifyAndReadAllRejectBlankLines(t *testing.T) {
+	log := testLog(t, time.Unix(8, 0).UTC())
+	if err := log.Append(EventSend, testPayload()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(log.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(log.Path, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(log.Path, log.Key); err == nil || !strings.Contains(err.Error(), "empty line") {
+		t.Fatalf("Verify must reject blank lines, got %v", err)
+	}
+	if _, err := ReadAll(log.Path); err == nil || !strings.Contains(err.Error(), "empty line") {
+		t.Fatalf("ReadAll must reject blank lines, got %v", err)
+	}
+}
+
+func TestIdentityPrefersConfigThenHostname(t *testing.T) {
+	if got := Identity(config.Config{Receipts: config.Receipts{Identity: " pantry-a "}}); got != "pantry-a" {
+		t.Fatalf("configured identity: %q", got)
+	}
+	got := Identity(config.Config{})
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		if got != "agentpantry" {
+			t.Fatalf("hostname fallback: %q", got)
+		}
+		return
+	}
+	if got != strings.TrimSpace(host) {
+		t.Fatalf("default identity: got %q want hostname %q", got, host)
+	}
+}
+
+func TestHeadPath(t *testing.T) {
+	if HeadPath("receipts.jsonl") != "receipts.head" {
+		t.Fatalf("HeadPath: %s", HeadPath("receipts.jsonl"))
 	}
 }
 

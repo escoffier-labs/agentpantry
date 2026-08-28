@@ -1989,20 +1989,20 @@ func receiptHook(c config.Config, cfgPath, event string) func(wire.Payload) {
 	if !c.Receipts.Enabled {
 		return nil
 	}
-	path := receipt.ResolvePath(c, cfgPath)
+	id := receipt.Identity(c)
+	log := &receipt.Log{
+		Path:     receipt.ResolvePath(c, cfgPath),
+		Role:     c.Role,
+		SourceID: id,
+		SinkID:   id,
+	}
 	return func(p wire.Payload) {
 		key, err := keyfile.Load(c.KeyPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
 			return
 		}
-		log := &receipt.Log{
-			Path:     path,
-			Key:      key,
-			Role:     c.Role,
-			SourceID: "source",
-			SinkID:   c.Peer,
-		}
+		log.Key = key
 		if err := log.Append(event, p); err != nil {
 			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
 		}

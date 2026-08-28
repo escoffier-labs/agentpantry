@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"reflect"
 	"strings"
@@ -147,6 +148,36 @@ func TestAfterApplyFiresOnNonEmptyPayload(t *testing.T) {
 		t.Fatalf("AfterApply: %+v", got)
 	}
 }
+
+func TestAfterApplySkippedWhenApplyFails(t *testing.T) {
+	key := make([]byte, 32)
+	sealer, _ := transport.NewSealer(key, make([]byte, 16))
+	var w bytes.Buffer
+	p := wire.Payload{
+		Cookies: cookie.Diff{Upserts: []cookie.Cookie{{Host: "a.com", Name: "x", Path: "/", Value: "1"}}},
+	}
+	b, _ := json.Marshal(p)
+	frame, _ := sealer.Seal(b)
+	transport.WriteFrame(&w, frame)
+
+	opener, _ := transport.NewOpener(key, make([]byte, 16))
+	called := false
+	srv := &Server{
+		Opener:         opener,
+		CookieSurfaces: []CookieSurface{errCookie{err: errors.New("apply failed")}},
+		AfterApply:     func(wire.Payload) { called = true },
+	}
+	if err := srv.Serve(context.Background(), &w); err == nil {
+		t.Fatal("apply failure must surface")
+	}
+	if called {
+		t.Fatal("failed apply must not write a receipt")
+	}
+}
+
+type errCookie struct{ err error }
+
+func (e errCookie) Apply(cookie.Diff) error { return e.err }
 
 func TestServeRoutesPayloadToBothSurfaces(t *testing.T) {
 	key := make([]byte, 32)

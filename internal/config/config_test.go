@@ -209,6 +209,7 @@ peer = "127.0.0.1:8787"
 [receipts]
 enabled = true
 path = "receipts.jsonl"
+identity = "kitchen-sink"
 `
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -220,7 +221,7 @@ path = "receipts.jsonl"
 	if len(unknown) != 0 {
 		t.Fatalf("receipts keys must be known, got %v", unknown)
 	}
-	if !out.Receipts.Enabled || out.Receipts.Path != "receipts.jsonl" {
+	if !out.Receipts.Enabled || out.Receipts.Path != "receipts.jsonl" || out.Receipts.Identity != "kitchen-sink" {
 		t.Fatalf("receipts section lost: %+v", out.Receipts)
 	}
 }
