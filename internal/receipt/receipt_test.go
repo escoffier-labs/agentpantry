@@ -340,6 +340,73 @@ func TestVerifyFailsWhenLogTruncated(t *testing.T) {
 	}
 }
 
+func TestVerifyAcceptsOneRecordCrashWindow(t *testing.T) {
+	log := testLog(t, time.Unix(10, 0).UTC())
+	p := testPayload()
+	if err := log.Append(EventSend, p); err != nil {
+		t.Fatal(err)
+	}
+	prevTip, err := os.ReadFile(HeadPath(log.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(EventSend, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(HeadPath(log.Path), prevTip, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := Verify(log.Path, log.Key)
+	if err != nil {
+		t.Fatalf("crash window must verify: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("got %d records, want 2", n)
+	}
+	if err := log.Append(EventSend, p); err != nil {
+		t.Fatal(err)
+	}
+	n, err = Verify(log.Path, log.Key)
+	if err != nil {
+		t.Fatalf("next append must repair tip: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("got %d records, want 3", n)
+	}
+	tip, err := readTip(HeadPath(log.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip.Seq != 3 {
+		t.Fatalf("repaired tip seq %d, want 3", tip.Seq)
+	}
+}
+
+func TestAppendRefusesWhenTipAheadOfLog(t *testing.T) {
+	log := testLog(t, time.Unix(11, 0).UTC())
+	p := testPayload()
+	for i := 0; i < 3; i++ {
+		if err := log.Append(EventSend, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := os.ReadFile(log.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if err := os.WriteFile(log.Path, []byte(lines[0]+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = log.Append(EventSend, p)
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("append after tail truncation must refuse, got %v", err)
+	}
+	if _, err := Verify(log.Path, log.Key); err == nil {
+		t.Fatal("truncated log must still fail verify")
+	}
+}
+
 func TestVerifyAndReadAllRejectBlankLines(t *testing.T) {
 	log := testLog(t, time.Unix(8, 0).UTC())
 	if err := log.Append(EventSend, testPayload()); err != nil {

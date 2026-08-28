@@ -245,9 +245,17 @@ func (l *Log) Append(event string, p wire.Payload) error {
 	if err := os.MkdirAll(filepath.Dir(l.Path), dirPerm); err != nil {
 		return err
 	}
-	prev, lastSeq, err := lastState(l.Path)
+	prev, lastSeq, tip, hasTip, err := lastState(l.Path)
 	if err != nil {
 		return err
+	}
+	if hasTip && tip.Seq > lastSeq {
+		return fmt.Errorf("receipt tip seq %d is ahead of log seq %d (log truncated?)", tip.Seq, lastSeq)
+	}
+	if !hasTip && lastSeq == 0 {
+		if err := writeTip(HeadPath(l.Path), macKey, 0, GenesisPrev); err != nil {
+			return err
+		}
 	}
 	rec := Record{
 		V:           SchemaVersion,
@@ -328,22 +336,30 @@ func recordHash(line []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func lastState(path string) (string, int, error) {
+func lastState(path string) (string, int, tipFile, bool, error) {
+	var tip tipFile
 	line, err := lastLine(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return GenesisPrev, 0, nil
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", 0, tip, false, err
+	}
+	prev := GenesisPrev
+	logSeq := 0
+	if err == nil && len(line) > 0 {
+		rec, perr := parseRecord(line)
+		if perr != nil {
+			return "", 0, tip, false, perr
 		}
-		return "", 0, err
+		prev = recordHash(line)
+		logSeq = rec.Seq
 	}
-	if len(line) == 0 {
-		return GenesisPrev, 0, nil
+	tip, tipErr := readTip(HeadPath(path))
+	if errors.Is(tipErr, os.ErrNotExist) {
+		return prev, logSeq, tip, false, nil
 	}
-	rec, err := parseRecord(line)
-	if err != nil {
-		return "", 0, err
+	if tipErr != nil {
+		return prev, logSeq, tip, false, tipErr
 	}
-	return recordHash(line), rec.Seq, nil
+	return prev, logSeq, tip, true, nil
 }
 
 func lastLine(path string) ([]byte, error) {
@@ -473,6 +489,7 @@ func Verify(path string, keys ...[]byte) (int, error) {
 	n := 0
 	lastHash := ""
 	lastSeq := 0
+	prevHash := GenesisPrev
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -491,6 +508,7 @@ func Verify(path string, keys ...[]byte) (int, error) {
 		if err := verifySig(keys, rec); err != nil {
 			return n, fmt.Errorf("receipt %d: %w", n+1, err)
 		}
+		prevHash = prev
 		lastHash = recordHash(line)
 		lastSeq = rec.Seq
 		prev = lastHash
@@ -499,7 +517,7 @@ func Verify(path string, keys ...[]byte) (int, error) {
 	if err := sc.Err(); err != nil {
 		return n, err
 	}
-	return n, checkTip(headPath, keys, n, lastSeq, lastHash)
+	return n, checkTip(headPath, keys, n, lastSeq, lastHash, prevHash)
 }
 
 func parseRecord(line []byte) (Record, error) {
@@ -651,8 +669,8 @@ func readTip(path string) (tipFile, error) {
 	if err := checkHex("tip.sig", tip.Sig); err != nil {
 		return tip, err
 	}
-	if tip.Seq < 1 {
-		return tip, errors.New("receipt tip seq must be >= 1")
+	if tip.Seq < 0 {
+		return tip, errors.New("receipt tip seq must be >= 0")
 	}
 	return tip, nil
 }
@@ -681,7 +699,7 @@ func verifyTipSig(keys [][]byte, tip tipFile) error {
 	return last
 }
 
-func checkTip(headPath string, keys [][]byte, n, lastSeq int, lastHash string) error {
+func checkTip(headPath string, keys [][]byte, n, lastSeq int, lastHash, prevHash string) error {
 	tip, err := readTip(headPath)
 	if n == 0 {
 		if errors.Is(err, os.ErrNotExist) {
@@ -689,6 +707,12 @@ func checkTip(headPath string, keys [][]byte, n, lastSeq int, lastHash string) e
 		}
 		if err != nil {
 			return err
+		}
+		if err := verifyTipSig(keys, tip); err != nil {
+			return err
+		}
+		if tip.Seq == 0 && tip.Hash == GenesisPrev {
+			return nil
 		}
 		return errors.New("receipt tip present but log is empty")
 	}
@@ -701,10 +725,15 @@ func checkTip(headPath string, keys [][]byte, n, lastSeq int, lastHash string) e
 	if err := verifyTipSig(keys, tip); err != nil {
 		return err
 	}
-	if tip.Seq != lastSeq || tip.Hash != lastHash {
-		return errors.New("receipt tip mismatch")
+	if tip.Seq == lastSeq && tip.Hash == lastHash {
+		return nil
 	}
-	return nil
+	// One-record crash window: appendLine fsynced, writeTip did not.
+	// An attacker without the MAC key cannot manufacture this state.
+	if tip.Seq == lastSeq-1 && tip.Hash == prevHash {
+		return nil
+	}
+	return errors.New("receipt tip mismatch")
 }
 
 // CheckPath is the doctor helper: when receipts are enabled, the target

@@ -176,7 +176,8 @@ safe config summary for operator dashboards such as Brigade.
 `agentpantry receipts` is an opt-in, local, append-only JSON Lines log of
 successful syncs. Enable `[receipts] enabled = true` on a source and/or sink
 (default path: `receipts.jsonl` beside the config). Each line records a UTC
-timestamp, this node's identity (`[receipts] identity`, default hostname),
+timestamp, this node's identity (`[receipts] identity`, default hostname;
+`source_id` and `sink_id` both carry that local asserted identity),
 event type (`sync.send` or `sync.apply`), a monotonic `seq`, a SHA-256 digest
 of a value-free payload summary (counts and identifiers only), the previous
 receipt's hash, and an HMAC-SHA256 bound to the pre-shared key. A `0600` tip

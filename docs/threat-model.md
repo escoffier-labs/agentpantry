@@ -36,7 +36,7 @@ what is explicitly out of scope.
   hash, and an HMAC derived from the PSK. A `0600` tip file beside the log
   (`receipts.head`) stores the last seq and hash so a deleted or truncated log
   fails `receipts verify`. The transport is PSK-only: identity is asserted by
-  the writer, not proven. Receipts never contain cookie values, secret values,
+  the writer, not proven (`source_id` and `sink_id` both name this node). Receipts never contain cookie values, secret values,
   or localStorage values. They do not authenticate against a compromised
   signer key, and they do not keep synced material confidential. `payload_hash`
   is hashed, not confidential: hosts and secret names in the summary are
