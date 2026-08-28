@@ -24,6 +24,9 @@ func TestInvokeSignaledExitCode(t *testing.T) {
 	}
 }
 
+// TestInvokeForwardsSIGTERM is race-free by construction: Invoke arms
+// signal.Notify before cmd.Start, and this test sends SIGTERM only after the
+// child pid file exists (Start has returned).
 func TestInvokeForwardsSIGTERM(t *testing.T) {
 	helper := buildHelper(t)
 	pidFile := filepath.Join(t.TempDir(), "child.pid")

@@ -2,9 +2,16 @@
 
 package runenv
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+)
 
-func waitCmd(cmd *exec.Cmd) (int, error) {
+func armSignals() (func(), <-chan os.Signal) {
+	return func() {}, nil
+}
+
+func waitCmd(cmd *exec.Cmd, _ <-chan os.Signal) (int, error) {
 	return childStatus(cmd.Wait())
 }
 

@@ -211,11 +211,27 @@ var reservedEnvNames = []string{
 	"GIT_EXEC_PATH",
 }
 
+// reservedEnvPrefixes catch loader families that an exact list cannot stay
+// current on (LD_*, DYLD_*, exported bash functions, git config overrides).
+var reservedEnvPrefixes = []string{
+	"LD_",
+	"DYLD_",
+	"BASH_FUNC_",
+	"GIT_CONFIG_",
+}
+
 // ReservedEnvName reports whether envVar is a loader or interpreter variable
-// that run refuses to inject, compared case-insensitively.
+// that run refuses to inject, compared case-insensitively. Exact names and
+// the LD_ / DYLD_ / BASH_FUNC_ / GIT_CONFIG_ prefixes are reserved.
 func ReservedEnvName(envVar string) bool {
 	for _, r := range reservedEnvNames {
 		if strings.EqualFold(envVar, r) {
+			return true
+		}
+	}
+	upper := strings.ToUpper(envVar)
+	for _, p := range reservedEnvPrefixes {
+		if strings.HasPrefix(upper, p) {
 			return true
 		}
 	}
@@ -288,10 +304,12 @@ func Invoke(argv []string, env []string) (int, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
+	stop, sigs := armSignals()
+	defer stop()
 	if err := cmd.Start(); err != nil {
 		return 1, err
 	}
-	return waitCmd(cmd)
+	return waitCmd(cmd, sigs)
 }
 
 func childStatus(err error) (int, error) {

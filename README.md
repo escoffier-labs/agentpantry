@@ -205,7 +205,8 @@ that would be set without executing anything. Secret values are never logged. Pr
 the consumer can take environment variables; keep the `secrets` surface for
 tools that must read files. A local process that can inspect the child
 (`/proc/<pid>/environ`, ptrace, or the Windows equivalent) can still see the
-injected values while it runs.
+injected values while it runs. On Unix the wrapper forwards SIGINT and
+SIGTERM to the child. On Windows signals are not forwarded.
 
     agentpantry run --config ./sink.toml -- your-agent --flag
     agentpantry run -secret gh_token -env gh_token=GH_TOKEN -- gh auth status

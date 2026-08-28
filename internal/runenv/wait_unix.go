@@ -9,13 +9,16 @@ import (
 	"syscall"
 )
 
-// waitCmd waits for cmd (already started) and forwards SIGINT/SIGTERM so a
-// signal to the wrapper does not leave a secret-bearing child running.
-func waitCmd(cmd *exec.Cmd) (int, error) {
+func armSignals() (func(), <-chan os.Signal) {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(ch)
+	return func() { signal.Stop(ch) }, ch
+}
 
+// waitCmd waits for cmd (already started) and forwards SIGINT/SIGTERM so a
+// signal to the wrapper does not leave a secret-bearing child running.
+// sigs must already be armed via armSignals before cmd.Start.
+func waitCmd(cmd *exec.Cmd, sigs <-chan os.Signal) (int, error) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
@@ -23,7 +26,7 @@ func waitCmd(cmd *exec.Cmd) (int, error) {
 		select {
 		case err := <-done:
 			return childStatus(err)
-		case sig := <-ch:
+		case sig := <-sigs:
 			if cmd.Process != nil {
 				_ = cmd.Process.Signal(sig)
 			}

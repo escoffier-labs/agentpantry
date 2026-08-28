@@ -43,7 +43,10 @@ what is explicitly out of scope.
   environment. It never writes values to a staging file and adds no network
   listener. Loader and interpreter variables (`PATH`, `LD_PRELOAD`,
   `NODE_OPTIONS`, `PYTHONPATH`, and similar) are refused so a synced name
-  cannot hijack the child. Handshake, PSK, and frame crypto are unchanged.
+  cannot hijack the child. On Unix, SIGINT and SIGTERM to the wrapper are
+  forwarded to the child so a signaled wrapper does not leave a secret-bearing
+  process running. On Windows, signals are not forwarded. Handshake, PSK, and
+  frame crypto are unchanged.
 
 ## Operator responsibilities
 

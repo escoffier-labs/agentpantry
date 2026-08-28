@@ -134,6 +134,18 @@ func TestPlanRejectsReservedEnvNames(t *testing.T) {
 	}
 }
 
+func TestPlanRejectsReservedEnvPrefixes(t *testing.T) {
+	for _, name := range []string{"ld_audit_extra", "dyld_custom", "bash_func_foo", "git_config_count"} {
+		_, err := Plan([]secret.Secret{{Name: name, Value: "/tmp/payload"}}, policy.Names{}, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Fatalf("prefix secret %q must be rejected as reserved, got %v", name, err)
+		}
+		if strings.Contains(err.Error(), "/tmp/payload") {
+			t.Fatalf("prefix error leaked value for %q: %v", name, err)
+		}
+	}
+}
+
 func TestPlanCollisionFailsClosed(t *testing.T) {
 	secrets := []secret.Secret{
 		{Name: "gh-token", Value: "a"},
