@@ -2,8 +2,10 @@ package pair
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -14,6 +16,11 @@ type ServeConfig struct {
 	Timeout     time.Duration
 	Attempts    int
 	OnListening func(addr string)
+}
+
+type pairResult struct {
+	psk []byte
+	err error
 }
 
 // Serve listens until one pairing succeeds, the attempt cap is hit, or ctx/TTL
@@ -44,22 +51,46 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 		_ = ln.Close()
 	}()
 
+	conns := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				acceptErr <- err
+				return
+			}
+			conns <- c
+		}
+	}()
+
+	results := make(chan pairResult, 8)
 	failures := 0
 	for {
-		conn, err := ln.Accept()
-		if err != nil {
+		select {
+		case err := <-acceptErr:
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("pairing timed out")
 			}
 			return nil, err
-		}
-		psk, err := exchangeConn(conn, cfg.Code, true)
-		if err == nil {
-			return psk, nil
-		}
-		failures++
-		if failures >= cfg.Attempts {
-			return nil, fmt.Errorf("pairing locked after %d failed attempts", cfg.Attempts)
+		case conn := <-conns:
+			go func(c net.Conn) {
+				psk, err := exchangeConn(c, cfg.Code, true)
+				select {
+				case results <- pairResult{psk, err}:
+				case <-ctx.Done():
+				}
+			}(conn)
+		case res := <-results:
+			if res.err == nil {
+				return res.psk, nil
+			}
+			if errors.Is(res.err, errPairFailed) {
+				failures++
+				if failures >= cfg.Attempts {
+					return nil, fmt.Errorf("pairing locked after %d failed attempts", cfg.Attempts)
+				}
+			}
 		}
 	}
 }
@@ -79,11 +110,34 @@ func Dial(ctx context.Context, addr, code string) ([]byte, error) {
 
 func exchangeConn(conn net.Conn, code string, sink bool) ([]byte, error) {
 	defer func() { _ = conn.Close() }()
+	if sink {
+		if err := conn.SetDeadline(time.Now().Add(FirstReadTimeout)); err != nil {
+			return nil, err
+		}
+		conn = &extendAfterFirstRead{Conn: conn, extend: ConnTimeout}
+		return ExchangeSink(conn, code)
+	}
 	if err := conn.SetDeadline(time.Now().Add(ConnTimeout)); err != nil {
 		return nil, err
 	}
-	if sink {
-		return ExchangeSink(conn, code)
-	}
 	return ExchangeSource(conn, code)
+}
+
+// extendAfterFirstRead lengthens the deadline once the peer sends a byte, so
+// an idle connect dies at FirstReadTimeout while a real SPAKE2 exchange gets
+// ConnTimeout.
+type extendAfterFirstRead struct {
+	net.Conn
+	extend time.Duration
+	once   sync.Once
+}
+
+func (c *extendAfterFirstRead) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.once.Do(func() {
+			_ = c.Conn.SetDeadline(time.Now().Add(c.extend))
+		})
+	}
+	return n, err
 }

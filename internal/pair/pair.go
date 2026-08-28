@@ -16,17 +16,20 @@ import (
 	"io"
 	"time"
 
-	gospake2 "github.com/ValiantChip/gospake2"
+	gospake2 "github.com/ValiantChip/gospake2" // v0.1.5 pinned in go.mod
 	"golang.org/x/crypto/hkdf"
 )
 
 const (
 	// DefaultTimeout is the sink pairing window.
 	DefaultTimeout = 2 * time.Minute
-	// MaxAttempts is the number of failed SPAKE2 tries before the sink exits.
+	// MaxAttempts is the number of failed SPAKE2 *code* tries before lockout.
 	MaxAttempts = 3
-	// ConnTimeout bounds one pairing TCP exchange.
+	// ConnTimeout bounds one pairing TCP exchange after the first byte.
 	ConnTimeout = 30 * time.Second
+	// FirstReadTimeout bounds the wait for the initiator's first frame so an
+	// idle connect cannot occupy the pairing window.
+	FirstReadTimeout = 2 * time.Second
 
 	idA     = "agentpantry/v1 pair-source"
 	idB     = "agentpantry/v1 pair-sink"
@@ -80,9 +83,10 @@ func ExchangeSource(rw io.ReadWriter, code string) ([]byte, error) {
 	if err != nil {
 		return nil, errPairFailed
 	}
-	// Sink sends its confirmation first so an unbuffered pipe cannot
-	// deadlock two concurrent writes. Verify before sending ours so a
-	// mismatched code never looks like success on this side.
+	// RFC 9382: A sends cA first. B verifies cA before sending cB.
+	if err := writeMsg(rw, msgConfirm, confirm); err != nil {
+		return nil, err
+	}
 	typ, peerConfirm, err := readMsg(rw)
 	if err != nil {
 		return nil, err
@@ -92,9 +96,6 @@ func ExchangeSource(rw io.ReadWriter, code string) ([]byte, error) {
 	}
 	if err := a.Verify(peerConfirm); err != nil {
 		return nil, errPairFailed
-	}
-	if err := writeMsg(rw, msgConfirm, confirm); err != nil {
-		return nil, err
 	}
 	return derivePSK(key)
 }
@@ -127,11 +128,6 @@ func ExchangeSink(rw io.ReadWriter, code string) ([]byte, error) {
 	if err != nil {
 		return nil, errPairFailed
 	}
-	// Send confirmation before reading the peer's so a mismatch cannot
-	// deadlock the other side on a missing frame.
-	if err := writeMsg(rw, msgConfirm, confirm); err != nil {
-		return nil, err
-	}
 	typ, peerConfirm, err := readMsg(rw)
 	if err != nil {
 		return nil, err
@@ -141,6 +137,9 @@ func ExchangeSink(rw io.ReadWriter, code string) ([]byte, error) {
 	}
 	if err := b.Verify(peerConfirm); err != nil {
 		return nil, errPairFailed
+	}
+	if err := writeMsg(rw, msgConfirm, confirm); err != nil {
+		return nil, err
 	}
 	return derivePSK(key)
 }

@@ -3,12 +3,15 @@ package pair
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 func TestNormalizeCodeRoundTrip(t *testing.T) {
@@ -94,25 +97,29 @@ func TestExchangeWrongCodeFails(t *testing.T) {
 	_ = src.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = snk.SetDeadline(time.Now().Add(5 * time.Second))
 
-	errc := make(chan error, 2)
+	type outcome struct {
+		key []byte
+		err error
+	}
+	errc := make(chan outcome, 2)
 	go func() {
 		defer src.Close()
-		_, err := ExchangeSource(src, "AAAA-AAAA")
-		errc <- err
+		k, err := ExchangeSource(src, "AAAA-AAAA")
+		errc <- outcome{k, err}
 	}()
 	go func() {
 		defer snk.Close()
-		_, err := ExchangeSink(snk, "BBBB-BBBB")
-		errc <- err
+		k, err := ExchangeSink(snk, "BBBB-BBBB")
+		errc <- outcome{k, err}
 	}()
-	var sawFail bool
 	for i := 0; i < 2; i++ {
-		if err := <-errc; err != nil {
-			sawFail = true
+		o := <-errc
+		if o.err == nil {
+			t.Fatal("mismatched codes must fail confirmation")
 		}
-	}
-	if !sawFail {
-		t.Fatal("mismatched codes must fail confirmation")
+		if o.key != nil {
+			t.Fatal("neither side may return a key on a code mismatch")
+		}
 	}
 }
 
@@ -191,6 +198,88 @@ func TestServeLocksAfterFailedAttempts(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "locked") {
 		t.Fatalf("want lockout, got %v", err)
 	}
+}
+
+func TestServeIgnoresIdleAndStrayConnects(t *testing.T) {
+	code, err := GenerateCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	addrCh := make(chan string, 1)
+	errc := make(chan error, 1)
+	var sinkKey []byte
+	go func() {
+		k, err := Serve(ctx, ServeConfig{
+			Addr:     "127.0.0.1:0",
+			Code:     code,
+			Attempts: 1,
+			OnListening: func(addr string) {
+				addrCh <- addr
+			},
+		})
+		sinkKey = k
+		errc <- err
+	}()
+	addr := <-addrCh
+
+	idle, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = idle.SetDeadline(time.Now().Add(FirstReadTimeout + time.Second))
+	if _, rerr := idle.Read(make([]byte, 1)); rerr == nil {
+		t.Fatal("idle connect must be dropped before the SPAKE2 phase")
+	}
+	_ = idle.Close()
+
+	// Length 2, version 9: a stray frame, not a SPAKE2 share. Must not
+	// increment the code-attempt counter (Attempts is 1).
+	junk, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = junk.Write([]byte{0, 0, 0, 2, 9, 9})
+	_ = junk.Close()
+
+	srcKey, err := Dial(ctx, addr, code)
+	if err != nil {
+		t.Fatalf("idle/stray connects must not consume the code-attempt budget: %v", err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(srcKey, sinkKey) {
+		t.Fatal("successful pair after stray connects must still match")
+	}
+}
+
+func TestDerivePSKInfoSeparation(t *testing.T) {
+	shared := bytes.Repeat([]byte{0x11}, 32)
+	got, err := derivePSK(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairKey := hkdfOnce(t, shared, pskInfo)
+	sessionKey := hkdfOnce(t, shared, "agentpantry/v1 session")
+	if !bytes.Equal(got, pairKey) {
+		t.Fatal("derivePSK must use agentpantry/v1 pair-psk")
+	}
+	if bytes.Equal(got, sessionKey) {
+		t.Fatal("pair-psk HKDF must not match the session info string")
+	}
+}
+
+func hkdfOnce(t *testing.T, secret []byte, info string) []byte {
+	t.Helper()
+	r := hkdf.New(sha256.New, secret, nil, []byte(info))
+	out := make([]byte, 32)
+	if _, err := io.ReadFull(r, out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestReadMsgRejectsOversizeAndBadVersion(t *testing.T) {

@@ -73,8 +73,9 @@ These are required for the guarantees above to hold:
   keep it `0600`.
 - **Treat a pairing code as a one-time password.** Share it out of band, do not
   reuse it, and compare the printed confirmation fingerprint on both ends
-  before the first sync. Run the pairing listener on loopback or a trusted
-  private network.
+  before the first sync. The pairing listener defaults to loopback
+  (`127.0.0.1:8787`) and does not inherit the sink `peer` bind; pass `-bind`
+  to widen. Run it on loopback or a trusted private network.
 - **Treat a CDP debugging port as sensitive.** `kind = "cdp"` requires launching
   Chrome with `--remote-debugging-port`, which grants full browser control to
   anything that can reach it; bind it to loopback only.
@@ -127,20 +128,26 @@ handshake and is not used again once `psk.key` has been written.
   Built-in SPAKE2 confirmation MACs must verify before either side writes
   `psk.key`. Both ends then print `SHA-256(PSK)[:8]` as a hyphenated hex
   fingerprint for operator compare.
-- **Limits during the window.** The sink accepts at most three failed
-  attempts, each pairing TCP exchange is deadline-bounded (30s), and the
-  listener expires after two minutes by default. Pairing frames are
-  length-prefixed and capped at 1 KiB (separate from the 8 MiB sync frame
-  cap). A wrong code fails confirmation and does not write a key. Pairing
-  refuses to start while a `rotate-key` grace file (`psk.key.old`) exists.
-  Re-pairing an existing key backs it up like `keygen` (`psk.key.bak.*`) and
-  is bootstrap/recovery, not a substitute for `rotate-key`.
-- **Peer validation.** SPAKE2 detects a password mismatch. It does not by
-  itself prove the operator paired with the intended machine if the code was
-  shared with the wrong peer. Compare the confirmation fingerprints before
-  the first `source`/`sink` sync. This is a new check the file-copy PSK path
-  does not need, because copying one file cannot silently agree a different
-  key with a third party who also has the code.
+- **Limits during the window.** The sink accepts at most three failed SPAKE2
+  *code* attempts (idle or stray TCP connects do not count). The listener
+  defaults to `127.0.0.1:8787` and does not inherit the sink config `peer`
+  (an explicit `-bind` is required to widen; an empty host such as `:8787`
+  is treated as all-interfaces). Each pairing TCP exchange is
+  deadline-bounded (2s to the first byte, then 30s), and the listener
+  expires after two minutes by default. Pairing frames are length-prefixed
+  and capped at 1 KiB (separate from the 8 MiB sync frame cap). A wrong code
+  fails confirmation and does not write a key. Pairing refuses to start
+  while a `rotate-key` grace file (`psk.key.old`) exists. Re-pairing an
+  existing key backs it up like `keygen` (`psk.key.bak.*`) and is
+  bootstrap/recovery, not a substitute for `rotate-key`.
+- **Peer validation.** SPAKE2 detects a password mismatch. The sink verifies
+  the initiator confirmation MAC before sending its own (RFC 9382 ordering).
+  That does not by itself prove the operator paired with the intended
+  machine if the code was shared with the wrong peer. Compare the
+  confirmation fingerprints before the first `source`/`sink` sync. This is a
+  new check the file-copy PSK path does not need, because copying one file
+  cannot silently agree a different key with a third party who also has the
+  code.
 - **After pairing.** Tear down the pairing listener (the command exits).
   Steady-state sync never sends the short code again. Session salts and
   per-session HKDF keys continue to work exactly as in the checklist above,
@@ -173,12 +180,12 @@ long-lived PSK, so pairing does not add forward secrecy.
   lock does not prove the app is stopped. The current adapter reports those
   limits and performs no app write.
 - **Short-code pairing is guessable during its window.** The code has 40 bits
-  of entropy. The sink locks after three failed SPAKE2 attempts and expires
-  the listener after two minutes, and pairing should stay on loopback or a
-  trusted private network. An attacker who can reach the pairing bind and
-  guess the code before lockout becomes the peer; compare confirmation
-  fingerprints and re-pair (or `rotate-key`) if the code or fingerprint was
-  exposed.
+  of entropy. The sink locks after three failed SPAKE2 code attempts and
+  expires the listener after two minutes, and pairing should stay on
+  loopback or a trusted private network. An attacker who can reach the
+  pairing bind and guess the code before lockout becomes the peer; compare
+  confirmation fingerprints and re-pair (or `rotate-key`) if the code or
+  fingerprint was exposed.
 - **Pairing MitM if the code is shared with the wrong machine.** SPAKE2
   confirmation fails on a password mismatch, but two honest peers that both
   received the same code will agree a PSK. The printed fingerprint is the

@@ -4,14 +4,43 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
-	"github.com/escoffier-labs/agentpantry/internal/doctor"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/pair"
 )
+
+// defaultPairBind is the sink pairing listen address when -bind is omitted.
+// Never inherited from config peer: that field is the sync bind and is often
+// a VPN-wide address such as 0.0.0.0:8787.
+const defaultPairBind = "127.0.0.1:8787"
+
+func sinkPairAddr(bindFlag string) string {
+	if bindFlag != "" {
+		return bindFlag
+	}
+	return defaultPairBind
+}
+
+// pairingBindIsWide reports a pre-auth listen address that is not loopback.
+// Empty host (":8787") is wide: net.Listen binds all interfaces.
+func pairingBindIsWide(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	if host == "" {
+		return true
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
+}
 
 func cmdPair(args []string) error {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
@@ -63,14 +92,8 @@ func cmdPair(args []string) error {
 	var psk []byte
 	switch r {
 	case "sink":
-		addr := "127.0.0.1:8787"
-		if c.Peer != "" && !c.Peerless() {
-			addr = c.Peer
-		}
-		if *bind != "" {
-			addr = *bind
-		}
-		if !doctor.IsLoopbackBind(addr) {
+		addr := sinkPairAddr(*bind)
+		if pairingBindIsWide(addr) {
 			fmt.Fprintf(os.Stderr, "warning: pairing bind %s exposes a pre-auth SPAKE2 listener beyond loopback\n", addr)
 		}
 		code, err := pair.GenerateCode()
