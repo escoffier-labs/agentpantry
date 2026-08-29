@@ -136,7 +136,7 @@ func (c *extendAfterFirstRead) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
 	if n > 0 {
 		c.once.Do(func() {
-			_ = c.Conn.SetDeadline(time.Now().Add(c.extend))
+			_ = c.SetDeadline(time.Now().Add(c.extend))
 		})
 	}
 	return n, err
