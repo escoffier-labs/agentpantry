@@ -8,14 +8,13 @@ import (
 	gospake2 "github.com/ValiantChip/gospake2" // v0.1.5 pinned in go.mod
 )
 
-// TestRFC9382Ed25519KnownAnswer pins gospake2 v0.1.5's RFC 9382 SPAKE2
-// transcript for the Ed25519 ciphersuite this repo uses.
+// TestGospake2V015TranscriptPin pins github.com/ValiantChip/gospake2 v0.1.5's
+// Ed25519 SPAKE2 transcript so an upstream Finish/Verify or transcript change
+// fails the test.
 //
-// RFC 9382 Appendix B publishes P-256 vectors only; they cannot be fed to
-// DEFAULT_SUITE. This KAT is a deterministic library vector (fixed password,
-// identities, and 0x5a rand.Reader stream) so an upstream Finish/Verify or
-// transcript change fails the test.
-func TestRFC9382Ed25519KnownAnswer(t *testing.T) {
+// This is a library pin, not an RFC 9382 appendix vector. Appendix B publishes
+// P-256 values that cannot be fed to DEFAULT_SUITE.
+func TestGospake2V015TranscriptPin(t *testing.T) {
 	rng := bytes.NewReader(bytes.Repeat([]byte{0x5a}, 4096))
 	const (
 		pw  = "rfc9382-kat"
@@ -47,7 +46,7 @@ func TestRFC9382Ed25519KnownAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(keA, keB) {
-		t.Fatal("RFC 9382 Ke must match on both sides")
+		t.Fatal("Ke must match on both sides")
 	}
 	if err := B.Verify(cA); err != nil {
 		t.Fatalf("B must verify initiator cA first: %v", err)
@@ -74,7 +73,7 @@ func TestRFC9382Ed25519KnownAnswer(t *testing.T) {
 	want := map[string]string{"pA": wantPA, "pB": wantPB, "Ke": wantKe, "cA": wantCA, "cB": wantCB}
 	for name, exp := range want {
 		if got[name] != exp {
-			t.Errorf("%s=%s want %s (gospake2 v0.1.5 RFC 9382 transcript changed)", name, got[name], exp)
+			t.Errorf("%s=%s want %s (gospake2 v0.1.5 transcript changed)", name, got[name], exp)
 		}
 	}
 }
