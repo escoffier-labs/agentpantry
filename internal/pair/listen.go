@@ -90,7 +90,31 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 	canStart := func() bool {
 		return inFlight < cfg.InFlight && failures+inFlight < cfg.Attempts
 	}
+	apply := func(res pairResult) ([]byte, error, bool) {
+		inFlight--
+		if res.err == nil {
+			return res.psk, nil, true
+		}
+		if errors.Is(res.err, errPairFailed) {
+			failures++
+			if failures >= cfg.Attempts {
+				return nil, fmt.Errorf("pairing locked after %d failed attempts", cfg.Attempts), true
+			}
+		}
+		return nil, nil, false
+	}
 	for {
+		// Drain finished exchanges before dispatching so inFlight matches
+		// reality; otherwise a new conn can lose to a stale in-flight count.
+		select {
+		case res := <-results:
+			psk, err, done := apply(res)
+			if done {
+				return psk, err
+			}
+			continue
+		default:
+		}
 		select {
 		case err := <-acceptErr:
 			if ctx.Err() != nil {
@@ -104,15 +128,9 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 			}
 			start(conn)
 		case res := <-results:
-			inFlight--
-			if res.err == nil {
-				return res.psk, nil
-			}
-			if errors.Is(res.err, errPairFailed) {
-				failures++
-				if failures >= cfg.Attempts {
-					return nil, fmt.Errorf("pairing locked after %d failed attempts", cfg.Attempts)
-				}
+			psk, err, done := apply(res)
+			if done {
+				return psk, err
 			}
 		}
 	}
