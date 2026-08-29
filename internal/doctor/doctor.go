@@ -13,6 +13,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/receipt"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
 
@@ -279,6 +280,18 @@ func Run(c config.Config) []Check {
 			default:
 				checks = append(checks, Check{name, Fail, "unknown adapter type"})
 			}
+		}
+	}
+
+	if c.Receipts.Enabled {
+		path := c.Receipts.Path
+		if path == "" {
+			path = filepath.Join(config.Dir(), "receipts.jsonl")
+		}
+		if err := receipt.CheckPath(path, writableOrCreatable); err != nil {
+			checks = append(checks, Check{"receipts", Fail, err.Error()})
+		} else {
+			checks = append(checks, Check{"receipts", OK, path})
 		}
 	}
 	return checks

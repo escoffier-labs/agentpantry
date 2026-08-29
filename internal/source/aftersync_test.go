@@ -56,6 +56,35 @@ func TestAfterSyncFiresWithSentAndCounts(t *testing.T) {
 	}
 }
 
+func TestAfterPayloadFiresOnlyWhenSent(t *testing.T) {
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
+	var buf bytes.Buffer
+	var payloads []wire.Payload
+	syncer := &Syncer{
+		Vaults: []CookieReader{oneVault{cs: []cookie.Cookie{
+			{Host: "github.com", Name: "a", Path: "/", Value: "1"},
+		}}},
+		Policy: policy.Domain{Allow: []string{"github.com"}},
+		Sealer: sealer,
+		Out:    &buf,
+		AfterPayload: func(p wire.Payload) {
+			payloads = append(payloads, p)
+		},
+	}
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncer.SyncOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("AfterPayload must fire only on a sent frame, got %d", len(payloads))
+	}
+	if len(payloads[0].Cookies.Upserts) != 1 {
+		t.Fatalf("payload: %+v", payloads[0])
+	}
+}
+
 func TestSyncOnceFiltersSecretsByName(t *testing.T) {
 	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer

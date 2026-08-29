@@ -4,6 +4,7 @@
 
 ### Added
 - `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`; refuses `PATH`/`LD_PRELOAD` and other loader vars).
+- Hash-chained local sync receipts (`receipts verify` / `receipts show`): opt-in JSONL provenance of each send/apply with payload digests only (no cookie or secret values), a signed monotonic `seq`, a `receipts.head` tip pointer, and a configured per-node identity (default: hostname).
 
 ## v0.7.0 - 2026-08-26
 

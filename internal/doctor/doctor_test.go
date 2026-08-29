@@ -165,6 +165,37 @@ func TestSinkPeerNoneConfigFails(t *testing.T) {
 	}
 }
 
+func TestReceiptsEnabledChecksPath(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	path := filepath.Join(dir, "receipts.jsonl")
+	c := config.Config{
+		Role:     "sink",
+		Peer:     "127.0.0.1:8787",
+		KeyPath:  key,
+		Surfaces: []string{"sidecar"},
+		Receipts: config.Receipts{Enabled: true, Path: path},
+	}
+	if find(Run(c), "receipts").Status != OK {
+		t.Fatalf("enabled receipts with creatable path must pass: %+v", find(Run(c), "receipts"))
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && find(Run(c), "receipts").Status != Fail {
+		t.Fatal("0644 receipt file must Fail")
+	}
+}
+
+func TestReceiptsDisabledOmitsCheck(t *testing.T) {
+	dir := t.TempDir()
+	key := writeKey(t, dir, 0o600)
+	c := config.Config{Role: "sink", Peer: "127.0.0.1:8787", KeyPath: key, Surfaces: []string{"sidecar"}}
+	if find(Run(c), "receipts").Status != -1 {
+		t.Fatal("disabled receipts must not add a doctor row")
+	}
+}
+
 func TestHasFailHelper(t *testing.T) {
 	if HasFail([]Check{{Status: OK}, {Status: Warn}}) {
 		t.Fatal("no Fail present")

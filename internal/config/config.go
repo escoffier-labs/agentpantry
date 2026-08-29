@@ -54,6 +54,14 @@ type Config struct {
 	ResyncSeconds   int           `toml:"resync_seconds"`   // source: periodic resync (0 = off)
 	WarnExpiryDays  int           `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
 	SidecarPath     string        `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
+	Receipts        Receipts      `toml:"receipts"`         // optional local hash-chained sync receipts
+}
+
+// Receipts configures the optional append-only sync receipt log.
+type Receipts struct {
+	Enabled  bool   `toml:"enabled"`
+	Path     string `toml:"path"`     // default: receipts.jsonl beside the config file
+	Identity string `toml:"identity"` // this node; default: hostname
 }
 
 // Peerless reports whether the config declares the source-only local deployment
@@ -179,6 +187,15 @@ deny = []
 [secret_names]
 allow = []
 deny = []
+
+# Optional: append-only hash-chained sync receipts (JSON Lines). Records that
+# a sync happened and over what digest. Cookie and secret values are never
+# written. Verify with `+"`agentpantry receipts verify`"+`.
+# identity names this node (default: hostname); it is asserted, not proven.
+#[receipts]
+#enabled = true
+#path = ""
+#identity = ""
 `, keyPath)
 	case "sink":
 		body = fmt.Sprintf(`# agentpantry sink config (runs on the agent machine).
@@ -209,6 +226,15 @@ surfaces = ["sidecar"]
 #[[adapters]]
 #type = "netscape"
 #path = "/home/agent/.config/agentpantry/cookies.txt"
+
+# Optional: append-only hash-chained sync receipts (JSON Lines). Records that
+# a sync happened and over what digest. Cookie and secret values are never
+# written. Verify with `+"`agentpantry receipts verify`"+`.
+# identity names this node (default: hostname); it is asserted, not proven.
+#[receipts]
+#enabled = true
+#path = ""
+#identity = ""
 `, keyPath)
 	default:
 		return fmt.Errorf("role must be source or sink")

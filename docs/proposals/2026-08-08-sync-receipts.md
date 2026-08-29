@@ -2,7 +2,8 @@
 
 Date: 2026-08-08
 Issue: [#53](https://github.com/escoffier-labs/agentpantry/issues/53)
-Status: **proposal / not approved for implementation**
+Status: **implemented** (opt-in `[receipts]`, HMAC-SHA256 from the PSK, source
+and sink, JSON Lines; see `internal/receipt` and `agentpantry receipts`)
 
 ## Summary
 
@@ -143,5 +144,6 @@ Failure is nonzero exit. `show` prints metadata only.
 
 ## Status
 
-**proposal / not approved for implementation.** Awaiting decisions on signing
-key model and default enablement before any code.
+**implemented.** Decisions: opt-in (`enabled = false`); HMAC-SHA256 via
+HKDF(PSK, info `agentpantry/v1 receipt mac`); source and sink; receipts only
+for non-empty send/apply; JSON Lines.

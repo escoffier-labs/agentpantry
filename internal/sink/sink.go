@@ -53,6 +53,9 @@ type Server struct {
 	// ApplyMu, when set, serializes surface application across concurrently
 	// served connections that share the same surfaces.
 	ApplyMu *sync.Mutex
+
+	// AfterApply, if set, is called after a non-empty payload is applied.
+	AfterApply func(p wire.Payload)
 }
 
 // readDeadliner is the optional stream capability AuthTimeout needs.
@@ -123,14 +126,16 @@ func (s *Server) apply(p wire.Payload) error {
 	}
 	if !p.Storage.IsEmpty() {
 		storage := filterStorageUpserts(p.Storage)
-		if storage.IsEmpty() {
-			return nil
-		}
-		for _, ws := range s.StorageSurfaces {
-			if err := ws.ApplyStorage(storage); err != nil {
-				return err
+		if !storage.IsEmpty() {
+			for _, ws := range s.StorageSurfaces {
+				if err := ws.ApplyStorage(storage); err != nil {
+					return err
+				}
 			}
 		}
+	}
+	if s.AfterApply != nil && !p.IsEmpty() {
+		s.AfterApply(p)
 	}
 	return nil
 }

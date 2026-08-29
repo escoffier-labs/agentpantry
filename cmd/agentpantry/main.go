@@ -27,6 +27,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
+	"github.com/escoffier-labs/agentpantry/internal/receipt"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
 	"github.com/escoffier-labs/agentpantry/internal/service"
 	"github.com/escoffier-labs/agentpantry/internal/sink"
@@ -35,6 +36,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/surface"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 	"github.com/escoffier-labs/agentpantry/internal/webstorage"
+	"github.com/escoffier-labs/agentpantry/internal/wire"
 )
 
 var (
@@ -77,6 +79,8 @@ func main() {
 		err = cmdVersion(args)
 	case "rotate-key":
 		err = cmdRotateKey(args)
+	case "receipts":
+		err = cmdReceipts(args)
 	case "help", "-h", "--help":
 		fmt.Print(usageText)
 	default:
@@ -105,6 +109,7 @@ commands:
   restore          materialize cookies from a sidecar backup to one target
   browser          launch an automation Chrome pre-seeded with a session
   run              inject synced secrets into a child process environment
+  receipts         show or verify the local hash-chained sync receipt log
   install-service  install a systemd user unit (Windows: print a task command)
   version          print version and build metadata
 
@@ -409,6 +414,7 @@ func cmdSource(args []string) error {
 				fmt.Fprintln(os.Stderr, "warning: could not write state:", err)
 			}
 		},
+		AfterPayload: receiptHook(c, *cfgPath, receipt.EventSend),
 	}
 	ctx := signalCtx()
 	syncOnce := func() error {
@@ -732,7 +738,7 @@ func cmdSink(args []string) error {
 		if oerr != nil {
 			return oerr
 		}
-		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces, StorageSurfaces: storageSurfaces}
+		srv := &sink.Server{Opener: opener, CookieSurfaces: cookieSurfaces, SecretSurfaces: secretSurfaces, StorageSurfaces: storageSurfaces, AfterApply: receiptHook(c, *cfgPath, receipt.EventApply)}
 		fmt.Fprintf(os.Stderr, "sink: reading frames from stdin, surfaces %v\n", c.Surfaces)
 		return srv.Serve(ctx, os.Stdin)
 	}
@@ -809,6 +815,7 @@ func cmdSink(args []string) error {
 				StorageSurfaces: storageSurfaces,
 				AuthTimeout:     authTimeout,
 				ApplyMu:         &applyMu,
+				AfterApply:      receiptHook(c, *cfgPath, receipt.EventApply),
 			}
 			if err := srv.Serve(ctx, conn); err != nil {
 				fmt.Fprintln(os.Stderr, "connection ended:", err)
@@ -887,6 +894,9 @@ func cmdDoctor(args []string) error {
 	c, unknown, err := config.LoadChecked(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if c.Receipts.Enabled && c.Receipts.Path == "" {
+		c.Receipts.Path = receipt.ResolvePath(c, *cfgPath)
 	}
 	checks := doctor.Run(c)
 	for _, k := range unknown {
@@ -1973,4 +1983,134 @@ func signalCtx() context.Context {
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-ch; cancel() }()
 	return ctx
+}
+
+func receiptHook(c config.Config, cfgPath, event string) func(wire.Payload) {
+	if !c.Receipts.Enabled {
+		return nil
+	}
+	id := receipt.Identity(c)
+	log := &receipt.Log{
+		Path:     receipt.ResolvePath(c, cfgPath),
+		Role:     c.Role,
+		SourceID: id,
+		SinkID:   id,
+	}
+	return func(p wire.Payload) {
+		key, err := keyfile.Load(c.KeyPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
+			return
+		}
+		log.Key = key
+		if err := log.Append(event, p); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: could not write receipt:", err)
+		}
+	}
+}
+
+func cmdReceipts(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: agentpantry receipts verify|show [flags]")
+	}
+	switch args[0] {
+	case "verify":
+		return cmdReceiptsVerify(args[1:])
+	case "show":
+		return cmdReceiptsShow(args[1:])
+	default:
+		return fmt.Errorf("unknown receipts subcommand %q (want verify or show)", args[0])
+	}
+}
+
+func receiptsFlags(name string, args []string) (config.Config, string, string, error) {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	path := fs.String("path", "", "receipt log path (overrides config)")
+	if err := fs.Parse(args); err != nil {
+		return config.Config{}, "", "", err
+	}
+	c, err := loadConfigWarn(*cfgPath)
+	if err != nil {
+		return config.Config{}, "", "", err
+	}
+	p := *path
+	if p == "" {
+		p = receipt.ResolvePath(c, *cfgPath)
+	}
+	return c, *cfgPath, p, nil
+}
+
+func loadReceiptKeys(c config.Config) ([][]byte, error) {
+	key, err := keyfile.Load(c.KeyPath)
+	if err != nil {
+		return nil, err
+	}
+	keys := [][]byte{key}
+	if old, err := keyfile.Load(keyfile.OldKeyPath(c.KeyPath)); err == nil {
+		keys = append(keys, old)
+	}
+	return keys, nil
+}
+
+func cmdReceiptsVerify(args []string) error {
+	c, _, path, err := receiptsFlags("receipts verify", args)
+	if err != nil {
+		return err
+	}
+	keys, err := loadReceiptKeys(c)
+	if err != nil {
+		return err
+	}
+	n, err := receipt.Verify(path, keys...)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("ok: %d receipt(s), chain intact\n", n)
+	return nil
+}
+
+func cmdReceiptsShow(args []string) error {
+	fs := flag.NewFlagSet("receipts show", flag.ExitOnError)
+	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
+	pathFlag := fs.String("path", "", "receipt log path (overrides config)")
+	last := fs.Int("last", 10, "number of most recent receipts to show")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *last < 0 {
+		return fmt.Errorf("-last must not be negative")
+	}
+	c, err := loadConfigWarn(*cfgPath)
+	if err != nil {
+		return err
+	}
+	path := *pathFlag
+	if path == "" {
+		path = receipt.ResolvePath(c, *cfgPath)
+	}
+	recs, err := receipt.ReadAll(path)
+	if err != nil {
+		return err
+	}
+	if *last > 0 && len(recs) > *last {
+		recs = recs[len(recs)-*last:]
+	}
+	if *jsonOut {
+		b, err := json.MarshalIndent(recs, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	if len(recs) == 0 {
+		fmt.Println("no receipts")
+		return nil
+	}
+	for _, rec := range recs {
+		fmt.Println(receipt.FormatLine(rec))
+	}
+	return nil
 }
