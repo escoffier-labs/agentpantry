@@ -8,9 +8,9 @@ what is explicitly out of scope.
 ## What is protected
 
 - **Channel confidentiality, integrity, and authentication.** Every frame is
-  AES-256-GCM. Both ends load the same pre-shared key (`keygen`, stored `0600`).
-  An attacker on the network path cannot read, modify, or forge frames without
-  the key.
+  AES-256-GCM. Both ends load the same pre-shared key (`keygen` or `pair`,
+  stored `0600`). An attacker on the network path cannot read, modify, or forge
+  frames without the key.
 - **Cross-session replay.** Each connection begins with a random session salt; the
   per-session AES key is derived via HKDF(preSharedKey, salt). A frame captured
   from one session fails authentication on another. Over TCP the sink issues a
@@ -69,7 +69,13 @@ These are required for the guarantees above to hold:
   is loopback; `doctor` and `agentpantry sink` startup both warn on a wider
   bind.
 - **Keep the pre-shared key secret.** Anyone with the key can send frames to the
-  sink. Copy it over a secure channel and keep it `0600`.
+  sink. Copy it over a secure channel, or bootstrap it with `pair` and then
+  keep it `0600`.
+- **Treat a pairing code as a one-time password.** Share it out of band, do not
+  reuse it, and compare the printed confirmation fingerprint on both ends
+  before the first sync. The pairing listener defaults to loopback
+  (`127.0.0.1:8787`) and does not inherit the sink `peer` bind; pass `-bind`
+  to widen. Run it on loopback or a trusted private network.
 - **Treat a CDP debugging port as sensitive.** `kind = "cdp"` requires launching
   Chrome with `--remote-debugging-port`, which grants full browser control to
   anything that can reach it; bind it to loopback only.
@@ -91,10 +97,10 @@ their own lifecycles and are out of scope here.
 
 | Stage | What the code does | Operator action |
 |---|---|---|
-| **PSK generation** | `agentpantry keygen` writes a random 32-byte key (`crypto/rand`) as 64 hex chars to `psk.key` (default `$XDG_CONFIG_HOME/agentpantry/psk.key`, or `~/.config/agentpantry/psk.key` when `XDG_CONFIG_HOME` is unset), mode 0600, via an atomic same-directory temp-file write that refuses symlinked paths. With `--backup` (the default) an existing key is first copied to `psk.key.bak.<UTC timestamp>`, also 0600. (`internal/keyfile`, `internal/privfile`, `cmd/agentpantry`) | Generate on the sink, then copy the file to the source over a secure channel. Both ends load the same file. |
+| **PSK generation** | `agentpantry keygen` writes a random 32-byte key (`crypto/rand`) as 64 hex chars to `psk.key` (default `$XDG_CONFIG_HOME/agentpantry/psk.key`, or `~/.config/agentpantry/psk.key` when `XDG_CONFIG_HOME` is unset), mode 0600, via an atomic same-directory temp-file write that refuses symlinked paths. With `--backup` (the default) an existing key is first copied to `psk.key.bak.<UTC timestamp>`, also 0600. `agentpantry pair` is an additive alternative that derives the same 32-byte file via SPAKE2 (see Pairing below) and writes it through the same `keyfile` path. (`internal/keyfile`, `internal/privfile`, `internal/pair`, `cmd/agentpantry`) | Generate on the sink with `keygen` and copy the file, or run `pair` on both ends and compare confirmation fingerprints. Both ends load the same file. |
 | **File permissions** | Key, old-key, and backup files are created with mode 0600 (the temp file is created 0600, then renamed, with no window at a looser mode). Parent directories are created 0700. On non-Windows, `Load` rejects a key file whose mode grants any group/other bits, checked on the open descriptor. Windows does not enforce Unix 0600 semantics, and the load-time mode check is skipped there. (`internal/keyfile/keyfile.go`) | Keep the key at 0600 and off shared storage. `doctor` verifies that the key exists and is 32 bytes, plus mode 0600 on non-Windows. |
 | **Rotation window** | `agentpantry rotate-key` (sink) preserves the current key at `psk.key.old` (0600) and writes a fresh key. A second rotation is refused while one is in progress. The sink re-reads the key files per connection, so a running sink picks up the rotation without a restart and accepts new connections under either key. It tries the new key first, and the first authenticated frame pins the session to that key. An old-key session logs a warning. `rotate-key -finish` deletes `psk.key.old` and ends the window. (`internal/keyfile`, `internal/transport/fallback.go`, `cmd/agentpantry`) | Finish promptly: until `-finish`, a holder of the old key is still accepted. `doctor` and `status` show a rotation in progress. |
-| **Session-key lifetime** | Each connection opens with a fresh random 16-byte salt. Over TCP the sink issues it, while over `--stdio` the source does. The connection derives a per-session 32-byte AES-256-GCM key via HKDF-SHA256(PSK, salt, info `"agentpantry/v1 session"`). The key lives only inside that connection's sealer/opener and is dropped when the connection closes. A new connection means a new salt and a new key. During a rotation both candidate session keys are derived from the same salt. (`internal/transport/handshake.go`, `envelope.go`) | None. Never make the salt static or reuse a session key. |
+| **Session-key lifetime** | Each connection opens with a fresh random 16-byte salt. Over TCP the sink issues it, while over `--stdio` the source does. The connection derives a per-session 32-byte AES-256-GCM key via HKDF-SHA256(PSK, salt, info `"agentpantry/v1 session"`). The key lives only inside that connection's sealer/opener and is dropped when the connection closes. A new connection means a new salt and a new key. During a rotation both candidate session keys are derived from the same salt. Pairing does not change this path: after `pair` writes `psk.key`, sync still uses `SendSalt`/`RecvSalt` and the same HKDF info string. (`internal/transport/handshake.go`, `envelope.go`, `internal/pair`) | None. Never make the salt static or reuse a session key. |
 | **Zeroization** | **Not implemented.** Neither the PSK, the derived session keys, nor browser/vault keys are overwritten in memory. They are ordinary Go byte slices released to the garbage collector when no longer referenced. There are no zeroize/wipe calls in the codebase. | Do not rely on memory scrubbing. Protect key material at rest (0600, host access control) and assume key bytes may persist in process memory while the process runs. |
 | **Recovery** | There is no escrow or recovery path for a lost PSK. `keygen` on the sink is the blunt recovery path: stop or close existing sink sessions, redistribute the replacement PSK, then restart persistent sources (they load the key once at startup). Unlike `rotate-key`, the sink accepts only the new key from that moment, so sources still holding the old key stop authenticating. (`cmd/agentpantry`, README "Rotating the pre-shared key") | On suspected exposure, prefer `rotate-key` for zero-downtime rotation, finish it promptly, and delete any `psk.key.bak.*` files: they are live retired key material. |
 
@@ -103,7 +109,60 @@ section below): no forward secrecy, because the PSK is long-lived. Old-key
 acceptance lasts for the rotation grace window. `--stdio` gets session
 separation from the salt but relies on the surrounding channel (for example
 SSH) for replay protection. Retired key material on disk (`psk.key.old`,
-`psk.key.bak.*`) stays sensitive until the operator deletes it.
+`psk.key.bak.*`) stays sensitive until the operator deletes it. Pairing
+establishes the PSK; it does not add forward secrecy to later sync sessions.
+
+## Pairing (SPAKE2 short code)
+
+`agentpantry pair` is an optional setup phase that runs **before** a durable
+PSK exists on both ends. It is not a replacement for the session-salt
+handshake and is not used again once `psk.key` has been written.
+
+- **What happens.** The sink generates an 8-character Crockford code (40 bits,
+  `XXXX-XXXX`), listens on a dedicated TCP address, and waits. The source
+  dials that address and both sides run SPAKE2 (RFC 9382, Edwards25519) with
+  the code as the password and fixed identities
+  `agentpantry/v1 pair-source` / `agentpantry/v1 pair-sink`. The SPAKE2 shared
+  secret is mapped to a 32-byte PSK via HKDF-SHA256 with info
+  `"agentpantry/v1 pair-psk"` (distinct from `"agentpantry/v1 session"`).
+  Built-in SPAKE2 confirmation MACs must verify before either side writes
+  `psk.key`. Both ends then print `SHA-256(PSK)[:8]` as a hyphenated hex
+  fingerprint for operator compare.
+- **Limits during the window.** The sink accepts at most three failed SPAKE2
+  *code* attempts (idle or stray TCP connects do not count). That attempt
+  cap is a hard bound: a new exchange is not started when
+  `failures + inFlight >= 3`; those connections are closed as stray and do
+  not count. At most four concurrent exchanges are a secondary DoS limit.
+  Connections beyond either cap are closed without a SPAKE2 attempt. The
+  listener defaults to `127.0.0.1:8787`
+  and does not inherit the sink config `peer` (an explicit `-bind` is
+  required to widen; an empty host such as `:8787` is treated as
+  all-interfaces). Each pairing TCP exchange is deadline-bounded (2s to the
+  first byte, then 30s), and the listener expires after two minutes by
+  default. Pairing frames are length-prefixed and capped at 1 KiB (separate
+  from the 8 MiB sync frame cap). A wrong code fails confirmation and does
+  not write a key. Pairing refuses to start while a `rotate-key` grace file
+  (`psk.key.old`) exists. Re-pairing an existing key backs it up like
+  `keygen` (`psk.key.bak.*`) and is bootstrap/recovery, not a substitute
+  for `rotate-key`.
+- **Peer validation.** SPAKE2 detects a password mismatch. The sink verifies
+  the initiator confirmation MAC before sending its own (RFC 9382 ordering).
+  That does not by itself prove the operator paired with the intended
+  machine if the code was shared with the wrong peer. Compare the
+  confirmation fingerprints before the first `source`/`sink` sync. This is a
+  new check the file-copy PSK path does not need, because copying one file
+  cannot silently agree a different key with a third party who also has the
+  code.
+- **After pairing.** Tear down the pairing listener (the command exits).
+  Steady-state sync never sends the short code again. Session salts and
+  per-session HKDF keys continue to work exactly as in the checklist above,
+  including the `--stdio` salt-direction inversion.
+
+Newly exposed residual risks (also listed under tradeoffs): online guessing
+of the short code during the pairing window, pairing MitM if the operator
+mistypes or shares the code with the wrong host, and a new pre-auth protocol
+surface on the pairing bind address. The resulting artifact is still a
+long-lived PSK, so pairing does not add forward secrecy.
 
 ## Not protected / tradeoffs
 
@@ -125,6 +184,22 @@ SSH) for replay protection. Retired key material on disk (`psk.key.old`,
   not establish encryption compatibility, and an absent Electron singleton
   lock does not prove the app is stopped. The current adapter reports those
   limits and performs no app write.
+- **Short-code pairing is guessable during its window.** The code has 40 bits
+  of entropy. The sink locks after three failed SPAKE2 code attempts (and
+  will not start another exchange once in-flight plus already-failed
+  attempts reach that cap), runs at most four exchanges at once as a DoS
+  limit, and expires the listener after two minutes, and pairing should
+  stay on loopback or a trusted private network. An attacker who can
+  reach the pairing bind and guess the code
+  before lockout becomes the peer; compare confirmation fingerprints and
+  re-pair (or `rotate-key`) if the code or fingerprint was exposed.
+- **Pairing MitM if the code is shared with the wrong machine.** SPAKE2
+  confirmation fails on a password mismatch, but two honest peers that both
+  received the same code will agree a PSK. The printed fingerprint is the
+  operator check that the intended pair succeeded.
+- **Pre-auth pairing listener.** `pair --role sink` is a short-lived
+  unauthenticated TCP accept loop (attempt-capped, TTL-bounded, 1 KiB frames).
+  It is a distinct pre-auth surface from the sync sink's 32 connection slots.
 - **Pre-auth connection slots on the sink.** The sink serves at most 32 concurrent
   TCP connections, each held up to 30 seconds waiting for the first
   authenticated frame before the connection is closed. A peer that can reach the

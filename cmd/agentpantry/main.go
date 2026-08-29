@@ -57,6 +57,8 @@ func main() {
 		err = cmdInit(args)
 	case "keygen":
 		err = cmdKeygen(args)
+	case "pair":
+		err = cmdPair(args)
 	case "source":
 		err = cmdSource(args)
 	case "sink":
@@ -100,6 +102,7 @@ usage: agentpantry <command> [flags]
 commands:
   init             write a commented starter config (-role source|sink)
   keygen           generate the pre-shared key both endpoints share
+  pair             bootstrap the PSK with a one-time SPAKE2 short code
   rotate-key       rotate the pre-shared key in place; -finish retires the old key
   source           run on the daily driver: watch browsers, push sealed diffs
   sink             run on the agent machine: receive diffs, apply to surfaces

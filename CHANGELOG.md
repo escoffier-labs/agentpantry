@@ -5,6 +5,7 @@
 ### Added
 - `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`; refuses `PATH`/`LD_PRELOAD` and other loader vars).
 - Hash-chained local sync receipts (`receipts verify` / `receipts show`): opt-in JSONL provenance of each send/apply with payload digests only (no cookie or secret values), a signed monotonic `seq`, a `receipts.head` tip pointer, and a configured per-node identity (default: hostname).
+- `agentpantry pair` bootstraps the long-lived PSK with a one-time SPAKE2 short code, as an alternative to copying `psk.key`. The pairing listener defaults to `127.0.0.1:8787` (not the sink `peer` bind). The session-salt handshake and HKDF session keys are unchanged.
 
 ## v0.7.0 - 2026-08-26
 

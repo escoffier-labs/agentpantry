@@ -63,6 +63,7 @@ agentpantry status
 ### On the sink (agent machine)
     agentpantry init --role sink
     agentpantry keygen
+    # or: agentpantry pair --role sink   # then pair --role source --code ... on the daily driver
     # copy ~/.config/agentpantry/psk.key to the source machine
     # edit config.toml: set peer to the bind address, e.g. 0.0.0.0:8787 over your VPN
     agentpantry doctor
@@ -116,7 +117,9 @@ updates source state, closes the connection, and exits 0 after a successful
 initial sync.
 
 Both ends must hold the same pre-shared key. Generate it once on the sink with
-`agentpantry keygen` and copy the file to the source. Run `agentpantry status`
+`agentpantry keygen` and copy the file to the source, or bootstrap it with
+`agentpantry pair` (SPAKE2 short code; compare the printed confirmation
+fingerprint on both ends before the first sync). Run `agentpantry status`
 on either machine to print the active role, peer, key path, surfaces, and the
 configured allow/deny domains. To run the source or sink as a persistent
 background service, use `agentpantry install-service`, which writes a systemd
@@ -370,7 +373,33 @@ the expected result is "sync once, then exit."
 The transport begins each connection with a session-salt handshake (the sink
 issues a fresh random salt over TCP; the source issues it over `--stdio`) and
 derives a per-session AES-256 key from the pre-shared key via HKDF, so a frame
-captured from one session cannot be replayed into another. Secret syncing can be
+captured from one session cannot be replayed into another.
+
+### Pairing with a short code
+
+`agentpantry pair` is an additive setup mode that bootstraps `psk.key` so you
+do not have to copy the 64-hex file by hand. It does not replace the
+session-salt handshake or HKDF session keys.
+
+    # on the sink (prints a one-time XXXX-XXXX code and waits)
+    agentpantry pair --role sink [--bind 127.0.0.1:8787] [--config PATH]
+
+    # on the source (same code, out of band)
+    agentpantry pair --role source --code ABCD-EFGH --peer 127.0.0.1:8787
+
+Compare the `confirmation:` fingerprint printed on both ends before the first
+sync. The pairing listener defaults to `127.0.0.1:8787` and does not inherit
+the sink config `peer` (that field is the sync bind and is often
+`0.0.0.0:8787`). Pass `-bind` to listen elsewhere; a non-loopback or empty-host
+address (`:8787`) prints a warning. The listener is short-lived (two minutes,
+three failed SPAKE2 code attempts, at most four concurrent exchanges) and
+should stay on loopback or a trusted private network. Treat the code as a
+one-time password. Re-pairing backs up an
+existing key like `keygen`; use `rotate-key` for zero-downtime rotation.
+Pairing refuses to start while a rotation grace file (`psk.key.old`) exists.
+Manual `keygen` plus a secure copy remains supported.
+
+Secret syncing can be
 narrowed with a `[secret_names]` allow/deny policy (exact names; deny overrides
 allow; an empty allow permits everything in the `secrets_dir`). `make gosec`
 runs the security scanner, `make vuln` runs govulncheck, and

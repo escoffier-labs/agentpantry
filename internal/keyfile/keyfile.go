@@ -27,6 +27,22 @@ func Generate(path string) error {
 // When backup is true and path already exists, it first copies the existing key
 // beside the original as path.bak.<UTC timestamp>, also mode 0600.
 func GenerateWithBackup(path string, backup bool) (string, error) {
+	key := make([]byte, keyLen)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	return WriteWithBackup(path, key, backup)
+}
+
+// WriteWithBackup writes a caller-supplied 32-byte key as hex to path with 0600,
+// using the same atomic symlink-refusing path as Generate. Pairing uses this to
+// persist a SPAKE2-derived PSK without inventing a second write primitive.
+// When backup is true and path already exists, it first copies the existing key
+// beside the original as path.bak.<UTC timestamp>, also mode 0600.
+func WriteWithBackup(path string, key []byte, backup bool) (string, error) {
+	if len(key) != keyLen {
+		return "", fmt.Errorf("key must be %d bytes, got %d", keyLen, len(key))
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
@@ -44,10 +60,6 @@ func GenerateWithBackup(path string, backup bool) (string, error) {
 		if err != nil {
 			return "", err
 		}
-	}
-	key := make([]byte, keyLen)
-	if _, err := rand.Read(key); err != nil {
-		return "", err
 	}
 	// Atomic, symlink-refusing write: the key is 0600 from birth (no window
 	// where it inherits a pre-existing file's looser mode) and a crash cannot
