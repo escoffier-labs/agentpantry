@@ -18,6 +18,16 @@ import (
 // a VPN-wide address such as 0.0.0.0:8787.
 const defaultPairBind = "127.0.0.1:8787"
 
+func flagPassed(fs *flag.FlagSet, name string) bool {
+	seen := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			seen = true
+		}
+	})
+	return seen
+}
+
 func sinkPairAddr(bindFlag string) string {
 	if bindFlag != "" {
 		return bindFlag
@@ -62,7 +72,9 @@ func cmdPair(args []string) error {
 			return err
 		}
 		c = loaded
-	} else if *cfgPath != filepath.Join(config.Dir(), "config.toml") && !errors.Is(statErr, os.ErrNotExist) {
+	} else if errors.Is(statErr, os.ErrNotExist) && !flagPassed(fs, "config") {
+		// Default config path is optional; an explicit -config must exist.
+	} else if statErr != nil {
 		return statErr
 	}
 

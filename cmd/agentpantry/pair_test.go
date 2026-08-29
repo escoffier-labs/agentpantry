@@ -155,6 +155,23 @@ func TestPairHelpMentionsFlags(t *testing.T) {
 	}
 }
 
+func TestPairExplicitConfigMissingFails(t *testing.T) {
+	bin := buildBin(t)
+	dir := t.TempDir()
+	key := filepath.Join(dir, "psk.key")
+	missing := filepath.Join(dir, "no-such-config.toml")
+	code, _, stderr := runCmd(t, bin, "pair", "-role", "sink", "-config", missing, "-key", key, "-bind", "127.0.0.1:0")
+	if code == 0 {
+		t.Fatal("explicit missing -config must fail")
+	}
+	if !strings.Contains(stderr, "no-such-config.toml") {
+		t.Fatalf("error must name the missing config, got %q", stderr)
+	}
+	if _, err := os.Stat(key); err == nil {
+		t.Fatal("must not write a PSK when an explicit -config is missing")
+	}
+}
+
 func TestPairDefaultsToLoopbackDespiteWideSinkPeer(t *testing.T) {
 	ln, err := net.Listen("tcp", defaultPairBind)
 	if err != nil {
