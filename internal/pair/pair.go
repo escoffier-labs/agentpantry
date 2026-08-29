@@ -25,8 +25,9 @@ const (
 	DefaultTimeout = 2 * time.Minute
 	// MaxAttempts is the number of failed SPAKE2 *code* tries before lockout.
 	MaxAttempts = 3
-	// MaxInFlight is the number of concurrent pairing exchanges. Extra
-	// connections are closed without a SPAKE2 attempt until a slot frees.
+	// MaxInFlight is a secondary DoS limit on concurrent pairing exchanges.
+	// The attempt cap is the hard bound: Serve will not start an exchange
+	// when failures+inFlight is already at MaxAttempts.
 	MaxInFlight = 4
 	// ConnTimeout bounds one pairing TCP exchange after the first byte.
 	ConnTimeout = 30 * time.Second

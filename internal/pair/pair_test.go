@@ -210,10 +210,14 @@ func TestServeBurstWrongCodeRespectsCap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	const attempts, flight, burst = 2, 2, 12
+	// InFlight is larger than Attempts so a failure freeing a slot cannot
+	// start another guess. Hold each started exchange until extras finish.
+	const attempts, flight, extras = 2, 4, 12
 	addrCh := make(chan string, 1)
 	errc := make(chan error, 1)
 	var started atomic.Int64
+	hold := make(chan struct{})
+	startedCh := make(chan struct{}, attempts)
 	go func() {
 		_, err := Serve(ctx, ServeConfig{
 			Addr:     "127.0.0.1:0",
@@ -223,33 +227,55 @@ func TestServeBurstWrongCodeRespectsCap(t *testing.T) {
 			OnListening: func(addr string) {
 				addrCh <- addr
 			},
-			OnExchange: func() { started.Add(1) },
+			OnExchange: func() {
+				started.Add(1)
+				startedCh <- struct{}{}
+				<-hold
+			},
 		})
 		errc <- err
 	}()
 	addr := <-addrCh
 
-	var wg sync.WaitGroup
-	for i := 0; i < burst; i++ {
-		wg.Add(1)
+	var firstWG, extraWG sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		firstWG.Add(1)
 		go func() {
-			defer wg.Done()
+			defer firstWG.Done()
 			_, _ = Dial(ctx, addr, "FFFF-FFFF")
 		}()
 	}
+	for i := 0; i < attempts; i++ {
+		select {
+		case <-startedCh:
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for in-flight exchanges to start")
+		}
+	}
+	if n := started.Load(); n != int64(attempts) {
+		t.Fatalf("held exchanges %d, want %d", n, attempts)
+	}
+
+	for i := 0; i < extras; i++ {
+		extraWG.Add(1)
+		go func() {
+			defer extraWG.Done()
+			_, _ = Dial(ctx, addr, "FFFF-FFFF")
+		}()
+	}
+	extraWG.Wait()
+	if n := started.Load(); n != int64(attempts) {
+		t.Fatalf("extras started SPAKE2: exchanges %d exceed attempt cap %d", n, attempts)
+	}
+
+	close(hold)
+	firstWG.Wait()
 	err = <-errc
-	wg.Wait()
 	if err == nil || !strings.Contains(err.Error(), "locked") {
 		t.Fatalf("want lockout, got %v", err)
 	}
-	if n := started.Load(); n > int64(attempts) {
+	if n := started.Load(); n != int64(attempts) {
 		t.Fatalf("SPAKE2 exchanges %d exceed attempt cap %d", n, attempts)
-	}
-	if n := started.Load(); n > int64(flight) {
-		t.Fatalf("SPAKE2 exchanges %d exceed in-flight cap %d", n, flight)
-	}
-	if n := started.Load(); n == 0 {
-		t.Fatal("expected at least one code exchange")
 	}
 }
 

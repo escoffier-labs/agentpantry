@@ -74,10 +74,10 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 	inFlight := 0
 	start := func(c net.Conn) {
 		inFlight++
-		if cfg.OnExchange != nil {
-			cfg.OnExchange()
-		}
 		go func(c net.Conn) {
+			if cfg.OnExchange != nil {
+				cfg.OnExchange()
+			}
 			psk, err := exchangeConn(c, cfg.Code, true)
 			select {
 			case results <- pairResult{psk, err}:
@@ -85,8 +85,10 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 			}
 		}(c)
 	}
+	// Attempt cap is a hard bound: never start an exchange that could
+	// push failures+inFlight past Attempts. InFlight is only a DoS limit.
 	canStart := func() bool {
-		return inFlight < cfg.InFlight && failures < cfg.Attempts
+		return inFlight < cfg.InFlight && failures+inFlight < cfg.Attempts
 	}
 	for {
 		select {

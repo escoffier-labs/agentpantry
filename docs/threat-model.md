@@ -129,9 +129,12 @@ handshake and is not used again once `psk.key` has been written.
   `psk.key`. Both ends then print `SHA-256(PSK)[:8]` as a hyphenated hex
   fingerprint for operator compare.
 - **Limits during the window.** The sink accepts at most three failed SPAKE2
-  *code* attempts (idle or stray TCP connects do not count) and at most four
-  concurrent pairing exchanges. Connections beyond the in-flight cap are
-  closed without a SPAKE2 attempt. The listener defaults to `127.0.0.1:8787`
+  *code* attempts (idle or stray TCP connects do not count). That attempt
+  cap is a hard bound: a new exchange is not started when
+  `failures + inFlight >= 3`; those connections are closed as stray and do
+  not count. At most four concurrent exchanges are a secondary DoS limit.
+  Connections beyond either cap are closed without a SPAKE2 attempt. The
+  listener defaults to `127.0.0.1:8787`
   and does not inherit the sink config `peer` (an explicit `-bind` is
   required to widen; an empty host such as `:8787` is treated as
   all-interfaces). Each pairing TCP exchange is deadline-bounded (2s to the
@@ -182,10 +185,12 @@ long-lived PSK, so pairing does not add forward secrecy.
   lock does not prove the app is stopped. The current adapter reports those
   limits and performs no app write.
 - **Short-code pairing is guessable during its window.** The code has 40 bits
-  of entropy. The sink locks after three failed SPAKE2 code attempts, runs
-  at most four exchanges at once, and expires the listener after two
-  minutes, and pairing should stay on loopback or a trusted private
-  network. An attacker who can reach the pairing bind and guess the code
+  of entropy. The sink locks after three failed SPAKE2 code attempts (and
+  will not start another exchange once in-flight plus already-failed
+  attempts reach that cap), runs at most four exchanges at once as a DoS
+  limit, and expires the listener after two minutes, and pairing should
+  stay on loopback or a trusted private network. An attacker who can
+  reach the pairing bind and guess the code
   before lockout becomes the peer; compare confirmation fingerprints and
   re-pair (or `rotate-key`) if the code or fingerprint was exposed.
 - **Pairing MitM if the code is shared with the wrong machine.** SPAKE2
