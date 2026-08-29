@@ -392,8 +392,9 @@ sync. The pairing listener defaults to `127.0.0.1:8787` and does not inherit
 the sink config `peer` (that field is the sync bind and is often
 `0.0.0.0:8787`). Pass `-bind` to listen elsewhere; a non-loopback or empty-host
 address (`:8787`) prints a warning. The listener is short-lived (two minutes,
-three failed SPAKE2 code attempts) and should stay on loopback or a trusted
-private network. Treat the code as a one-time password. Re-pairing backs up an
+three failed SPAKE2 code attempts, at most four concurrent exchanges) and
+should stay on loopback or a trusted private network. Treat the code as a
+one-time password. Re-pairing backs up an
 existing key like `keygen`; use `rotate-key` for zero-downtime rotation.
 Pairing refuses to start while a rotation grace file (`psk.key.old`) exists.
 Manual `keygen` plus a secure copy remains supported.

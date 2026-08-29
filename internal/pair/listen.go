@@ -15,7 +15,9 @@ type ServeConfig struct {
 	Code        string
 	Timeout     time.Duration
 	Attempts    int
+	InFlight    int
 	OnListening func(addr string)
+	OnExchange  func()
 }
 
 type pairResult struct {
@@ -34,6 +36,9 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 	}
 	if cfg.Attempts <= 0 {
 		cfg.Attempts = MaxAttempts
+	}
+	if cfg.InFlight <= 0 {
+		cfg.InFlight = MaxInFlight
 	}
 	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
@@ -64,8 +69,25 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 		}
 	}()
 
-	results := make(chan pairResult, 8)
+	results := make(chan pairResult, cfg.InFlight)
 	failures := 0
+	inFlight := 0
+	start := func(c net.Conn) {
+		inFlight++
+		if cfg.OnExchange != nil {
+			cfg.OnExchange()
+		}
+		go func(c net.Conn) {
+			psk, err := exchangeConn(c, cfg.Code, true)
+			select {
+			case results <- pairResult{psk, err}:
+			case <-ctx.Done():
+			}
+		}(c)
+	}
+	canStart := func() bool {
+		return inFlight < cfg.InFlight && failures < cfg.Attempts
+	}
 	for {
 		select {
 		case err := <-acceptErr:
@@ -74,14 +96,13 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 			}
 			return nil, err
 		case conn := <-conns:
-			go func(c net.Conn) {
-				psk, err := exchangeConn(c, cfg.Code, true)
-				select {
-				case results <- pairResult{psk, err}:
-				case <-ctx.Done():
-				}
-			}(conn)
+			if !canStart() {
+				_ = conn.Close()
+				continue
+			}
+			start(conn)
 		case res := <-results:
+			inFlight--
 			if res.err == nil {
 				return res.psk, nil
 			}
