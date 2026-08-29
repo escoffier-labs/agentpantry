@@ -289,6 +289,7 @@ func TestServeIgnoresIdleAndStrayConnects(t *testing.T) {
 
 	addrCh := make(chan string, 1)
 	errc := make(chan error, 1)
+	finished := make(chan struct{}, 8)
 	var sinkKey []byte
 	go func() {
 		k, err := Serve(ctx, ServeConfig{
@@ -298,6 +299,7 @@ func TestServeIgnoresIdleAndStrayConnects(t *testing.T) {
 			OnListening: func(addr string) {
 				addrCh <- addr
 			},
+			OnResult: func() { finished <- struct{}{} },
 		})
 		sinkKey = k
 		errc <- err
@@ -313,6 +315,11 @@ func TestServeIgnoresIdleAndStrayConnects(t *testing.T) {
 		t.Fatal("idle connect must be dropped before the SPAKE2 phase")
 	}
 	_ = idle.Close()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatal("idle exchange did not finish")
+	}
 
 	// Length 2, version 9: a stray frame, not a SPAKE2 share. Must not
 	// increment the code-attempt counter (Attempts is 1).
@@ -322,6 +329,11 @@ func TestServeIgnoresIdleAndStrayConnects(t *testing.T) {
 	}
 	_, _ = junk.Write([]byte{0, 0, 0, 2, 9, 9})
 	_ = junk.Close()
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		t.Fatal("stray exchange did not finish")
+	}
 
 	srcKey, err := Dial(ctx, addr, code)
 	if err != nil {

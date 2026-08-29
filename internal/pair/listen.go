@@ -18,6 +18,7 @@ type ServeConfig struct {
 	InFlight    int
 	OnListening func(addr string)
 	OnExchange  func()
+	OnResult    func()
 }
 
 type pairResult struct {
@@ -92,6 +93,9 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 	}
 	apply := func(res pairResult) ([]byte, error, bool) {
 		inFlight--
+		if cfg.OnResult != nil {
+			cfg.OnResult()
+		}
 		if res.err == nil {
 			return res.psk, nil, true
 		}
