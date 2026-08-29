@@ -164,8 +164,9 @@ framing do not care which.
 that the pre-shared key exists, is 32 bytes, and is mode 0600, that the role
 and peer are well formed, and that the role-specific pieces are in place: on a
 source it confirms each browser cookie store and the secrets directory are
-readable, and on a sink it confirms the bind address is loopback (warning if
-not), and that each configured surface is satisfiable. On a source it also
+readable, and on a sink it confirms the bind address is loopback (warning for
+wide binds, including an empty host such as `:8787`), and that each configured
+surface is satisfiable. On a source it also
 dials the peer to confirm reachability; pass `--no-net` to skip that or
 `--timeout` to change the dial timeout. A source config may set
 `peer = "none"` for a local script-driven deployment with no long-running
