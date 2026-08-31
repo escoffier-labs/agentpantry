@@ -61,14 +61,15 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// IsLoopbackBind reports whether a sink peer address binds only to loopback.
-// Exported so the sink startup path can warn on wide binds, not just doctor.
+// IsLoopbackBind reports whether a listener address binds only to loopback.
+// An empty host is not loopback: net.Listen treats ":port" as a wildcard bind.
+// Exported so startup paths can warn on wide binds, not just doctor.
 func IsLoopbackBind(peer string) bool {
 	host, _, err := net.SplitHostPort(peer)
 	if err != nil {
 		return false
 	}
-	if host == "" || host == "localhost" {
+	if host == "localhost" {
 		return true
 	}
 	ip := net.ParseIP(host)

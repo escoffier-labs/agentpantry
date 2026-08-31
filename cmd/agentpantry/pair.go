@@ -4,11 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/doctor"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/pair"
 )
@@ -33,23 +33,6 @@ func sinkPairAddr(bindFlag string) string {
 		return bindFlag
 	}
 	return defaultPairBind
-}
-
-// pairingBindIsWide reports a pre-auth listen address that is not loopback.
-// Empty host (":8787") is wide: net.Listen binds all interfaces.
-func pairingBindIsWide(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return true
-	}
-	if host == "" {
-		return true
-	}
-	if host == "localhost" {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return ip == nil || !ip.IsLoopback()
 }
 
 func cmdPair(args []string) error {
@@ -105,7 +88,7 @@ func cmdPair(args []string) error {
 	switch r {
 	case "sink":
 		addr := sinkPairAddr(*bind)
-		if pairingBindIsWide(addr) {
+		if !doctor.IsLoopbackBind(addr) {
 			fmt.Fprintf(os.Stderr, "warning: pairing bind %s exposes a pre-auth SPAKE2 listener beyond loopback\n", addr)
 		}
 		code, err := pair.GenerateCode()

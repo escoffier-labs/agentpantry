@@ -24,26 +24,6 @@ func TestSinkPairAddrIgnoresConfigPeer(t *testing.T) {
 	}
 }
 
-func TestPairingBindIsWide(t *testing.T) {
-	cases := []struct {
-		addr string
-		wide bool
-	}{
-		{":8787", true},
-		{"0.0.0.0:8787", true},
-		{"[::]:8787", true},
-		{"192.0.2.10:8787", true},
-		{"127.0.0.1:8787", false},
-		{"[::1]:8787", false},
-		{"localhost:8787", false},
-	}
-	for _, tc := range cases {
-		if got := pairingBindIsWide(tc.addr); got != tc.wide {
-			t.Errorf("pairingBindIsWide(%q) = %v, want %v", tc.addr, got, tc.wide)
-		}
-	}
-}
-
 func TestPairRequiresRoleAndCode(t *testing.T) {
 	bin := buildBin(t)
 	dir := t.TempDir()
