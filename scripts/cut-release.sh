@@ -15,8 +15,8 @@
 #   6. confirm        - the running `agentpantry version` MUST report the tag,
 #                       or the script fails loudly
 #
-# Idempotency: if the tag already exists the script refuses; re-running after a
-# partial failure past the tag step is safe from step 4 onward (skips existing).
+# No resume: if the tag already exists the script refuses, so do not re-run
+# after the tag step; recover by hand with the steps printed by the wait gate.
 set -euo pipefail
 
 REPO="escoffier-labs/agentpantry"
@@ -80,8 +80,17 @@ for _ in $(seq 1 90); do
   sleep 10
 done
 if [[ "$published" != true ]]; then
-  echo "warning: release ${VERSION} not visible yet after ~15m; check the Actions tab." >&2
-  echo "         continuing to install the live binary from the local tagged tree." >&2
+  cat >&2 <<EOF
+error: release ${VERSION} not visible after ~15m of polling; refusing to install.
+The tag ${VERSION} was already pushed, so do NOT re-run this script (it will
+refuse because the tag exists). Recover with:
+  1. Check the workflow run: https://github.com/${REPO}/actions
+  2. Inspect the release: gh release view "${VERSION}" --repo "${REPO}"
+  3. Once the release is published,
+     finish the local install by hand from this checkout: make install
+  4. Confirm the live binary reports the tag: agentpantry version
+EOF
+  exit 1
 fi
 
 # ---- 5. install the live binary --------------------------------------------

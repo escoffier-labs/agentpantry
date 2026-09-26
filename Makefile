@@ -37,6 +37,7 @@ clean-dist:
 	rm -rf dist
 package: clean-dist test vet gosec vuln
 	mkdir -p dist/tmp
+	set -e; \
 	for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
 		arch=$${platform#*/}; \
