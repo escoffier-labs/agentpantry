@@ -357,8 +357,14 @@ exit 0
 
 // setupCutReleaseFixture builds an isolated repo root containing a verbatim
 // copy of the real scripts/cut-release.sh plus fakes for every external
-// command, and returns the root and state dir.
-func setupCutReleaseFixture(t *testing.T, ghMode string) (string, string) {
+// command, and returns the root, state dir, and fake bin dir.
+//
+// The fake bin dir is returned explicitly (and mirrored in
+// CUTRELEASE_FAKEBIN) so runCutRelease can re-assert its precedence INSIDE
+// the running Bash. On Windows, a Bash launched from PowerShell reinserts
+// Git paths ahead of the inherited PATH, so inheriting PATH alone lets the
+// real git win ("fatal: not a git repository").
+func setupCutReleaseFixture(t *testing.T, ghMode string) (string, string, string) {
 	t.Helper()
 	releaseBash(t) // fatal if no shell available
 	root := repoRootForRelease(t)
@@ -381,15 +387,42 @@ func setupCutReleaseFixture(t *testing.T, ghMode string) (string, string) {
 	t.Setenv("FAKESTATE", state)
 	t.Setenv("GH_MODE", ghMode)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return tmpRoot, state
+	t.Setenv("CUTRELEASE_FAKEBIN", bin)
+	return tmpRoot, state, bin
 }
 
-func runCutRelease(t *testing.T, tmpRoot string) (string, int) {
+func runCutRelease(t *testing.T, tmpRoot, fakeBin string) (string, int) {
 	t.Helper()
 	bash := releaseBash(t)
+	if fakeBin == "" {
+		fakeBin = os.Getenv("CUTRELEASE_FAKEBIN")
+	}
+	if fakeBin == "" {
+		t.Fatal("runCutRelease: missing fake bin dir (setupCutReleaseFixture must pass it explicitly)")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), releaseExecTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bash, "scripts/cut-release.sh", "v9.9.9")
+	// Re-assert fake-bin precedence INSIDE the already-running Bash, after
+	// its startup path reorder. Convert the Windows-style fake-bin path via
+	// cd/pwd so the export uses an MSYS path, then source (not re-exec) the
+	// verbatim copied script so no second Bash startup can reorder PATH
+	// again. BASH_SOURCE stays scripts/cut-release.sh so ROOT resolves to
+	// the fixture root. The resolution gate is fail-closed: any fake not
+	// resolving under the fake bin aborts before the real script runs.
+	wrapper := `set -euo pipefail
+fake_bin="$(cd -- "$1" && pwd -P)"
+export PATH="$fake_bin:$PATH"
+for cmd in git gh make sleep agentpantry; do
+  p="$(command -v "$cmd" || true)"
+  case "$p" in
+    "$fake_bin"/*) ;;
+    *) echo "error: fake $cmd not isolated (got '${p:-missing}', want under $fake_bin)" >&2; echo "PATH=$PATH" >&2; exit 99 ;;
+  esac
+done
+shift
+source scripts/cut-release.sh "$@"
+`
+	cmd := exec.CommandContext(ctx, bash, "-c", wrapper, "--", fakeBin, "v9.9.9")
 	cmd.Dir = tmpRoot
 	out, err := cmd.CombinedOutput()
 	code := 0
@@ -410,8 +443,8 @@ func runCutRelease(t *testing.T, tmpRoot string) (string, int) {
 // nonzero BEFORE make install, with recovery guidance - never install and
 // never print the final "released" message.
 func TestCutReleaseFailsBeforeInstallWhenUnpublished(t *testing.T) {
-	tmpRoot, state := setupCutReleaseFixture(t, "always-fail")
-	out, code := runCutRelease(t, tmpRoot)
+	tmpRoot, state, fakeBin := setupCutReleaseFixture(t, "always-fail")
+	out, code := runCutRelease(t, tmpRoot, fakeBin)
 	if code == 0 {
 		t.Fatalf("cut-release.sh exited 0 after polling exhaustion; unpublished release was reported as released\n%s", out)
 	}
@@ -434,8 +467,8 @@ func TestCutReleaseFailsBeforeInstallWhenUnpublished(t *testing.T) {
 // The success path must keep working: published release proceeds to install
 // and the final confirmation.
 func TestCutReleaseSuccessInstallsAndConfirms(t *testing.T) {
-	tmpRoot, state := setupCutReleaseFixture(t, "flaky")
-	out, code := runCutRelease(t, tmpRoot)
+	tmpRoot, state, fakeBin := setupCutReleaseFixture(t, "flaky")
+	out, code := runCutRelease(t, tmpRoot, fakeBin)
 	if code != 0 {
 		t.Fatalf("cut-release.sh failed on the success path (exit %d)\n%s", code, out)
 	}
