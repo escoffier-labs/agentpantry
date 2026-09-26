@@ -155,6 +155,69 @@ fi
 exit 0
 `
 
+// fakeGoHelperSource is a native-executable twin of fakeGoForPackage for
+// Windows. Native make resolves `go` through CreateProcess, which ignores the
+// extensionless bash fake and falls through to the real go.exe (then
+// `go test ./...` fails in the fixture dir with "directory prefix . does
+// not contain main module"). Compiling this stdlib-only helper to bin/go.exe
+// gives the Windows resolver a real executable that shadows the toolchain,
+// while Unix keeps using the shell script. Behavior mirrors
+// fakeGoForPackage exactly, including the FAKE_GO_FAIL_WINDOWS gate and the
+// asserted stderr text.
+const fakeGoHelperSource = `package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "build" {
+		out := ""
+		prev := ""
+		for _, a := range os.Args[1:] {
+			if prev == "-o" {
+				out = a
+			}
+			prev = a
+		}
+		if os.Getenv("FAKE_GO_FAIL_WINDOWS") == "1" && os.Getenv("GOOS") == "windows" {
+			fmt.Fprintf(os.Stderr, "fake go: simulated build failure for %s/%s\n", os.Getenv("GOOS"), os.Getenv("GOARCH"))
+			os.Exit(1)
+		}
+		if out != "" {
+			_ = os.MkdirAll(filepath.Dir(out), 0o755)
+			_ = os.WriteFile(out, []byte(fmt.Sprintf("fake-binary %s/%s\n", os.Getenv("GOOS"), os.Getenv("GOARCH"))), 0o755)
+		}
+		os.Exit(0)
+	}
+	os.Exit(0)
+}
+`
+
+// ensureFakeGoExe compiles fakeGoHelperSource to bin/go.exe on Windows so
+// native make selects the fake over the real toolchain. No-op elsewhere;
+// no new dependency (stdlib only, built with the real toolchain).
+func ensureFakeGoExe(t *testing.T, bin string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return
+	}
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "fakego.go")
+	writeReleaseFile(t, src, fakeGoHelperSource)
+	out := filepath.Join(bin, "go.exe")
+	ctx, cancel := context.WithTimeout(context.Background(), releaseExecTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, src)
+	cmd.Dir = srcDir
+	cmd.Env = append(os.Environ(), "GO111MODULE=off")
+	if raw, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building native fake go.exe: %v\n%s", err, raw)
+	}
+}
+
 // setupMakePackageFixture copies the REAL Makefile verbatim into an isolated
 // temp dir with the fixture files the recipe needs plus a fake `go`, and
 // returns the dir and the fake bin dir.
@@ -172,6 +235,7 @@ func setupMakePackageFixture(t *testing.T) (string, string) {
 	writeReleaseFile(t, filepath.Join(dir, "LICENSE"), "license\n")
 	bin := t.TempDir()
 	writeReleaseExec(t, filepath.Join(bin, "go"), fakeGoForPackage)
+	ensureFakeGoExe(t, bin)
 	return dir, bin
 }
 
