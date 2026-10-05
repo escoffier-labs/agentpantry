@@ -1,6 +1,6 @@
 # Repository Guidance
 
-Go 1.25 single-module CLI (`agentpantry`) that syncs browser cookies and named secrets from a daily-driver machine (source role) to an agent machine (sink role) over an encrypted byte stream. Single binary, role chosen by subcommand. Default branch is `master`.
+Go 1.26 single-module CLI (`agentpantry`) that syncs browser cookies and named secrets from a daily-driver machine (source role) to an agent machine (sink role) over an encrypted byte stream. Single binary, role chosen by subcommand. Default branch is `master`.
 
 ## Definition of Done
 Before reporting ANY change complete, run this and confirm it passes:
