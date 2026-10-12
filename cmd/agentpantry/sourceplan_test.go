@@ -398,9 +398,15 @@ func TestSourcePlanKeepassCredentialFiles(t *testing.T) {
 				if p.Status.ConfigReadiness != planReady {
 					t.Fatalf("want ready, got %v", p.Problems)
 				}
+				// Windows reports a writable file as 0666 regardless of the
+				// mode passed to WriteFile, so the exact mode is POSIX-only.
+				wantMode := "0600"
+				if runtime.GOOS == "windows" {
+					wantMode = "0666"
+				}
 				kp := p.SecretSources.Keepass
-				if !kp.Keyfile.Present || kp.Keyfile.Mode != "0600" || !kp.PassFile.Present || kp.PassFile.Mode != "0600" {
-					t.Fatalf("credential file rows wrong: %+v", kp)
+				if !kp.Keyfile.Present || kp.Keyfile.Mode != wantMode || !kp.PassFile.Present || kp.PassFile.Mode != wantMode {
+					t.Fatalf("credential file rows wrong (want mode %s): %+v", wantMode, kp)
 				}
 			} else {
 				if p.Status.ConfigReadiness != planNotReady || !strings.Contains(problems, tc.want) {
