@@ -402,7 +402,9 @@ frame, or write state or receipts.
 `status` keeps three answers separate. `config_readiness` is `ready` when every
 configured endpoint checks out on metadata alone. It is `not_ready` when, for
 example, the key, a cookie store, or a configured secret source is missing, the
-key mode is too open, the role is not `source`, a browser kind is unsupported, a
+key mode is too open, `keepass_path` is set without `keepass_keyfile`, a KeePass
+key or password file is not a regular file, is empty, or has a mode that is too
+open, the role is not `source`, a browser kind is unsupported, a
 CDP URL is not loopback, `capture_localstorage` is set on a non-CDP browser, or
 the TCP peer is not `host:port`. `capture_coverage` is always `not_measured`
 and `website_authentication` is always `not_verified`: only a real capture can

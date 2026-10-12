@@ -136,6 +136,31 @@ func statFile(path string) sourcePlanFile {
 	return f
 }
 
+// statCredFile stats a KeePass credential file (keepass_keyfile or
+// keepass_pass_file) and returns the first problem the real reader's
+// loadCredFile would raise that metadata alone can show: a missing path, a
+// path that is not a regular file, group or other permission bits (off
+// Windows), or an empty file. The file is never opened. An empty problem
+// means the metadata checks passed.
+func statCredFile(field, path string) (sourcePlanFile, string) {
+	f := sourcePlanFile{Path: path}
+	info, err := os.Stat(path)
+	if err != nil {
+		return f, fmt.Sprintf("%s not found at %s", field, path)
+	}
+	f.Present = true
+	f.Mode = fmt.Sprintf("%04o", info.Mode().Perm())
+	switch {
+	case !info.Mode().IsRegular():
+		return f, fmt.Sprintf("%s %s is not a regular file", field, path)
+	case runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0:
+		return f, fmt.Sprintf("%s perms %04o are too open, want 0600", field, info.Mode().Perm())
+	case info.Size() == 0:
+		return f, fmt.Sprintf("%s %s is empty", field, path)
+	}
+	return f, ""
+}
+
 func chromiumMechanism() string {
 	if runtime.GOOS == "windows" {
 		return "copy the Chromium Cookies DB, decrypt values with the DPAPI key from Local State"
@@ -286,8 +311,9 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		p.Browsers = append(p.Browsers, row)
 	}
 
-	// Secret sources: presence only. File contents and vault entries are
-	// never opened.
+	// Secret sources: metadata only. File contents and vault entries are
+	// never opened. KeePass credential files get the stat-level checks the
+	// real reader applies before it opens them.
 	if c.SecretsDir != "" {
 		p.SecretSources.SecretsDir = sourcePlanSecretsDir{
 			Enabled: true,
@@ -305,16 +331,18 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 			Present: statFile(c.KeepassPath).Present,
 			Tag:     c.KeepassTagOrDefault(),
 		}
-		if c.KeepassKeyfile != "" {
-			kp.Keyfile = statFile(c.KeepassKeyfile)
-			if !kp.Keyfile.Present {
-				problem("keepass_keyfile not found at %s", c.KeepassKeyfile)
+		if c.KeepassKeyfile == "" {
+			problem("keepass_keyfile is required when keepass_path is set")
+		} else {
+			var msg string
+			if kp.Keyfile, msg = statCredFile("keepass_keyfile", c.KeepassKeyfile); msg != "" {
+				problem("%s", msg)
 			}
 		}
 		if c.KeepassPassFile != "" {
-			kp.PassFile = statFile(c.KeepassPassFile)
-			if !kp.PassFile.Present {
-				problem("keepass_pass_file not found at %s", c.KeepassPassFile)
+			var msg string
+			if kp.PassFile, msg = statCredFile("keepass_pass_file", c.KeepassPassFile); msg != "" {
+				problem("%s", msg)
 			}
 		}
 		if !kp.Present {

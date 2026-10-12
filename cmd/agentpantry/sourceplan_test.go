@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 )
 
@@ -338,6 +340,90 @@ func TestSourcePlanKeepassPresenceOnly(t *testing.T) {
 	}
 	if out := renderPlan(t, p, true); strings.Contains(out, planSecretMarker) {
 		t.Fatalf("plan leaked vault bytes:\n%s", out)
+	}
+}
+
+// TestSourcePlanKeepassCredentialFiles keeps the plan's KeePass checks in step
+// with what keepass.Reader rejects before it decodes the vault: an unset
+// keyfile, a credential path that is not a regular file, an open mode, or an
+// empty file. Each not_ready case is also confirmed against the real reader.
+func TestSourcePlanKeepassCredentialFiles(t *testing.T) {
+	cases := []struct {
+		name      string
+		posixOnly bool // keepass does not check POSIX modes on Windows
+		setup     func(t *testing.T, dir string, c *config.Config)
+		want      string // "" means the plan must be ready
+	}{
+		{"keyfile and pass file 0600", false, func(t *testing.T, dir string, c *config.Config) {}, ""},
+		{"keyfile unset", false, func(t *testing.T, dir string, c *config.Config) {
+			c.KeepassKeyfile = ""
+		}, "keepass_keyfile is required"},
+		{"keyfile 0644", true, func(t *testing.T, dir string, c *config.Config) {
+			chmodPlanFile(t, c.KeepassKeyfile, 0o644)
+		}, "keepass_keyfile perms 0644 are too open"},
+		{"pass file 0640", true, func(t *testing.T, dir string, c *config.Config) {
+			chmodPlanFile(t, c.KeepassPassFile, 0o640)
+		}, "keepass_pass_file perms 0640 are too open"},
+		{"keyfile is a directory", false, func(t *testing.T, dir string, c *config.Config) {
+			c.KeepassKeyfile = filepath.Join(dir, "keydir")
+			if err := os.Mkdir(c.KeepassKeyfile, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, "is not a regular file"},
+		{"keyfile empty", false, func(t *testing.T, dir string, c *config.Config) {
+			if err := os.WriteFile(c.KeepassKeyfile, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "is empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.posixOnly && runtime.GOOS == "windows" {
+				t.Skip("keepass credential files are not mode-checked on Windows")
+			}
+			dir, c := planFixture(t)
+			c.KeepassPath = filepath.Join(dir, "vault.kdbx")
+			c.KeepassKeyfile = filepath.Join(dir, "vault.key")
+			c.KeepassPassFile = filepath.Join(dir, "vault.pass")
+			for _, f := range []string{c.KeepassPath, c.KeepassKeyfile, c.KeepassPassFile} {
+				if err := os.WriteFile(f, []byte(planSecretMarker), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tc.setup(t, dir, &c)
+
+			p := buildSourcePlan("source.toml", c, false, false, nil)
+			problems := strings.Join(p.Problems, "\n")
+			if tc.want == "" {
+				if p.Status.ConfigReadiness != planReady {
+					t.Fatalf("want ready, got %v", p.Problems)
+				}
+				kp := p.SecretSources.Keepass
+				if !kp.Keyfile.Present || kp.Keyfile.Mode != "0600" || !kp.PassFile.Present || kp.PassFile.Mode != "0600" {
+					t.Fatalf("credential file rows wrong: %+v", kp)
+				}
+			} else {
+				if p.Status.ConfigReadiness != planNotReady || !strings.Contains(problems, tc.want) {
+					t.Fatalf("want not_ready mentioning %q, got %v", tc.want, p.Problems)
+				}
+				// The fixture vault is not a real kdbx, so the reader must
+				// reject the credentials before it reaches the decoder.
+				r := &keepass.Reader{Path: c.KeepassPath, Keyfile: c.KeepassKeyfile, PassFile: c.KeepassPassFile, Tag: c.KeepassTagOrDefault()}
+				if _, err := r.ReadSecrets(context.Background()); err == nil || strings.Contains(err.Error(), "decode failed") {
+					t.Fatalf("keepass.Reader must reject this config before decoding, got %v", err)
+				}
+			}
+			if out := renderPlan(t, p, true); strings.Contains(out, planSecretMarker) {
+				t.Fatalf("plan leaked credential bytes:\n%s", out)
+			}
+		})
+	}
+}
+
+func chmodPlanFile(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
 	}
 }
 
