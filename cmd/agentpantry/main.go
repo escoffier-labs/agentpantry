@@ -281,14 +281,20 @@ func loadConfig(args []string) (config.Config, error) {
 // the schema does not recognize, so a typo or a key placed under the wrong
 // section is not silently ignored.
 func loadConfigWarn(path string) (config.Config, error) {
+	c, _, err := loadConfigWarnKeys(path)
+	return c, err
+}
+
+// loadConfigWarnKeys is loadConfigWarn that also returns the unknown keys.
+func loadConfigWarnKeys(path string) (config.Config, []string, error) {
 	c, unknown, err := config.LoadChecked(path)
 	if err != nil {
-		return c, err
+		return c, nil, err
 	}
 	for _, k := range unknown {
 		fmt.Fprintf(os.Stderr, "warning: unknown config key %q ignored (check spelling and section placement)\n", k)
 	}
-	return c, nil
+	return c, unknown, nil
 }
 
 // statePath puts state.json beside the resolved config file so two sources with
@@ -323,18 +329,32 @@ func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
 	return vs, paths, nil
 }
 
+// defaultCDPResync is the periodic resync a cdp source falls back to when
+// resync_seconds is unset, because a DevTools endpoint has no file to watch.
+const defaultCDPResync = 60 * time.Second
+
 func cmdSource(args []string) error {
 	fs := flag.NewFlagSet("source", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	stdio := fs.Bool("stdio", false, "stream frames to stdout instead of dialing the peer")
 	once := fs.Bool("once", false, "sync once, then close the connection and exit")
+	dryRun := fs.Bool("dry-run", false, "print a read-only plan of what this source would capture and where it would send it, then exit")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output for -dry-run")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *jsonOut && !*dryRun {
+		return errors.New("-json is only supported with -dry-run")
+	}
 
-	c, err := loadConfigWarn(*cfgPath)
+	c, unknown, err := loadConfigWarnKeys(*cfgPath)
 	if err != nil {
 		return err
+	}
+	// The plan branches before the key is loaded, cookies or secrets are read,
+	// the peer is dialed, a salt is sent, or state is written.
+	if *dryRun {
+		return runSourcePlan(os.Stdout, *cfgPath, c, *stdio, *once, *jsonOut, unknown)
 	}
 	if c.Peerless() {
 		return errors.New("peerless config is for external-scheduler/doctor use and cannot run the sync loop because operators drive capture with explicit per-profile -config pairs")
@@ -391,8 +411,8 @@ func cmdSource(args []string) error {
 		}
 	}
 	if hasCDP && resync == 0 && !*once {
-		resync = 60 * time.Second
-		fmt.Fprintln(os.Stderr, "agentpantry: cdp source detected, defaulting resync to 60s")
+		resync = defaultCDPResync
+		fmt.Fprintf(os.Stderr, "agentpantry: cdp source detected, defaulting resync to %ds\n", int(defaultCDPResync.Seconds()))
 	}
 
 	clock := state.RealClock{}

@@ -369,6 +369,52 @@ in `timeout` just to force it to stop: a healthy run killed by `timeout` exits
 as 124, which can look like an agentpantry failure. Use `source --once` when
 the expected result is "sync once, then exit."
 
+### Source dry-run plan
+
+Before a capture, `source --dry-run` prints a read-only plan of what that
+source config would read and where it would send it. Pass the same `-config`,
+`--stdio`, and `--once` flags you intend to run with, so the route and mode
+match:
+
+    agentpantry source --dry-run -config research.toml
+    agentpantry source --dry-run --json --once --stdio -config research.toml
+
+The plan reports:
+
+- the config path, role, run mode (`watch` or `once`), and resync interval
+- the route: `tcp` to the configured peer, `stdio`, or `peerless` for a
+  `peer = "none"` config driven by an external scheduler
+- the key path, whether it exists, and its mode
+- one row per browser: kind, profile, read mechanism, cookie store path or
+  loopback CDP URL, whether the store exists, `capture_localstorage`, and
+  `account_identity`
+- the effective `[domains]` and `[secret_names]` allow and deny lists, with the
+  deny-wins rule
+- whether `secrets_dir` and KeePass are enabled and present, and the KeePass tag
+- the local files a real run would write (`state.json`, plus receipts when
+  enabled)
+
+The plan reads the config and file metadata (`stat`) only. It does not load the
+key, read or decrypt cookies, localStorage, secret files, or KeePass entries,
+query the keyring, contact a CDP endpoint, dial the peer, send a session salt or
+frame, or write state or receipts.
+
+`status` keeps three answers separate. `config_readiness` is `ready` when every
+configured endpoint checks out on metadata alone. It is `not_ready` when, for
+example, the key, a cookie store, or a configured secret source is missing, the
+key mode is too open, the role is not `source`, a browser kind is unsupported, a
+CDP URL is not loopback, `capture_localstorage` is set on a non-CDP browser, or
+the TCP peer is not `host:port`. `capture_coverage` is always `not_measured`
+and `website_authentication` is always `not_verified`: only a real capture can
+count what a profile holds, and only the site can confirm a login. A stored
+cookie count never implies a working session. For the same reason
+`account_identity` is `unknown`, and a successful backup of one profile does not
+show coverage of a different profile.
+
+The command prints the plan and exits 0 when `config_readiness` is `ready`, or 1
+with the problems listed when it is not. `--json` without `--dry-run` is
+rejected.
+
 ## Hardening
 
 The transport begins each connection with a session-salt handshake (the sink
