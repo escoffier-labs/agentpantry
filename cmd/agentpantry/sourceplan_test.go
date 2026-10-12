@@ -36,11 +36,18 @@ func snapshotTree(t *testing.T, root string) map[string]planFileMeta {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
-		out[path] = planFileMeta{size: info.Size(), mode: info.Mode(), mtime: info.ModTime()}
+		e := planFileMeta{size: info.Size(), mode: info.Mode(), mtime: info.ModTime()}
+		// NTFS bumps a directory's last-write time lazily after a child is
+		// written, so on Windows a directory is compared by its entry set
+		// (created or removed paths) rather than its mtime.
+		if info.IsDir() && runtime.GOOS == "windows" {
+			e.mtime = time.Time{}
+		}
+		out[path] = e
 		return nil
 	})
 	if err != nil {
