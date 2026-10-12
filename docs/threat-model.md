@@ -49,6 +49,12 @@ what is explicitly out of scope.
   made, and read-back verification is available. The refusal directs the
   operator to stop the app, inspect with `--dry-run`, leave the profile
   unchanged, retain the sidecar, and use an existing supported target.
+- **The source plan is read-only.** `source --dry-run` builds its report from
+  the parsed config and `stat` metadata. It does not load the key, read or
+  decrypt cookie, localStorage, or secret values, query the keyring, contact a
+  CDP endpoint or the peer, send a salt or frame, or write state or receipts.
+  It reports account identity as unknown and never treats a cookie count as a
+  working login. No transport, policy, or file-mode invariant changes.
 - **Ephemeral env injection is memory-only for one child.** `agentpantry run`
   loads already-synced named secrets into memory, re-filters them with
   deny-wins `[secret_names]`, and starts one command with those values in the
