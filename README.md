@@ -381,7 +381,8 @@ match:
 
 The plan reports:
 
-- the config path, role, run mode (`watch` or `once`), and resync interval
+- the config path, role, run mode (`watch` or `once`), and the effective resync interval (`0` in
+  `once` mode)
 - the route: `tcp` to the configured peer, `stdio`, or `peerless` for a
   `peer = "none"` config driven by an external scheduler
 - the key path, whether it exists, and its mode
@@ -390,7 +391,9 @@ The plan reports:
   `account_identity`
 - the effective `[domains]` and `[secret_names]` allow and deny lists, with the
   deny-wins rule
-- whether `secrets_dir` and KeePass are enabled and present, and the KeePass tag
+- whether `secrets_dir` and KeePass are enabled and present, the KeePass tag,
+  and the `keepass_keyfile` and `keepass_pass_file` paths with their presence
+  and mode
 - the local files a real run would write (`state.json`, plus receipts when
   enabled)
 
@@ -406,7 +409,9 @@ key mode is too open, `keepass_path` is set without `keepass_keyfile`, a KeePass
 key or password file is not a regular file, is empty, or has a mode that is too
 open, the role is not `source`, a browser kind is unsupported, a
 CDP URL is not loopback, `capture_localstorage` is set on a non-CDP browser, or
-the TCP peer is not `host:port`. `capture_coverage` is always `not_measured`
+a cookie store or KeePass vault is not a regular file, `secrets_dir` is not a
+directory, or the TCP peer is not `host:port` with a port from 1 to 65535 (or a
+known service name). `capture_coverage` is always `not_measured`
 and `website_authentication` is always `not_verified`: only a real capture can
 count what a profile holds, and only the site can confirm a login. A stored
 cookie count never implies a working session. For the same reason

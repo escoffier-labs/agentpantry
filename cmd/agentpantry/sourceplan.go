@@ -120,20 +120,50 @@ type sourcePlanStatus struct {
 	WebsiteAuthentication string `json:"website_authentication"`
 }
 
-// statFile reports path metadata without opening the file. An empty path is
-// reported as absent.
-func statFile(path string) sourcePlanFile {
+// Outcomes statFile reports for a path.
+const (
+	statOK        = "ok"
+	statMissing   = "missing"
+	statWrongType = "wrong_type"
+)
+
+// statFile reports path metadata without opening the file, and whether the
+// path has the type the real run needs: a directory when wantDir is set, a
+// regular file otherwise. Present is true only when the stat succeeds and the
+// type matches. An empty path is reported as missing.
+func statFile(path string, wantDir bool) (sourcePlanFile, string) {
 	f := sourcePlanFile{Path: path}
 	if path == "" {
-		return f
+		return f, statMissing
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return f
+		return f, statMissing
+	}
+	if wantDir != info.IsDir() || (!wantDir && !info.Mode().IsRegular()) {
+		return f, statWrongType
 	}
 	f.Present = true
 	f.Mode = fmt.Sprintf("%04o", info.Mode().Perm())
-	return f
+	return f, statOK
+}
+
+// validatePeerPort checks the port of a host:port peer the way net.Dial will
+// use it, without contacting anything: a number in 1-65535 or a service name
+// the local resolver knows. net.SplitHostPort alone accepts "host:70000".
+func validatePeerPort(peer string) error {
+	_, port, err := net.SplitHostPort(peer)
+	if err != nil {
+		return err
+	}
+	n, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return err
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("port %q is out of range", port)
+	}
+	return nil
 }
 
 // statCredFile stats a KeePass credential file (keepass_keyfile or
@@ -240,6 +270,8 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		}
 		if _, _, err := net.SplitHostPort(c.Peer); err != nil {
 			problem("peer %q is not host:port", c.Peer)
+		} else if err := validatePeerPort(c.Peer); err != nil {
+			problem("peer %q has an invalid port: %v", c.Peer, err)
 		}
 	}
 
@@ -276,12 +308,16 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 				row.Mechanism = "copy the Firefox cookies.sqlite DB; values are stored in plaintext"
 			}
 			row.Store = b.CookiePath
+			_, st := statFile(b.CookiePath, false)
 			switch {
 			case b.CookiePath == "":
 				row.StoreCheck = planStoreMissing
 				problem("%s browser %q has no cookie_path", b.Kind, b.Profile)
-			case statFile(b.CookiePath).Present:
+			case st == statOK:
 				row.StoreCheck = planStorePresent
+			case st == statWrongType:
+				row.StoreCheck = planStoreInvalid
+				problem("cookie store for %s browser %q at %s is not a regular file", b.Kind, b.Profile, b.CookiePath)
 			default:
 				row.StoreCheck = planStoreMissing
 				problem("cookie store for %s browser %q not found at %s", b.Kind, b.Profile, b.CookiePath)
@@ -315,20 +351,25 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 	// never opened. KeePass credential files get the stat-level checks the
 	// real reader applies before it opens them.
 	if c.SecretsDir != "" {
+		sd, st := statFile(c.SecretsDir, true)
 		p.SecretSources.SecretsDir = sourcePlanSecretsDir{
 			Enabled: true,
 			Path:    c.SecretsDir,
-			Present: statFile(c.SecretsDir).Present,
+			Present: sd.Present,
 		}
-		if !p.SecretSources.SecretsDir.Present {
+		switch st {
+		case statWrongType:
+			problem("secrets_dir %s is not a directory", c.SecretsDir)
+		case statMissing:
 			problem("secrets_dir not found at %s", c.SecretsDir)
 		}
 	}
 	if c.KeepassPath != "" {
+		vault, vaultSt := statFile(c.KeepassPath, false)
 		kp := sourcePlanKeepass{
 			Enabled: true,
 			Path:    c.KeepassPath,
-			Present: statFile(c.KeepassPath).Present,
+			Present: vault.Present,
 			Tag:     c.KeepassTagOrDefault(),
 		}
 		if c.KeepassKeyfile == "" {
@@ -345,17 +386,29 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 				problem("%s", msg)
 			}
 		}
-		if !kp.Present {
+		switch vaultSt {
+		case statWrongType:
+			problem("keepass_path %s is not a regular file", c.KeepassPath)
+		case statMissing:
 			problem("keepass_path not found at %s", c.KeepassPath)
 		}
 		p.SecretSources.Keepass = kp
 	}
 
-	// Mode and resync, matching cmdSource's cdp default.
-	p.ResyncSeconds = c.ResyncSeconds
-	if hasCDP && c.ResyncSeconds == 0 && !once {
+	// Mode and resync, matching cmdSource: once mode syncs one time and
+	// returns, so no interval applies; watch mode keeps the configured value
+	// or the cdp default.
+	switch {
+	case once:
+		p.ResyncSeconds = 0
+		if c.ResyncSeconds > 0 {
+			note("resync_seconds = %d is ignored in once mode", c.ResyncSeconds)
+		}
+	case hasCDP && c.ResyncSeconds == 0:
 		p.ResyncSeconds = int(defaultCDPResync.Seconds())
 		note("cdp source detected: resync defaults to %ds", p.ResyncSeconds)
+	default:
+		p.ResyncSeconds = c.ResyncSeconds
 	}
 
 	// Local files a real run would write.
@@ -385,6 +438,19 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		p.Status.ConfigReadiness = planNotReady
 	}
 	return p
+}
+
+// planFileSummary renders a credential file row for the text plan: the path
+// with its presence and mode, or "not configured" when no path is set.
+func planFileSummary(f sourcePlanFile) string {
+	switch {
+	case f.Path == "":
+		return "not configured"
+	case f.Present:
+		return fmt.Sprintf("%s (present, mode %s; contents not read)", f.Path, f.Mode)
+	default:
+		return fmt.Sprintf("%s (missing)", f.Path)
+	}
 }
 
 // printSourcePlan writes the plan as indented JSON or as a readable listing.
@@ -449,6 +515,8 @@ func printSourcePlan(w io.Writer, p sourcePlan, jsonOut bool) error {
 	}
 	if kp := p.SecretSources.Keepass; kp.Enabled {
 		line("  keepass: %s (present: %t, tag %q)", kp.Path, kp.Present, kp.Tag)
+		line("    keyfile: %s", planFileSummary(kp.Keyfile))
+		line("    pass file: %s", planFileSummary(kp.PassFile))
 	} else {
 		line("  keepass: disabled")
 	}

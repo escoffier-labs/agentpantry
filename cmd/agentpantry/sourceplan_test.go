@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -472,5 +473,188 @@ func TestSourcePlanJSONSchema(t *testing.T) {
 	}
 	if _, ok := payload["problems"].([]any); !ok {
 		t.Fatalf("problems must be a JSON array, got %#v", payload["problems"])
+	}
+}
+
+func TestSourcePlanPeerPort(t *testing.T) {
+	cases := []struct {
+		name  string
+		peer  string
+		valid bool
+	}{
+		{"numeric port", "127.0.0.1:8787", true},
+		{"lowest port", "127.0.0.1:1", true},
+		{"highest port", "127.0.0.1:65535", true},
+		{"hostname and port", "sink.example.com:8787", true},
+		{"port above range", "127.0.0.1:70000", false},
+		{"port zero", "127.0.0.1:0", false},
+		{"empty port", "127.0.0.1:", false},
+		{"negative port", "127.0.0.1:-1", false},
+		{"unknown service name", "127.0.0.1:no-such-service-name", false},
+		{"no port", "127.0.0.1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, c := planFixture(t)
+			c.Peer = tc.peer
+			p := buildSourcePlan("source.toml", c, false, false, nil)
+			if tc.valid {
+				if p.Status.ConfigReadiness != planReady {
+					t.Fatalf("want ready for %q, got %v", tc.peer, p.Problems)
+				}
+				return
+			}
+			if p.Status.ConfigReadiness != planNotReady || !strings.Contains(strings.Join(p.Problems, "\n"), tc.peer) {
+				t.Fatalf("want not_ready naming %q, got %s %v", tc.peer, p.Status.ConfigReadiness, p.Problems)
+			}
+			// stdio mode never dials the peer, so the same value is not a problem there.
+			if p := buildSourcePlan("source.toml", c, true, false, nil); p.Status.ConfigReadiness != planReady {
+				t.Fatalf("stdio mode does not dial the peer: %v", p.Problems)
+			}
+		})
+	}
+}
+
+func TestSourcePlanResyncByMode(t *testing.T) {
+	cdp := []config.BrowserRef{{Kind: "cdp", Profile: "app", URL: "http://127.0.0.1:9222"}}
+	cases := []struct {
+		name     string
+		browsers []config.BrowserRef // nil keeps the firefox fixture browser
+		resync   int
+		once     bool
+		want     int
+		wantNote string
+	}{
+		{"watch keeps configured value", nil, 45, false, 45, ""},
+		{"watch without resync stays off", nil, 0, false, 0, ""},
+		{"once ignores configured value", nil, 45, true, 0, "ignored in once mode"},
+		{"once without resync", nil, 0, true, 0, ""},
+		{"cdp watch keeps configured value", cdp, 30, false, 30, ""},
+		{"cdp watch defaults", cdp, 0, false, int(defaultCDPResync.Seconds()), "defaults to"},
+		{"cdp once ignores configured value", cdp, 30, true, 0, "ignored in once mode"},
+		{"cdp once stays off", cdp, 0, true, 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, c := planFixture(t)
+			if tc.browsers != nil {
+				c.Browsers = tc.browsers
+			}
+			c.ResyncSeconds = tc.resync
+			p := buildSourcePlan("source.toml", c, false, tc.once, nil)
+			if p.ResyncSeconds != tc.want {
+				t.Fatalf("resync_seconds = %d, want %d", p.ResyncSeconds, tc.want)
+			}
+			if tc.wantNote != "" && !strings.Contains(strings.Join(p.Notes, "\n"), tc.wantNote) {
+				t.Fatalf("notes %v do not mention %q", p.Notes, tc.wantNote)
+			}
+			text := renderPlan(t, p, false)
+			if tc.once && strings.Contains(text, "mode: once (resync") {
+				t.Fatalf("once mode must not print a resync interval:\n%s", text)
+			}
+			if !tc.once && tc.want > 0 && !strings.Contains(text, fmt.Sprintf("(resync %ds)", tc.want)) {
+				t.Fatalf("watch mode should print resync %ds:\n%s", tc.want, text)
+			}
+		})
+	}
+}
+
+func TestSourcePlanTextListsKeepassCredentialFiles(t *testing.T) {
+	cases := []struct {
+		name    string
+		keyfile bool // create keepass_keyfile
+		pass    string
+		want    []string
+	}{
+		{"both present", true, "present", []string{"keyfile: ", "vault.key (present, mode ", "pass file: ", "vault.pass (present, mode "}},
+		{"pass file not configured", true, "unset", []string{"vault.key (present, mode ", "pass file: not configured"}},
+		{"keyfile missing", false, "present", []string{"vault.key (missing)", "vault.pass (present, mode "}},
+		{"pass file missing", true, "missing", []string{"vault.key (present, mode ", "vault.pass (missing)"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, c := planFixture(t)
+			c.KeepassPath = filepath.Join(dir, "vault.kdbx")
+			c.KeepassKeyfile = filepath.Join(dir, "vault.key")
+			write := func(path string) {
+				if err := os.WriteFile(path, []byte(planSecretMarker), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(c.KeepassPath)
+			if tc.keyfile {
+				write(c.KeepassKeyfile)
+			}
+			if tc.pass != "unset" {
+				c.KeepassPassFile = filepath.Join(dir, "vault.pass")
+			}
+			if tc.pass == "present" {
+				write(c.KeepassPassFile)
+			}
+
+			text := renderPlan(t, buildSourcePlan("source.toml", c, false, false, nil), false)
+			for _, w := range tc.want {
+				if !strings.Contains(text, w) {
+					t.Fatalf("text plan missing %q:\n%s", w, text)
+				}
+			}
+			if strings.Contains(text, planSecretMarker) {
+				t.Fatalf("text plan leaked credential bytes:\n%s", text)
+			}
+		})
+	}
+}
+
+func TestSourcePlanPathTypes(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, dir string, c *config.Config)
+		want  string
+	}{
+		{"cookie store is a directory", func(t *testing.T, dir string, c *config.Config) {
+			c.Browsers[0].CookiePath = filepath.Join(dir, "cookiedir")
+			if err := os.Mkdir(c.Browsers[0].CookiePath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, "is not a regular file"},
+		{"secrets_dir is a file", func(t *testing.T, dir string, c *config.Config) {
+			c.SecretsDir = filepath.Join(dir, "secrets-file")
+			if err := os.WriteFile(c.SecretsDir, []byte(planSecretMarker), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "secrets_dir "},
+		{"keepass_path is a directory", func(t *testing.T, dir string, c *config.Config) {
+			c.KeepassPath = filepath.Join(dir, "vaultdir")
+			c.KeepassKeyfile = filepath.Join(dir, "vault.key")
+			if err := os.Mkdir(c.KeepassPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(c.KeepassKeyfile, []byte(planSecretMarker), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "keepass_path "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, c := planFixture(t)
+			tc.setup(t, dir, &c)
+			p := buildSourcePlan("source.toml", c, false, false, nil)
+			problems := strings.Join(p.Problems, "\n")
+			if p.Status.ConfigReadiness != planNotReady || !strings.Contains(problems, tc.want) || !strings.Contains(problems, "not a ") {
+				t.Fatalf("want not_ready with a wrong-type problem containing %q, got %v", tc.want, p.Problems)
+			}
+			if strings.Contains(problems, "not found") {
+				t.Fatalf("a wrong-type path must not be reported as not found: %v", p.Problems)
+			}
+			if tc.name == "cookie store is a directory" && p.Browsers[0].StoreCheck != planStoreInvalid {
+				t.Fatalf("store_check = %s, want %s", p.Browsers[0].StoreCheck, planStoreInvalid)
+			}
+			if tc.name == "secrets_dir is a file" && p.SecretSources.SecretsDir.Present {
+				t.Fatal("a file must not count as a present secrets_dir")
+			}
+			if tc.name == "keepass_path is a directory" && p.SecretSources.Keepass.Present {
+				t.Fatal("a directory must not count as a present keepass_path")
+			}
+		})
 	}
 }
