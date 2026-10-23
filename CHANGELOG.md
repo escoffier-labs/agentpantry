@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `agentpantry source --dry-run [--json]` prints a read-only disclosure plan before capture: the route (`tcp`, `stdio`, or `peerless`), key presence and mode, one row per browser (kind, profile, read mechanism, store, `capture_localstorage`, `account_identity: unknown`), the effective deny-wins domain and secret-name policy, secret source enablement, and the local files a real run would write. It reads config and file metadata only: no key, cookie, localStorage, or secret value is read, nothing is dialed, and no salt, frame, state, or receipt is written. `status` separates `config_readiness` from `capture_coverage` (`not_measured`) and `website_authentication` (`not_verified`). The command exits 1 when the config is not ready.
 - `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`; refuses `PATH`/`LD_PRELOAD` and other loader vars).
 - Hash-chained local sync receipts (`receipts verify` / `receipts show`): opt-in JSONL provenance of each send/apply with payload digests only (no cookie or secret values), a signed monotonic `seq`, a `receipts.head` tip pointer, and a configured per-node identity (default: hostname).
 - `agentpantry pair` bootstraps the long-lived PSK with a one-time SPAKE2 short code, as an alternative to copying `psk.key`. The pairing listener defaults to `127.0.0.1:8787` (not the sink `peer` bind). The session-salt handshake and HKDF session keys are unchanged.
