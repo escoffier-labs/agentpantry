@@ -658,3 +658,59 @@ func TestSourcePlanPathTypes(t *testing.T) {
 		})
 	}
 }
+
+// A failed metadata lookup must retain the filesystem error rather than imply
+// the configured path is absent. Real symlink loops also work when run as root.
+func TestSourcePlanStatFailureDiagnostics(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on Windows")
+	}
+	for _, field := range []string{"key", "cookie", "secrets_dir", "keepass_path", "keepass_keyfile", "keepass_pass_file"} {
+		t.Run(field, func(t *testing.T) {
+			dir, c := planFixture(t)
+			loop := filepath.Join(dir, "loop")
+			if err := os.Symlink("loop", loop); err != nil {
+				t.Fatal(err)
+			}
+			_, statErr := os.Stat(loop)
+			if statErr == nil || os.IsNotExist(statErr) {
+				t.Fatalf("want a non-missing stat failure, got %v", statErr)
+			}
+			// The existing synthetic regular file is sufficient for metadata checks.
+			c.KeepassPath = c.Browsers[0].CookiePath
+			c.KeepassKeyfile = c.KeyPath
+			switch field {
+			case "key":
+				c.KeyPath = loop
+			case "cookie":
+				c.Browsers[0].CookiePath = loop
+			case "secrets_dir":
+				c.SecretsDir = loop
+			case "keepass_path":
+				c.KeepassPath = loop
+			case "keepass_keyfile":
+				c.KeepassKeyfile = loop
+			case "keepass_pass_file":
+				c.KeepassPassFile = loop
+			}
+			var buf bytes.Buffer
+			if err := runSourcePlan(&buf, filepath.Join(dir, "source.toml"), c, false, false, true, nil); err == nil {
+				t.Fatal("a stat failure must fail the plan")
+			}
+			var p sourcePlan
+			if err := json.Unmarshal(buf.Bytes(), &p); err != nil {
+				t.Fatal(err)
+			}
+			problems := strings.Join(p.Problems, "\n")
+			if p.Status.ConfigReadiness != planNotReady || !strings.Contains(problems, statErr.Error()) {
+				t.Fatalf("want not_ready with original stat error %q, got %s: %v", statErr, p.Status.ConfigReadiness, p.Problems)
+			}
+			if strings.Contains(problems, "not found") {
+				t.Fatalf("stat failure must not be reported as missing: %v", p.Problems)
+			}
+			if field == "cookie" && p.Browsers[0].StoreCheck != planStoreInvalid {
+				t.Fatalf("want invalid cookie store, got %s", p.Browsers[0].StoreCheck)
+			}
+		})
+	}
+}

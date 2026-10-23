@@ -125,27 +125,31 @@ const (
 	statOK        = "ok"
 	statMissing   = "missing"
 	statWrongType = "wrong_type"
+	statFailed    = "failed"
 )
 
 // statFile reports path metadata without opening the file, and whether the
 // path has the type the real run needs: a directory when wantDir is set, a
 // regular file otherwise. Present is true only when the stat succeeds and the
 // type matches. An empty path is reported as missing.
-func statFile(path string, wantDir bool) (sourcePlanFile, string) {
+func statFile(path string, wantDir bool) (sourcePlanFile, string, error) {
 	f := sourcePlanFile{Path: path}
 	if path == "" {
-		return f, statMissing
+		return f, statMissing, nil
 	}
 	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return f, statMissing, nil
+	}
 	if err != nil {
-		return f, statMissing
+		return f, statFailed, err
 	}
 	if wantDir != info.IsDir() || (!wantDir && !info.Mode().IsRegular()) {
-		return f, statWrongType
+		return f, statWrongType, nil
 	}
 	f.Present = true
 	f.Mode = fmt.Sprintf("%04o", info.Mode().Perm())
-	return f, statOK
+	return f, statOK, nil
 }
 
 // validatePeerPort checks the port of a host:port peer the way net.Dial will
@@ -175,8 +179,11 @@ func validatePeerPort(peer string) error {
 func statCredFile(field, path string) (sourcePlanFile, string) {
 	f := sourcePlanFile{Path: path}
 	info, err := os.Stat(path)
-	if err != nil {
+	if os.IsNotExist(err) {
 		return f, fmt.Sprintf("%s not found at %s", field, path)
+	}
+	if err != nil {
+		return f, fmt.Sprintf("%s stat failed: %v", field, err)
 	}
 	f.Present = true
 	f.Mode = fmt.Sprintf("%04o", info.Mode().Perm())
@@ -207,8 +214,8 @@ func nonNil(s []string) []string {
 
 // buildSourcePlan derives the plan from config and file metadata. It applies
 // the startup checks cmdSource and buildVaults run, plus the presence checks
-// doctor runs on configured stores, so a plan with no problems describes a
-// config the real source would accept.
+// doctor runs on configured stores. Peerless configs intentionally report ready
+// for external-scheduler/doctor planning, although cmdSource rejects them.
 func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownKeys []string) sourcePlan {
 	p := sourcePlan{
 		DryRun:   true,
@@ -281,7 +288,11 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 	if c.KeyPath == "" {
 		problem("key_path is not set")
 	} else if info, err := os.Stat(c.KeyPath); err != nil {
-		problem("key file not found at %s", c.KeyPath)
+		if os.IsNotExist(err) {
+			problem("key file not found at %s", c.KeyPath)
+		} else {
+			problem("key file stat failed: %v", err)
+		}
 	} else {
 		p.Key.Present = true
 		p.Key.Mode = fmt.Sprintf("%04o", info.Mode().Perm())
@@ -308,13 +319,16 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 				row.Mechanism = "copy the Firefox cookies.sqlite DB; values are stored in plaintext"
 			}
 			row.Store = b.CookiePath
-			_, st := statFile(b.CookiePath, false)
+			_, st, statErr := statFile(b.CookiePath, false)
 			switch {
 			case b.CookiePath == "":
 				row.StoreCheck = planStoreMissing
 				problem("%s browser %q has no cookie_path", b.Kind, b.Profile)
 			case st == statOK:
 				row.StoreCheck = planStorePresent
+			case st == statFailed:
+				row.StoreCheck = planStoreInvalid
+				problem("cookie store for %s browser %q stat failed: %v", b.Kind, b.Profile, statErr)
 			case st == statWrongType:
 				row.StoreCheck = planStoreInvalid
 				problem("cookie store for %s browser %q at %s is not a regular file", b.Kind, b.Profile, b.CookiePath)
@@ -351,13 +365,15 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 	// never opened. KeePass credential files get the stat-level checks the
 	// real reader applies before it opens them.
 	if c.SecretsDir != "" {
-		sd, st := statFile(c.SecretsDir, true)
+		sd, st, statErr := statFile(c.SecretsDir, true)
 		p.SecretSources.SecretsDir = sourcePlanSecretsDir{
 			Enabled: true,
 			Path:    c.SecretsDir,
 			Present: sd.Present,
 		}
 		switch st {
+		case statFailed:
+			problem("secrets_dir stat failed: %v", statErr)
 		case statWrongType:
 			problem("secrets_dir %s is not a directory", c.SecretsDir)
 		case statMissing:
@@ -365,7 +381,7 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		}
 	}
 	if c.KeepassPath != "" {
-		vault, vaultSt := statFile(c.KeepassPath, false)
+		vault, vaultSt, statErr := statFile(c.KeepassPath, false)
 		kp := sourcePlanKeepass{
 			Enabled: true,
 			Path:    c.KeepassPath,
@@ -387,6 +403,8 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 			}
 		}
 		switch vaultSt {
+		case statFailed:
+			problem("keepass_path stat failed: %v", statErr)
 		case statWrongType:
 			problem("keepass_path %s is not a regular file", c.KeepassPath)
 		case statMissing:
@@ -543,9 +561,10 @@ func printSourcePlan(w io.Writer, p sourcePlan, jsonOut bool) error {
 	return err
 }
 
-// runSourcePlan prints the plan and fails when the config would not start a
-// real source, so a wrapper can gate execution on the exit status as well as on
-// status.config_readiness.
+// runSourcePlan prints the plan and fails when configuration checks find a
+// problem. Peerless configs intentionally report ready for external-scheduler/
+// doctor planning, but cmdSource rejects them. Wrappers must inspect the route
+// before invoking the source command.
 func runSourcePlan(w io.Writer, cfgPath string, c config.Config, stdio, once, jsonOut bool, unknownKeys []string) error {
 	p := buildSourcePlan(cfgPath, c, stdio, once, unknownKeys)
 	if err := printSourcePlan(w, p, jsonOut); err != nil {
