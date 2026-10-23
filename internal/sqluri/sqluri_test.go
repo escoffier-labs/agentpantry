@@ -38,14 +38,14 @@ func TestReadOnlyDSNShapes(t *testing.T) {
 		{
 			name: "windows drive",
 			goos: "windows",
-			path: `C:\Users\me\sidecar.db`,
-			want: "file:///C:/Users/me/sidecar.db?mode=ro",
+			path: `C:\fixtures\sidecar.db`,
+			want: "file:///C:/fixtures/sidecar.db?mode=ro",
 		},
 		{
 			name: "windows drive with space",
 			goos: "windows",
-			path: `C:\Users\me\My Docs\sidecar.db`,
-			want: "file:///C:/Users/me/My%20Docs/sidecar.db?mode=ro",
+			path: `C:\fixtures\My Docs\sidecar.db`,
+			want: "file:///C:/fixtures/My%20Docs/sidecar.db?mode=ro",
 		},
 		{
 			name: "windows unc",
@@ -140,11 +140,11 @@ func TestReadOnlyDSNWindowsDriveRelative(t *testing.T) {
 	}
 
 	// Absolute drive paths still work off-Windows (pure URI shaping).
-	got, err := readOnlyDSN(`C:\Users\me\sidecar.db`, "windows")
+	got, err := readOnlyDSN(`C:\fixtures\sidecar.db`, "windows")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "file:///C:/Users/me/sidecar.db?mode=ro" {
+	if got != "file:///C:/fixtures/sidecar.db?mode=ro" {
 		t.Fatalf("absolute drive path = %q", got)
 	}
 }
