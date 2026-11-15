@@ -223,7 +223,20 @@ func evalString(conn *websocket.Conn, id int, expr string) (string, error) {
 	}
 }
 
-const readyExpr = `(document.readyState === 'complete') ? 'complete' : String(document.readyState)`
+// pollInterval is how often the page is re-read while it loads.
+const pollInterval = 300 * time.Millisecond
+
+// contentPollLimit bounds the wait for text. A challenged or empty page never
+// gains any, so a check must not run to the full timeout.
+const contentPollLimit = 8 * time.Second
+
+// pageProbe is one read of the loaded document.
+type pageProbe struct {
+	Title string `json:"title"`
+	Text  string `json:"text"`
+	Len   int    `json:"len"`
+	URL   string `json:"url"`
+}
 
 // probeExpr returns the title, final URL and a bounded sample of rendered text.
 // It is built once so the sample limit and the classifier agree.
@@ -282,45 +295,45 @@ func Verify(ctx context.Context, baseURL, rawURL, host string, timeout time.Dura
 		}
 	}
 
-	// Wait for the document to finish loading. A challenge interstitial also
-	// reaches 'complete', so this only bounds the wait; Classify decides.
+	// Poll the page instead of trusting one readyState read. A tab created with
+	// a URL starts on about:blank and can report 'complete' for that document
+	// before the navigation begins, and a body exists before it has rendered
+	// text. Reading once raced both cases and reported an empty page for pages
+	// that were still loading. A challenge or a genuinely empty shell never
+	// gains text, so the wait is capped rather than run to the deadline.
 	id := 1
+	var page pageProbe
+	contentDeadline := time.Now().Add(contentPollLimit)
 	for {
-		state, err := evalString(conn, id, readyExpr)
+		raw, err := evalString(conn, id, probeExpr)
 		id++
 		if err != nil {
 			return Probe{}, err
 		}
-		if state == "complete" {
+		var next pageProbe
+		if err := json.Unmarshal([]byte(raw), &next); err != nil {
+			return Probe{}, fmt.Errorf("lane page returned an unreadable probe result")
+		}
+		if next.URL != "" && next.URL != "about:blank" {
+			page = next
+			if page.Len >= minTextLen {
+				break
+			}
+		}
+		if !time.Now().Before(contentDeadline) {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return Probe{}, fmt.Errorf("lane page did not finish loading before the timeout")
-		case <-time.After(250 * time.Millisecond):
+			return Probe{}, fmt.Errorf("lane page did not settle before the timeout")
+		case <-time.After(pollInterval):
 		}
 	}
 
-	// One short settle allows late client-side redirects to land before the
-	// page is read.
-	select {
-	case <-ctx.Done():
-		return Probe{}, fmt.Errorf("lane page did not settle before the timeout")
-	case <-time.After(400 * time.Millisecond):
-	}
-
-	raw, err := evalString(conn, id, probeExpr)
-	if err != nil {
-		return Probe{}, err
-	}
-	var page struct {
-		Title string `json:"title"`
-		Text  string `json:"text"`
-		Len   int    `json:"len"`
-		URL   string `json:"url"`
-	}
-	if err := json.Unmarshal([]byte(raw), &page); err != nil {
-		return Probe{}, fmt.Errorf("lane page returned an unreadable probe result")
+	// A tab that never left about:blank is a failure to run the check, not a
+	// finding about the site.
+	if page.URL == "" || page.URL == "about:blank" {
+		return Probe{}, fmt.Errorf("lane tab never navigated to the URL; check that the lane accepts %s", u.Hostname())
 	}
 
 	verdict, marker := Classify(page.Title, page.Text, page.URL)
