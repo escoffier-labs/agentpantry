@@ -214,6 +214,36 @@ dashboards can consume. The JSON payload includes cookie `name` and `host` for
 near-expiry rows (never values). It reports on existing stores only: if the path
 does not exist it exits 2 rather than create an empty one.
 
+`agentpantry status -all` summarizes every per-profile config instead of the
+canonical one. A deployment that captures per browser profile keeps the real
+state in `<config dir>/profiles/*.toml`, so reporting only `config.toml` can
+show `last sync: never` on a box that captured this morning. It lists each
+profile's role, lane URL, surfaces, adapter and domain counts, and the cookie
+count of a configured store. A sink that relies on the default store path
+reports that the path is unresolved rather than an empty count, because the
+default resolves against that process's own config dir and cannot be inferred
+from elsewhere. Use `-profiles <dir>` to point at another directory.
+
+`agentpantry verify` answers the `website_authentication` question that
+`source --dry-run` can only report as `not_verified`, by checking whether a
+running browser still has a working session for one domain:
+
+    agentpantry verify -lane http://127.0.0.1:9224 -domain glassdoor.com \
+      https://www.glassdoor.com/index.htm
+
+It opens one tab in the lane browser you name, waits for the document to
+finish loading, reads the title, final URL, and a bounded sample of rendered
+text, then closes the tab. It exits 0 for usable content, 1 when a challenge or
+an empty shell came back, and 2 when the check could not run. Cookie counts and
+expiry dates cannot answer this question: a clearance cookie is bound to the
+TLS fingerprint and header order of the browser that earned it, so a fresh
+cookie replayed from another client is refused even when its value and
+User-Agent match. Only the browser that holds the session proves the session.
+`-domain` is required and scopes the check, so the command cannot drive an
+authenticated browser anywhere else. `--json` emits `verdict`, `marker`,
+`final_url`, `text_len`, and `checked_at`. No cookie value, header, or page text
+is printed.
+
 `agentpantry run -- <command>` is the sink-side, memory-only way to hand synced
 secrets to a child process, in the style of 1Password `op run`. It reads the
 already-synced files under the sink config's `secrets_dir`, applies the same
