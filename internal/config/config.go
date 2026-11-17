@@ -109,6 +109,19 @@ func LoadChecked(path string) (Config, []string, error) {
 	if err != nil {
 		return c, nil, err
 	}
+	// TOML field matching is case-insensitive. Reject security-section typos
+	// explicitly, even when the decoder would otherwise recognize them.
+	for _, k := range md.Keys() {
+		if len(k) > 0 && strings.EqualFold(k[0], "tailnet") && k[0] != "tailnet" {
+			return c, nil, fmt.Errorf("section must be exactly [tailnet]: %s", k[0])
+		}
+		if len(k) == 1 {
+			switch k[0] {
+			case "allow_nodes", "allow_tags", "allow_user_ids", "allow_loopback":
+				return c, nil, fmt.Errorf("%s must be inside [tailnet]", k[0])
+			}
+		}
+	}
 	var unknown []string
 	for _, k := range md.Undecoded() {
 		unknown = append(unknown, k.String())

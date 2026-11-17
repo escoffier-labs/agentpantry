@@ -54,3 +54,24 @@ allow_user_ids=["123"]`} {
 		}
 	})
 }
+
+func TestTailnetMisplacedSelectorsAndSectionCase(t *testing.T) {
+	for _, body := range []string{
+		`allow_nodes=["node"]`, `allow_tags=["tag:source"]`, `allow_user_ids=["123"]`, `allow_loopback=true`,
+		`[Tailnet]
+allow_nodes=["node"]`, `[TAILNET]
+allow_nodes=["node"]`, `[tailNet]`, `allow_nodes=["node"]
+[tailnet]
+allow_tags=["tag:source"]`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := LoadChecked(path); err == nil {
+				t.Fatal("security config typo accepted")
+			}
+		})
+	}
+}

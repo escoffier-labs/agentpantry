@@ -772,11 +772,11 @@ func cmdSink(args []string) error {
 	// Mirror doctor's bind check at the moment it matters: a wide bind hands
 	// the network an unauthenticated pre-auth surface (connection slots, frame
 	// allocations, key probing) even though frames still require the PSK.
-	bind, authorize, err := prepareTailnet(ctx, c.Peer, c.Tailnet)
+	bind, authorize, selfBind, err := prepareTailnet(ctx, c.Peer, c.Tailnet)
 	if err != nil {
 		return err
 	}
-	if !doctor.IsLoopbackBind(bind) && !(doctor.IsTailnetBind(bind) && c.Tailnet != nil) {
+	if !doctor.IsLoopbackBind(bind) && !selfBind {
 		fmt.Fprintf(os.Stderr, "warning: binding %s exposes the sink beyond loopback\n", c.Peer)
 	}
 

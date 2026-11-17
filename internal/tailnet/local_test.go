@@ -55,3 +55,23 @@ func TestLocalClientStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalClientStatusPeerMap(t *testing.T) {
+	c := &LocalClient{}
+	c.Client.OmitAuth = true
+	c.Client.Transport = replyTransport{`{"BackendState":"Running","Self":{"TailscaleIPs":["100.100.1.1"]},"Peer":{"nodekey:0000000000000000000000000000000000000000000000000000000000000000":{"ID":"online","Online":true},"nodekey:1111111111111111111111111111111111111111111111111111111111111111":{"ID":"offline","Online":false},"nodekey:2222222222222222222222222222222222222222222222222222222222222222":null}}`, 200}
+	s, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, p := range s.Peers {
+		got[p.StableID] = p.Online
+	}
+	if len(got) != 2 || !got["online"] {
+		t.Fatal(got)
+	}
+	if online, ok := got["offline"]; !ok || online {
+		t.Fatal(got)
+	}
+}

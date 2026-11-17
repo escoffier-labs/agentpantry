@@ -58,7 +58,8 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 		_ = ln.Close()
 	}()
 
-	conns := make(chan net.Conn, 1)
+	conns := make(chan net.Conn)
+	pending := make(chan struct{}, 4)
 	acceptErr := make(chan error, 1)
 	go func() {
 		for {
@@ -67,16 +68,32 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 				acceptErr <- err
 				return
 			}
-			if cfg.Authorize != nil && cfg.Authorize(ctx, c) != nil {
+			select {
+			case pending <- struct{}{}:
+			default:
 				_ = c.Close()
 				continue
 			}
-			select {
-			case conns <- c:
-			case <-ctx.Done():
-				_ = c.Close()
-				return
-			}
+			go func(c net.Conn) {
+				defer func() { <-pending }()
+				// Cancellation closes even a pending authorization socket.
+				stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+				handedOff := false
+				defer func() {
+					stop()
+					if !handedOff {
+						_ = c.Close()
+					}
+				}()
+				if cfg.Authorize != nil && cfg.Authorize(ctx, c) != nil {
+					return
+				}
+				select {
+				case conns <- c:
+					handedOff = true
+				case <-ctx.Done():
+				}
+			}(c)
 		}
 	}()
 

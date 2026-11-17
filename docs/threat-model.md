@@ -259,12 +259,19 @@ normalization. Remote addresses must be in that CGNAT range or
 `fd7a:115c:a1e0::/48`. Missing fields, errors, malformed addresses and timeouts
 all deny. LocalAPI must be reachable and Running before listening or printing a
 pairing code. Lookups have a three-second deadline, a global four-lookup limit
-independent of sink connection slots, and same-IP singleflight coalescing.
-There is no positive cache. Denials are cached for 15 seconds in a bounded map.
+independent of sink connection slots, and singleflight coalescing for identical
+remote IP:port pairs.
+Shared lookups have a three-second context independent of callers. Each caller
+can cancel its own wait, and ingress is checked separately for each connection.
+There is no positive cache. Only successful WhoIs results with an unauthorized
+identity or a remote-address mismatch are cached as denials for 15 seconds in a
+bounded map. Capacity, timeout, cancellation, transport and ingress failures
+deny that connection without entering the cache.
 Revocation and tag changes affect the next lookup. Denials close with zero bytes
 and produce at most one generic stderr line per second with remote IP and known
 StableID, never a mutable name as the primary identifier. Pairing denials consume
-no code attempts.
+no code attempts. A maximum of four pending pairing connections authorize
+concurrently, so one slow peer cannot block accepting another peer.
 
 Prefer StableIDs for individual nodes. Tags are role identities and are safe only
 with tight `tagOwners`. A numeric UserID authorizes every untagged device of that

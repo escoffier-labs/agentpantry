@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -222,15 +223,7 @@ func Run(c config.Config) []Check {
 		}
 	case "sink":
 		checks = append(checks, TailnetChecks(context.Background(), c, &tailnet.LocalClient{})...)
-		if IsTailnetBind(c.Peer) && c.Tailnet != nil {
-			checks = append(checks, Check{"bind", OK, "tailnet identity enforcement configured"})
-		} else if IsTailnetBind(c.Peer) {
-			checks = append(checks, Check{"bind", Warn, "every tailnet member can reach the pre-auth surface without [tailnet]"})
-		} else if !IsLoopbackBind(c.Peer) {
-			checks = append(checks, Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", c.Peer)})
-		} else {
-			checks = append(checks, Check{"bind", OK, "loopback"})
-		}
+
 		for _, name := range c.Surfaces {
 			switch name {
 			case "sidecar":
@@ -343,12 +336,14 @@ func Peerless() Check {
 }
 
 // IsTailnetBind identifies literals and startup-resolved tailnet binds.
-func IsTailnetBind(peer string) bool { return tailnet.IsTailnetBind(peer) }
+func IsTailnetBind(peer string, status tailnet.Status) bool {
+	return tailnet.IsTailnetBind(peer, status)
+}
 
 // TailnetChecks uses an injectable LocalAPI client so diagnostics need no daemon in tests.
 func TailnetChecks(ctx context.Context, c config.Config, client tailnet.Client) []Check {
 	if c.Tailnet == nil {
-		return nil
+		return []Check{tailnetBindCheck(c.Peer, false, tailnet.Status{})}
 	}
 	a, err := tailnet.New(client, *c.Tailnet)
 	if err != nil {
@@ -360,17 +355,18 @@ func TailnetChecks(ctx context.Context, c config.Config, client tailnet.Client) 
 	}
 	s, err := a.Preflight(ctx)
 	if err != nil {
-		return append(checks, Check{"tailnet:LocalAPI", Fail, err.Error()})
+		return append(checks, tailnetBindCheck(c.Peer, true, tailnet.Status{}), Check{"tailnet:LocalAPI", Fail, err.Error()})
 	}
-	checks = append(checks, Check{"tailnet:LocalAPI", OK, "reachable; BackendState Running"})
+	checks = append(checks, tailnetBindCheck(c.Peer, true, s), Check{"tailnet:LocalAPI", OK, "reachable; BackendState Running"})
 	bind, err := tailnet.Resolve(c.Peer, s)
-	if err != nil || !tailnet.SelfBind(bind, s) {
-		if !(c.Tailnet.AllowLoopback && IsLoopbackBind(bind)) {
-			checks = append(checks, Check{"tailnet:self-bind", Fail, "bind is not a current self Tailscale IP"})
-		}
-	} else {
+	host, _, _ := net.SplitHostPort(bind)
+	ip, _ := netip.ParseAddr(host)
+	if err != nil || (tailnet.IsTailnetIP(ip) && !tailnet.SelfBind(bind, s)) {
+		checks = append(checks, Check{"tailnet:self-bind", Fail, "bind is not a current self Tailscale IP"})
+	} else if tailnet.SelfBind(bind, s) {
 		checks = append(checks, Check{"tailnet:self-bind", OK, bind})
 	}
+
 	for _, id := range c.Tailnet.AllowNodes {
 		online := false
 		for _, peer := range s.Peers {
@@ -385,4 +381,17 @@ func TailnetChecks(ctx context.Context, c config.Config, client tailnet.Client) 
 		}
 	}
 	return checks
+}
+
+func tailnetBindCheck(peer string, enforced bool, s tailnet.Status) Check {
+	if IsLoopbackBind(peer) {
+		return Check{"bind", OK, "loopback"}
+	}
+	if IsTailnetBind(peer, s) {
+		if enforced {
+			return Check{"bind", OK, "tailnet identity enforcement configured"}
+		}
+		return Check{"bind", Warn, "every tailnet member can reach the pre-auth surface without [tailnet]"}
+	}
+	return Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", peer)}
 }

@@ -12,14 +12,15 @@ import (
 )
 
 type fakeClient struct {
-	status Status
-	id     Identity
-	err    error
-	who    func(context.Context, string) (Identity, error)
-	calls  atomic.Int32
+	statusErr error
+	status    Status
+	id        Identity
+	err       error
+	who       func(context.Context, string) (Identity, error)
+	calls     atomic.Int32
 }
 
-func (f *fakeClient) Status(context.Context) (Status, error) { return f.status, nil }
+func (f *fakeClient) Status(context.Context) (Status, error) { return f.status, f.statusErr }
 func (f *fakeClient) WhoIs(ctx context.Context, s string) (Identity, error) {
 	f.calls.Add(1)
 	if f.who != nil {
@@ -138,12 +139,12 @@ func TestNoPositiveCache(t *testing.T) {
 }
 func TestNegativeCacheExpiry(t *testing.T) {
 	f := fixture()
-	f.err = errors.New("missing")
+	f.id.StableID = "not-allowed"
 	a, _ := New(f, Policy{AllowNodes: []string{"node"}})
 	now := time.Now()
 	a.now = func() time.Time { return now }
 	_ = a.Authorize(context.Background(), connection())
-	f.err = nil
+	f.id.StableID = "node"
 	if a.Authorize(context.Background(), connection()) == nil {
 		t.Fatal("negative cache absent")
 	}

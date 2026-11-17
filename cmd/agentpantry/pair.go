@@ -87,11 +87,11 @@ func cmdPair(args []string) error {
 	var psk []byte
 	switch r {
 	case "sink":
-		addr, authorize, err := prepareTailnet(ctx, sinkPairAddr(*bind), c.Tailnet)
+		addr, authorize, selfBind, err := prepareTailnet(ctx, sinkPairAddr(*bind), c.Tailnet)
 		if err != nil {
 			return err
 		}
-		if !doctor.IsLoopbackBind(addr) && !(doctor.IsTailnetBind(addr) && c.Tailnet != nil) {
+		if !doctor.IsLoopbackBind(addr) && !selfBind {
 			fmt.Fprintf(os.Stderr, "warning: pairing bind %s exposes a pre-auth SPAKE2 listener beyond loopback\n", addr)
 		}
 		code, err := pair.GenerateCode()

@@ -178,3 +178,125 @@ func TestTailnetPairDenialDoesNotConsumeAttempt(t *testing.T) {
 		t.Fatal("wrong exchange count")
 	}
 }
+
+func TestTailnetRealLoopbackListenerDeniesBeforeSalt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	// This policy is the effective [tailnet] configuration. Socket addresses
+	// come directly from the real TCP connection, without address wrappers.
+	a, err := tailnet.New(tailnetFake{true}, tailnet.Policy{AllowNodes: []string{"source"}, AllowLoopback: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handled atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		done <- sink.ServeListener(ctx, ln, 4, a.Authorize, func(c net.Conn) { handled.Store(true); _, _ = transport.SendSalt(c) })
+	}()
+	c, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(time.Second))
+	b := make([]byte, 1)
+	if n, err := c.Read(b); n != 0 || err != io.EOF {
+		t.Fatalf("denied loopback: n=%d err=%v", n, err)
+	}
+	if handled.Load() {
+		t.Fatal("salt handler ran")
+	}
+	cancel()
+	_ = ln.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPairSlowAuthorizationDoesNotBlockAllowedPeer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan string, 1)
+	entered := make(chan struct{})
+	var seen atomic.Int32
+	var exchanges atomic.Int32
+	done := make(chan error, 1)
+	go func() {
+		_, err := pair.Serve(ctx, pair.ServeConfig{Addr: "127.0.0.1:0", Code: "AAAA-AAAA", Attempts: 1, Timeout: 2 * time.Second, Authorize: func(ctx context.Context, _ net.Conn) error {
+			if seen.Add(1) == 1 {
+				close(entered)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		}, OnListening: func(addr string) { ready <- addr }, OnExchange: func() { exchanges.Add(1) }})
+		done <- err
+	}()
+	addr := <-ready
+	slow, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Close()
+	<-entered
+	allowedCtx, stop := context.WithTimeout(context.Background(), time.Second)
+	defer stop()
+	if _, err := pair.Dial(allowedCtx, addr, "AAAA-AAAA"); err != nil {
+		t.Fatal("allowed peer starved:", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	_ = slow.SetDeadline(time.Now().Add(time.Second))
+	b := make([]byte, 1)
+	if n, err := slow.Read(b); n != 0 || err != io.EOF {
+		t.Fatalf("slow peer: n=%d err=%v", n, err)
+	}
+	if exchanges.Load() != 1 {
+		t.Fatal("authorization consumed a SPAKE2 attempt")
+	}
+}
+
+func TestPairPendingAuthorizationBound(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan string, 1)
+	entered := make(chan struct{}, 8)
+	done := make(chan error, 1)
+	go func() {
+		_, err := pair.Serve(ctx, pair.ServeConfig{Addr: "127.0.0.1:0", Code: "AAAA-AAAA", Timeout: time.Second, Authorize: func(ctx context.Context, _ net.Conn) error { entered <- struct{}{}; <-ctx.Done(); return ctx.Err() }, OnListening: func(addr string) { ready <- addr }})
+		done <- err
+	}()
+	addr := <-ready
+	for i := 0; i < 4; i++ {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		<-entered
+	}
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(time.Second))
+	b := make([]byte, 1)
+	if n, err := c.Read(b); n != 0 || err != io.EOF {
+		t.Fatalf("overflow connection n=%d err=%v", n, err)
+	}
+	select {
+	case <-entered:
+		t.Fatal("pending authorization bound exceeded")
+	default:
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("cancelled pairing succeeded")
+	}
+}

@@ -86,7 +86,7 @@ type Authorizer struct {
 	client  Client
 	policy  Policy
 	mu      sync.Mutex
-	flights map[netip.Addr]*flight
+	flights map[netip.AddrPort]*flight
 	denied  map[netip.Addr]time.Time
 	lastLog time.Time
 	now     func() time.Time
@@ -96,7 +96,7 @@ func New(client Client, p Policy) (*Authorizer, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
-	return &Authorizer{client: client, policy: p, flights: make(map[netip.Addr]*flight), denied: make(map[netip.Addr]time.Time), now: time.Now}, nil
+	return &Authorizer{client: client, policy: p, flights: make(map[netip.AddrPort]*flight), denied: make(map[netip.Addr]time.Time), now: time.Now}, nil
 }
 func (a *Authorizer) Preflight(ctx context.Context) (Status, error) {
 	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
@@ -128,13 +128,11 @@ func Resolve(peer string, s Status) (string, error) {
 	}
 	return "", errors.New("tailnet: no self address for requested family")
 }
-func IsTailnetBind(peer string) bool {
-	host, _, err := net.SplitHostPort(peer)
-	if err != nil {
-		return false
-	}
-	ip, _ := netip.ParseAddr(host)
-	return host == "tailnet" || host == "tailnet6" || IsTailnetIP(ip)
+
+// IsTailnetBind reports a current self address, including resolved aliases.
+func IsTailnetBind(peer string, s Status) bool {
+	resolved, err := Resolve(peer, s)
+	return err == nil && SelfBind(resolved, s)
 }
 func SelfBind(peer string, s Status) bool {
 	host, _, err := net.SplitHostPort(peer)
@@ -153,6 +151,9 @@ func SelfBind(peer string, s Status) bool {
 	return false
 }
 func addr(a net.Addr) (netip.AddrPort, error) {
+	if a == nil {
+		return netip.AddrPort{}, errors.New("missing socket address")
+	}
 	p, err := netip.ParseAddrPort(a.String())
 	if err != nil {
 		return p, err
@@ -179,21 +180,21 @@ func (a *Authorizer) Authorize(ctx context.Context, c net.Conn) error {
 	if a.now().Before(until) {
 		return a.deny(remote.Addr(), "", "cached denial")
 	}
-	f := a.lookup(ctx, local, remote)
+	f := a.lookup(ctx, remote)
 	if f.err != nil {
-		return a.reject(remote.Addr(), f.identity.StableID, "identity lookup failed")
+		return a.deny(remote.Addr(), f.identity.StableID, "identity lookup failed")
 	}
 	if !SelfBind(local.String(), f.status) {
-		return a.reject(remote.Addr(), f.identity.StableID, "ingress is not a self Tailscale address")
+		return a.deny(remote.Addr(), f.identity.StableID, "ingress is not a self Tailscale address")
 	}
 	id := f.identity
 	if id.StableID == "" || len(id.Addresses) == 0 {
-		return a.reject(remote.Addr(), id.StableID, "missing identity fields")
+		return a.deny(remote.Addr(), id.StableID, "missing identity fields")
 	}
 	bound := false
 	for _, prefix := range id.Addresses {
 		if !prefix.IsValid() || prefix.Bits() != prefix.Addr().BitLen() {
-			return a.reject(remote.Addr(), id.StableID, "invalid node address")
+			return a.deny(remote.Addr(), id.StableID, "invalid node address")
 		}
 		if prefix.Addr().Unmap() == remote.Addr() {
 			bound = true
@@ -227,47 +228,61 @@ func (a *Authorizer) reject(ip netip.Addr, id, reason string) error {
 }
 func (a *Authorizer) deny(ip netip.Addr, id, reason string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if now := a.now(); a.lastLog.IsZero() || now.Sub(a.lastLog) >= time.Second {
-		log.Printf("tailnet deny remote=%s stable_id=%q reason=%s", ip, id, reason)
+	now := a.now()
+	emit := a.lastLog.IsZero() || now.Sub(a.lastLog) >= time.Second
+	if emit {
 		a.lastLog = now
+	}
+	a.mu.Unlock()
+	if emit {
+		log.Printf("tailnet deny remote=%s stable_id=%q reason=%s", ip, id, reason)
 	}
 	return errors.New("tailnet: connection denied")
 }
-func (a *Authorizer) lookup(ctx context.Context, local, remote netip.AddrPort) *flight {
+func (a *Authorizer) lookup(ctx context.Context, remote netip.AddrPort) *flight {
+	if err := ctx.Err(); err != nil {
+		return &flight{err: err}
+	}
 	a.mu.Lock()
-	if f := a.flights[remote.Addr()]; f != nil {
-		a.mu.Unlock()
+	f := a.flights[remote]
+	if f == nil {
+		// Acquire before spawning so unique sockets cannot create unbounded workers.
 		select {
-		case <-f.done:
-			return f
-		case <-ctx.Done():
-			return &flight{err: ctx.Err()}
+		case lookupSlots <- struct{}{}:
+			f = &flight{done: make(chan struct{})}
+			a.flights[remote] = f
+			go a.runLookup(context.WithoutCancel(ctx), remote, f)
+		default:
+			a.mu.Unlock()
+			return &flight{err: errors.New("authorization capacity reached")}
 		}
 	}
-	f := &flight{done: make(chan struct{})}
-	a.flights[remote.Addr()] = f
 	a.mu.Unlock()
-	defer func() { a.mu.Lock(); delete(a.flights, remote.Addr()); close(f.done); a.mu.Unlock() }()
-	// Fail closed instead of queueing unbounded lookup goroutines.
 	select {
-	case lookupSlots <- struct{}{}:
-		defer func() { <-lookupSlots }()
-	default:
-		f.err = errors.New("authorization capacity reached")
+	case <-ctx.Done():
+		return &flight{err: ctx.Err()}
+	case <-f.done:
+		if err := ctx.Err(); err != nil {
+			return &flight{err: err}
+		}
 		return f
 	}
+}
+func (a *Authorizer) runLookup(ctx context.Context, remote netip.AddrPort, f *flight) {
+	defer func() {
+		a.mu.Lock()
+		delete(a.flights, remote)
+		<-lookupSlots
+		close(f.done)
+		a.mu.Unlock()
+	}()
 	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
 	f.status, f.err = a.client.Status(ctx)
 	if f.err == nil && !f.status.Running {
 		f.err = errors.New("node is not Running")
 	}
-	if f.err == nil && !SelfBind(local.String(), f.status) {
-		f.err = errors.New("ingress is not a self Tailscale address")
-	}
 	if f.err == nil {
 		f.identity, f.err = a.client.WhoIs(ctx, remote.String())
 	}
-	return f
 }
