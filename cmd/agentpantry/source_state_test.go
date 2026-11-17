@@ -15,7 +15,11 @@ func TestSourceRefusesConcurrentConfigBeforeVaultReads(t *testing.T) {
 	if err := config.Save(cfgPath, c); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := state.Acquire(statePath(cfgPath))
+	stateFile, err := statePath(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := state.Acquire(stateFile)
 	if err != nil {
 		t.Fatal(err)
 	}

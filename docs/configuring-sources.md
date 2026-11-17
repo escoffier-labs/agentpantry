@@ -131,15 +131,24 @@ only to those principals.
 
 ## Secret removal across restarts
 
-Each source config has its own state file: `profiles/a.toml` uses
+Each source config is first resolved through symlinks to its real absolute path.
+Windows also resolves the final path through an opened handle. Resolution errors
+stop startup. State paths and identities both use that resolved path. Retargeting
+`current.toml` from `a.toml` to `b.toml` therefore selects B's state, not A's.
+Renaming or moving a config creates fresh identity and cannot authorize deletes
+from its former path.
+
+Each resolved config has its own state file: `profiles/a.toml` uses
 `profiles/a.toml.state.json` and `profiles/b.toml` uses
 `profiles/b.toml.state.json`. Files contain sorted exported names and recent
 deletion tombstones, never secret values. They are written atomically with mode
 0600. Keep the same config path and state file when restarting a source.
 
-The baseline is bound to the absolute config path, hostname, receipt identity
-(or its hostname default), configured sink peer and a domain-separated SHA-256
-fingerprint of the PSK bytes. No key bytes are stored. A copied, legacy or
+The baseline is bound to the resolved config path, hostname, receipt identity
+(or its hostname default) and configured sink peer. The PSK is not part of the
+binding. Rotation preserves pending revocations and tombstones. State stores no
+key fingerprint or other key-derived material that could test candidate keys.
+An older fingerprint field is ignored on load and removed on the next commit. A copied, legacy or
 mismatched baseline logs one warning per source process and supplies no deletes.
 A fully successful secret read replaces it with the current binding and names.
 Reader errors and collisions do not replace mismatched or corrupt state.
@@ -147,7 +156,9 @@ Reader errors and collisions do not replace mismatched or corrupt state.
 Only one source process may run for a config. It holds an exclusive advisory
 lock on `<config filename>.state.json.lock` for its lifetime, including
 reconnects. A second process fails immediately. The empty lock file can remain
-after exit. Do not unlink it while a source may be running.
+after exit. Do not unlink it while a source may be running. Windows validates
+the owner and existing DACL, permitting only the current user, SYSTEM and
+Administrators. A pre-existing broader ACL is rejected.
 
 After a successful secret read and stream write, the source records the names
 it exported. On restart or reconnect, those names form a deletion baseline while
@@ -160,13 +171,15 @@ error.
 
 Deleted names remain as tombstones for 7 days from their first successful delete
 send. Every full resend after reconnect or restart includes unexpired tombstones
-as deletes. A replay does not extend the deadline. A name that reappears in the
+as deletes. At most 1,000 tombstones are retained. Overflow drops the oldest
+first-send deadlines and logs the number dropped. A replay does not extend the deadline. A name that reappears in the
 permitted reader output clears its tombstone immediately. The sink treats
 repeated deletes idempotently. The protocol has no sink acknowledgement, so a
 restart or reconnect within this window is needed to retry a delete lost before
 application.
 
-A missing state file is a clean first run. An unreadable or corrupt file warns
+State reads are capped at 4 MiB. A larger file is invalid and supplies no
+deletion baseline. A missing state file is a clean first run. An unreadable or corrupt file warns
 and supplies no baseline. It is rewritten only after a fully successful secret
 read and any required stream write. State-write failures are sync errors.
 `status` prefers the config-specific state file and falls back to the old shared

@@ -1,30 +1,48 @@
 package state
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// Binding scopes deletion metadata to one source configuration and destination.
-// KeyFingerprint is a domain-separated digest, never the PSK bytes.
+// Binding scopes deletion metadata independently of transport key rotation.
+// No key-derived material belongs in this identity.
 type Binding struct {
-	ConfigPath     string `json:"config_path"`
-	Hostname       string `json:"hostname"`
-	Identity       string `json:"identity"`
-	Peer           string `json:"peer"`
-	KeyFingerprint string `json:"key_fingerprint"`
+	ConfigPath string `json:"config_path"`
+	Hostname   string `json:"hostname"`
+	Identity   string `json:"identity"`
+	Peer       string `json:"peer"`
 }
 
-// PathForConfig keeps configs in the same directory on distinct state files.
-func PathForConfig(configPath string) string { return filepath.Clean(configPath) + ".state.json" }
+// ResolveConfig follows the complete config path before deriving its identity.
+// Resolution failures never fall back to lexical identity.
+func ResolveConfig(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	real, err = filepath.Abs(real)
+	if err != nil {
+		return "", err
+	}
+	return finalConfigPath(filepath.Clean(real))
+}
+func PathForConfig(path string) (string, error) {
+	real, err := ResolveConfig(path)
+	if err != nil {
+		return "", err
+	}
+	return real + ".state.json", nil
+}
 
-// NewBinding binds one config and destination to a host and domain-separated PSK digest.
-func NewBinding(configPath, identity, peer string, key []byte) (Binding, error) {
-	path, err := filepath.Abs(configPath)
+func NewBinding(configPath, identity, peer string) (Binding, error) {
+	path, err := ResolveConfig(configPath)
 	if err != nil {
 		return Binding{}, err
 	}
@@ -32,30 +50,26 @@ func NewBinding(configPath, identity, peer string, key []byte) (Binding, error) 
 	if err != nil {
 		return Binding{}, err
 	}
-	if len(key) != 32 {
-		return Binding{}, errors.New("source state binding requires a 32-byte PSK")
-	}
-	digest := sha256.New()
-	_, _ = digest.Write([]byte("agentpantry/source-state/psk-fingerprint/v1\x00"))
-	_, _ = digest.Write(key)
-	binding := Binding{path, host, identity, peer, hex.EncodeToString(digest.Sum(nil))}
+	binding := Binding{path, host, identity, peer}
 	if !binding.Valid() {
-		return Binding{}, errors.New("source state binding requires config, host, identity and PSK fingerprint")
+		return Binding{}, errors.New("source state binding requires config, host and identity")
 	}
 	return binding, nil
 }
 func (b Binding) Valid() bool {
-	digest, err := hex.DecodeString(b.KeyFingerprint)
-	return filepath.IsAbs(b.ConfigPath) && strings.TrimSpace(b.Hostname) != "" && strings.TrimSpace(b.Identity) != "" && err == nil && len(digest) == sha256.Size
+	return filepath.IsAbs(b.ConfigPath) && strings.TrimSpace(b.Hostname) != "" && strings.TrimSpace(b.Identity) != ""
 }
 
-// LoadForDisplay reads legacy shared state only for status counters. Source
-// deletion logic uses Load directly on the config-specific path instead.
+// LoadForDisplay reads legacy shared state only for status counters.
 func LoadForDisplay(configPath string) (State, error) {
-	path := PathForConfig(configPath)
+	real, err := ResolveConfig(configPath)
+	if err != nil {
+		return State{}, err
+	}
+	path := real + ".state.json"
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		return Load(path)
 	}
-	old, err := Load(filepath.Join(filepath.Dir(configPath), "state.json"))
+	old, err := Load(filepath.Join(filepath.Dir(real), "state.json"))
 	return State{LastSyncUnix: old.LastSyncUnix, LastSentUnix: old.LastSentUnix, Cookies: old.Cookies, Secrets: old.Secrets, Storage: old.Storage}, err
 }

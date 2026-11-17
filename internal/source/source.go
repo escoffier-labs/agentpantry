@@ -340,6 +340,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	commitPrev := func(sent bool) error {
 		st := s.diskState
+		droppedTombstones := 0
 		now := s.now().Unix()
 		st.LastSyncUnix = now
 		if sent {
@@ -366,6 +367,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 			for _, tomb := range tombs {
 				st.Tombstones = append(st.Tombstones, tomb)
 			}
+			st.Tombstones, droppedTombstones = state.CapTombstones(st.Tombstones)
 			st.ExportedSecrets = make([]string, 0, len(curSecrets.Secrets))
 			for name := range curSecrets.Secrets {
 				st.ExportedSecrets = append(st.ExportedSecrets, name)
@@ -381,6 +383,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 			s.diskState = st
 			s.stateUsable = true
 		}
+		state.WarnDroppedTombstones(droppedTombstones)
 		s.prev = curCookies
 		if secretsCommitted {
 			s.prevSecrets = curSecrets

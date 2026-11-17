@@ -33,7 +33,7 @@
 - `agentpantry pair` bootstraps the long-lived PSK with a one-time SPAKE2 short code, as an alternative to copying `psk.key`. The pairing listener defaults to `127.0.0.1:8787` (not the sink `peer` bind). The session-salt handshake and HKDF session keys are unchanged.
 
 ### Fixed
-- Isolate exported-name state per config and bind it to config, host, receipt identity, peer and a domain-separated PSK fingerprint. Hold a single-writer advisory lock and replay deletion tombstones for 7 days after reconnect or restart. Legacy shared state is display-only. State never contains secret values or PSK bytes.
+- Isolate exported-name state by resolved real config path and bind it to config, host, receipt identity and peer. PSKs are excluded so key rotation preserves pending revocations without storing a candidate-key oracle. Hold a single-writer advisory lock and replay deletion tombstones for 7 days after reconnect or restart. Cap tombstones at 1,000 entries and state reads at 4 MiB, and validate existing Windows lock ACLs. Legacy shared state is display-only. State never contains secret values or key-derived material.
 - A secret name produced by more than one source (`secrets_dir` and KeePass), or repeated within one source, no longer silently overwrites by reader order. The cycle's secret read now fails like an unreadable source: no secret diff, the sink keeps what it has, cookies and storage still sync, and stderr names the colliding secret and the sources involved (never values). The check runs before the `[secret_names]` filter.
 
 ## v0.7.0 - 2026-08-26

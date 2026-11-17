@@ -427,4 +427,4 @@ Hat tip to [agentcookie](https://github.com/mvanhorn/agentcookie) for the spark.
 
 For tagged 1Password service-account secrets, see [source configuration](docs/configuring-sources.md#1password-service-account).
 
-Secret-source removals survive restart when the source retains its [bound per-config state file](docs/configuring-sources.md#secret-removal-across-restarts).
+Secret-source removals survive restart when the source retains its [bound real-path state file](docs/configuring-sources.md#secret-removal-across-restarts).

@@ -98,7 +98,13 @@ func TestUnreadableStateCannotEmitDeletes(t *testing.T) {
 
 func testBinding(t *testing.T, path string) state.Binding {
 	t.Helper()
-	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787", bytes.Repeat([]byte{42}, 32))
+	cfg := path + ".toml"
+	if _, err := os.Stat(cfg); os.IsNotExist(err) {
+		if err = os.WriteFile(cfg, []byte(`role="source"`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binding, err := state.NewBinding(cfg, "fixture", "sink:8787")
 	if err != nil {
 		t.Fatal(err)
 	}

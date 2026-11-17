@@ -3,7 +3,9 @@ package test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
+	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
@@ -34,7 +37,12 @@ func (*scriptedSelection) Kind() string                                         
 func (r *scriptedSelection) ReadSecrets(context.Context) ([]secret.Secret, error) { return r.ss, r.err }
 
 func restartSource(t *testing.T, c config.Config, path string, selection source.SecretReader) *source.Syncer {
-	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787", bytes.Repeat([]byte{42}, 32))
+	if _, err := os.Stat(path + ".toml"); os.IsNotExist(err) {
+		if err = os.WriteFile(path+".toml", []byte(`role="source"`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +59,9 @@ func restartSource(t *testing.T, c config.Config, path string, selection source.
 // deliverSecretCycle uses the production salt handshake, framing, encryption,
 // sink server and secret-file surface. Each call has its own random session key.
 func deliverSecretCycle(t *testing.T, s *source.Syncer, sd *surface.SecretDir) wire.Payload {
+	return deliverSecretCycleWithKey(t, s, sd, bytes.Repeat([]byte{42}, 32))
+}
+func deliverSecretCycleWithKey(t *testing.T, s *source.Syncer, sd *surface.SecretDir, key []byte) wire.Payload {
 	t.Helper()
 	defer s.Close()
 	var handshake, frames bytes.Buffer
@@ -62,7 +73,6 @@ func deliverSecretCycle(t *testing.T, s *source.Syncer, sd *surface.SecretDir) w
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := bytes.Repeat([]byte{42}, 32)
 	sealer, err := transport.NewSealer(key, received)
 	if err != nil {
 		t.Fatal(err)
@@ -250,11 +260,14 @@ func TestConfigsInOneDirectoryNeverDeleteEachOther(t *testing.T) {
 	}
 	makeSource := func(configName, name string) *source.Syncer {
 		cfg := filepath.Join(dir, configName)
-		binding, err := state.NewBinding(cfg, "fixture", "sink:8787", bytes.Repeat([]byte{42}, 32))
+		if err := os.WriteFile(cfg, []byte(`role="source"`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		binding, err := state.NewBinding(cfg, "fixture", "sink:8787")
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &source.Syncer{StatePath: state.PathForConfig(cfg), Binding: binding, Secrets: []source.SecretReader{&scriptedSelection{ss: []secret.Secret{{Name: name, Value: "value-for-" + name}}}}}
+		return &source.Syncer{StatePath: binding.ConfigPath + ".state.json", Binding: binding, Secrets: []source.SecretReader{&scriptedSelection{ss: []secret.Secret{{Name: name, Value: "value-for-" + name}}}}}
 	}
 	a := makeSource("a.toml", "API_A")
 	b := makeSource("b.toml", "API_B")
@@ -283,4 +296,174 @@ func TestRestartReplaysDeleteAfterSinkCrash(t *testing.T) {
 		t.Fatal("restart failed to replay pending delete")
 	}
 	assertSinkDeleted(t, sd, "API")
+}
+
+func realConfigSource(t *testing.T, path string) *source.Syncer {
+	t.Helper()
+	binding, err := state.NewBinding(path, "fixture", "sink:8787")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := config.Load(binding.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &source.Syncer{Binding: binding, StatePath: binding.ConfigPath + ".state.json"}
+	if c.SecretsDir != "" {
+		s.Secrets = []source.SecretReader{&secretsrc.DirReader{Dir: c.SecretsDir}}
+	}
+	return s
+}
+func writeRealSourceConfig(t *testing.T, cfgDir, name, token string) string {
+	t.Helper()
+	secrets := filepath.Join(t.TempDir(), "secrets")
+	if err := os.Mkdir(secrets, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secrets, token), []byte("value-for-"+token), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(cfgDir, name)
+	body := fmt.Sprintf(`role = "source"
+peer = "sink:8787"
+secrets_dir = %q
+`, secrets)
+	if err := os.WriteFile(cfg, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+func TestSymlinkRetargetNeverDeletesPriorConfig(t *testing.T) {
+	dir := t.TempDir()
+	sd, err := surface.NewSecretDir(filepath.Join(dir, "sink"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := writeRealSourceConfig(t, dir, "a.toml", "A_TOKEN")
+	b := writeRealSourceConfig(t, dir, "b.toml", "B_TOKEN")
+	alias := filepath.Join(dir, "current.toml")
+	if err := os.Symlink(a, alias); err != nil {
+		t.Fatal(err)
+	}
+	sourceA := realConfigSource(t, alias)
+	deliverSecretCycle(t, sourceA, sd)
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(b, alias); err != nil {
+		t.Fatal(err)
+	}
+	sourceB := realConfigSource(t, alias)
+	p := deliverSecretCycle(t, sourceB, sd)
+	if sourceA.StatePath == sourceB.StatePath || sourceA.Binding.ConfigPath == sourceB.Binding.ConfigPath || len(p.Secrets.Deletes) != 0 {
+		t.Fatal("retarget reused A identity or deleted A exports")
+	}
+	assertSinkSecret(t, sd, "A_TOKEN", "value-for-A_TOKEN")
+	assertSinkSecret(t, sd, "B_TOKEN", "value-for-B_TOKEN")
+}
+func TestConfigRenameOrMoveNeverDeletesPriorExports(t *testing.T) {
+	for _, moveDir := range []bool{false, true} {
+		t.Run(fmt.Sprint(moveDir), func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "configs")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			sd, err := surface.NewSecretDir(filepath.Join(root, "sink"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := writeRealSourceConfig(t, dir, "a.toml", "A_TOKEN")
+			old := realConfigSource(t, a)
+			deliverSecretCycle(t, old, sd)
+			next := filepath.Join(dir, "renamed.toml")
+			if moveDir {
+				newDir := filepath.Join(root, "moved")
+				if err := os.Rename(dir, newDir); err != nil {
+					t.Fatal(err)
+				}
+				next = filepath.Join(newDir, "a.toml")
+			} else {
+				if err := os.Rename(a, next); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeRealSourceConfig(t, filepath.Dir(next), filepath.Base(next), "B_TOKEN")
+			fresh := realConfigSource(t, next)
+			p := deliverSecretCycle(t, fresh, sd)
+			if fresh.Binding.ConfigPath == old.Binding.ConfigPath || len(p.Secrets.Deletes) != 0 {
+				t.Fatal("rename/move reused deletion authority")
+			}
+			assertSinkSecret(t, sd, "A_TOKEN", "value-for-A_TOKEN")
+			assertSinkSecret(t, sd, "B_TOKEN", "value-for-B_TOKEN")
+		})
+	}
+}
+func TestRotationPreservesPendingRevocations(t *testing.T) {
+	for _, pendingTomb := range []bool{false, true} {
+		t.Run(fmt.Sprint(pendingTomb), func(t *testing.T) {
+			path, sd := restartFixture(t)
+			cfg := path + ".toml"
+			if err := os.WriteFile(cfg, []byte(`role="source"`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			keyPath := filepath.Join(t.TempDir(), "psk.key")
+			if err := keyfile.Generate(keyPath); err != nil {
+				t.Fatal(err)
+			}
+			oldKey, err := keyfile.Load(keyPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding, err := state.NewBinding(cfg, "fixture", "sink:8787")
+			if err != nil {
+				t.Fatal(err)
+			}
+			initial := &source.Syncer{StatePath: path, Binding: binding, Secrets: []source.SecretReader{&scriptedSelection{ss: []secret.Secret{{Name: "API", Value: "rotation-fixture-value"}}}}}
+			deliverSecretCycleWithKey(t, initial, sd, oldKey)
+			if pendingTomb {
+				deliverSecretCycleWithKey(t, &source.Syncer{StatePath: path, Binding: binding}, nil, oldKey)
+			}
+			// Model upgrading existing state from ba925b7 while rotating its key.
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var legacy map[string]any
+			if err = json.Unmarshal(raw, &legacy); err != nil {
+				t.Fatal(err)
+			}
+			legacy["binding"].(map[string]any)["key_fingerprint"] = "obsolete-fingerprint"
+			raw, err = json.Marshal(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := keyfile.Rotate(keyPath); err != nil {
+				t.Fatal(err)
+			}
+			newKey, err := keyfile.Load(keyPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Equal(oldKey, newKey) {
+				t.Fatal("key did not rotate")
+			}
+			nextBinding, err := state.NewBinding(cfg, "fixture", "sink:8787")
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := deliverSecretCycleWithKey(t, &source.Syncer{StatePath: path, Binding: nextBinding}, sd, newKey)
+			if !reflect.DeepEqual(p.Secrets.Deletes, []string{"API"}) {
+				t.Fatal("rotation dropped pending revocation")
+			}
+			assertSinkDeleted(t, sd, "API")
+			raw, err = os.ReadFile(path)
+			if err != nil || bytes.Contains(raw, []byte("key_fingerprint")) || bytes.Contains(raw, newKey) || bytes.Contains(raw, oldKey) {
+				t.Fatal("state retains key-derived material", err)
+			}
+		})
+	}
 }

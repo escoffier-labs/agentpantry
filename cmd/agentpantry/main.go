@@ -302,7 +302,7 @@ func loadConfigWarnKeys(path string) (config.Config, []string, error) {
 }
 
 // statePath isolates every config, including profiles sharing a directory.
-func statePath(cfgPath string) string {
+func statePath(cfgPath string) (string, error) {
 	return state.PathForConfig(cfgPath)
 }
 
@@ -350,6 +350,11 @@ func cmdSource(args []string) error {
 		return errors.New("-json is only supported with -dry-run")
 	}
 
+	resolved, err := state.ResolveConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	*cfgPath = resolved
 	c, unknown, err := loadConfigWarnKeys(*cfgPath)
 	if err != nil {
 		return err
@@ -366,11 +371,11 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
-	binding, err := state.NewBinding(*cfgPath, receipt.Identity(c), c.Peer, key)
+	binding, err := state.NewBinding(*cfgPath, receipt.Identity(c), c.Peer)
 	if err != nil {
 		return err
 	}
-	syncer := &source.Syncer{StatePath: statePath(*cfgPath), Binding: binding}
+	syncer := &source.Syncer{StatePath: binding.ConfigPath + ".state.json", Binding: binding}
 	if err = syncer.OpenState(); err != nil {
 		return err
 	}

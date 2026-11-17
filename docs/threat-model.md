@@ -350,17 +350,27 @@ The 0600 JSON contains names, deletion expiry times and identity metadata.
 Secret values and PSK bytes are never persisted there. Names can reveal which
 credentials are configured, so the file remains trusted local metadata.
 
-The binding includes the absolute config path, hostname, receipt identity,
-configured sink peer and SHA-256 of a fixed domain-separation label followed by
-the PSK bytes. The label is `agentpantry/source-state/psk-fingerprint/v1` followed
-by a NUL byte. Any mismatch discards both exported names and tombstones as a
+Both the state filename and bound config identity use the fully resolved real
+config path. The source resolves it before loading the config, follows symlinks
+and uses the final opened-handle path on Windows. Retargeting a config alias
+cannot reuse its former target's deletion baseline. Renames and moves get fresh
+identity and cannot delete exports from the old path.
+
+The binding includes resolved config path, hostname, receipt identity and
+configured sink peer. The PSK is deliberately excluded. Transport key rotation
+must preserve revocations pending for the same source and destination. No PSK
+fingerprint is stored, avoiding an offline candidate-key oracle. Old fingerprint
+fields are ignored and disappear after the next successful state commit. Any mismatch discards both exported names and tombstones as a
 delete baseline. It logs once per source process and rewrites the file only after the next
 successful secret commit. Missing, corrupt, legacy and mismatched state cannot
-authorize baseline deletes. The old shared `state.json` is read only for status
+authorize baseline deletes. Loading reads at most 4 MiB plus one overflow byte.
+Larger state is invalid and cannot supply a baseline. Saves also enforce 4 MiB. The old shared `state.json` is read only for status
 display and is never migrated as deletion authority.
 
 The source holds an exclusive nonblocking advisory lock on a sibling `.lock`
-file before reading any baseline. Unix uses `flock` and Windows uses
+file before reading any baseline. Windows checks existing lock-file ownership
+and DACL grants against the current user, SYSTEM and Administrators, even when
+the file predates startup. A broader ACL is rejected. Unix uses `flock` and Windows uses
 `LockFileEx`. The lock survives reconnect resets and is held until source exit.
 All baseline reads and read-modify-write commits happen under that lock. A
 second cooperating source for the same config fails fast. Lock files are never
@@ -376,7 +386,9 @@ replays.
 
 Every successful delete send records a names-only tombstone expiring 7 days
 after its first send. Full resends on reconnect or restart replay unexpired
-tombstones, and repeated sink deletes are idempotent. Replays keep the original
+tombstones, and repeated sink deletes are idempotent. Tombstones are capped at
+1,000 entries. On overflow the oldest first-send deadlines are dropped, with a
+warning naming the count. Those evicted names lose their remaining retry window. Replays keep the original
 expiry. Reappearing permitted names clear their tombstones. A failed send does
 not commit names or tombstones. A failed state write is reported and leaves the
 in-memory baseline uncommitted.

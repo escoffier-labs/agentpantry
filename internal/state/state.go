@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,8 +15,14 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/privfile"
 )
 
-// Tombstones survive for seven days without extending their lifetime on resend.
+// TombstoneTTL bounds replay lifetime. Capacity eviction can shorten it.
 const TombstoneTTL = 7 * 24 * time.Hour
+
+// MaxTombstones bounds retained deletion names.
+const MaxTombstones = 1000
+
+// MaxStateBytes bounds serialized state, including its binding and names.
+const MaxStateBytes = 4 << 20
 
 // Tombstone retains a deleted name for bounded replay after a lost sink apply.
 type Tombstone struct {
@@ -46,18 +54,37 @@ func (RealClock) Now() time.Time { return time.Now() }
 
 // Load reads state from path. A missing file is the zero value, not an error.
 func Load(path string) (State, error) {
-	b, err := os.ReadFile(path) // #nosec G304 -- state path is derived from the operator-selected config path.
+	f, err := os.Open(path) // #nosec G304 -- state path is derived from the operator-selected config path.
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return State{}, nil
 		}
 		return State{}, err
 	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return State{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return State{}, errors.New("source state must be a regular file")
+	}
+	if info.Size() > MaxStateBytes {
+		return State{}, errors.New("source state exceeds 4 MiB limit")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, MaxStateBytes+1))
+	if err != nil {
+		return State{}, err
+	}
+
 	return decode(b)
 }
 
 func decode(b []byte) (State, error) {
 	var s State
+	if len(b) > MaxStateBytes {
+		return State{}, errors.New("source state exceeds 4 MiB limit")
+	}
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 || b[0] != '{' {
 		return State{}, errors.New("invalid source state object")
@@ -66,6 +93,9 @@ func decode(b []byte) (State, error) {
 		return State{}, err
 	}
 
+	var dropped int
+	s.Tombstones, dropped = CapTombstones(s.Tombstones)
+	WarnDroppedTombstones(dropped)
 	return s, nil
 }
 
@@ -76,11 +106,40 @@ func Save(path string, s State) error {
 	}
 	s.ExportedSecrets = append([]string{}, s.ExportedSecrets...)
 	sort.Strings(s.ExportedSecrets)
-	s.Tombstones = append([]Tombstone(nil), s.Tombstones...)
+	var dropped int
+	s.Tombstones, dropped = CapTombstones(s.Tombstones)
 	sort.Slice(s.Tombstones, func(i, j int) bool { return s.Tombstones[i].Name < s.Tombstones[j].Name })
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	return privfile.Write(path, b)
+	if len(b) > MaxStateBytes {
+		return errors.New("source state exceeds 4 MiB limit")
+	}
+	if err := privfile.Write(path, b); err != nil {
+		return err
+	}
+	WarnDroppedTombstones(dropped)
+	return nil
+}
+
+// CapTombstones retains the newest first-send deadlines with deterministic ties.
+func CapTombstones(in []Tombstone) ([]Tombstone, int) {
+	out := append([]Tombstone(nil), in...)
+	if len(out) <= MaxTombstones {
+		return out, 0
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ExpiresUnix == out[j].ExpiresUnix {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ExpiresUnix < out[j].ExpiresUnix
+	})
+	dropped := len(out) - MaxTombstones
+	return append([]Tombstone(nil), out[dropped:]...), dropped
+}
+func WarnDroppedTombstones(count int) {
+	if count > 0 {
+		fmt.Fprintf(os.Stderr, "agentpantry: warning: dropped %d oldest secret deletion tombstone(s), limit %d\n", count, MaxTombstones)
+	}
 }

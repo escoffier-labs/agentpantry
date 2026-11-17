@@ -1,10 +1,14 @@
 package state
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -96,4 +100,49 @@ func FuzzDecode(f *testing.F) {
 	f.Add([]byte(`{"exported_secrets":["API"]}`))
 	f.Add([]byte(`{"last_sync_unix":1}`))
 	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = decode(raw) })
+}
+
+func TestStateReadByteCap(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	base := []byte(`{"exported_secrets":[]}`)
+	raw := append(base, bytes.Repeat([]byte{' '}, MaxStateBytes-len(base))...)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatal("exact byte limit rejected", err)
+	}
+	raw = append(raw, ' ')
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Load(path); err == nil || !strings.Contains(err.Error(), "4 MiB") || len(got.ExportedSecrets) != 0 {
+		t.Fatal("oversized state accepted", err)
+	}
+	if _, err := decode(raw); err == nil {
+		t.Fatal("decoder bypasses byte cap")
+	}
+}
+func TestTombstoneCapKeepsNewest(t *testing.T) {
+	tombs := make([]Tombstone, MaxTombstones+10)
+	for i := range tombs {
+		tombs[i] = Tombstone{Name: fmt.Sprintf("T_%04d", i), ExpiresUnix: int64(i + 1)}
+	}
+	capped, dropped := CapTombstones(tombs)
+	if dropped != 10 || len(capped) != MaxTombstones || capped[0].Name != "T_0010" || capped[len(capped)-1].Name != "T_1009" {
+		t.Fatal("wrong tombstone eviction")
+	}
+	// A state produced by an older version is also bounded on load.
+	raw, err := json.Marshal(State{Tombstones: tombs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err = os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil || len(loaded.Tombstones) != MaxTombstones || loaded.Tombstones[0].Name != "T_0010" {
+		t.Fatal("load did not cap tombstones", err)
+	}
 }

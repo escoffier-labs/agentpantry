@@ -3,6 +3,8 @@ package source
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,7 +18,7 @@ import (
 )
 
 func TestCopiedStateBindingMismatchNeverDeletes(t *testing.T) {
-	for _, field := range []string{"host", "identity", "config", "peer", "key"} {
+	for _, field := range []string{"host", "identity", "config", "peer"} {
 		t.Run(field, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "fixture.toml.state.json")
 			old := testBinding(t, path)
@@ -30,8 +32,6 @@ func TestCopiedStateBindingMismatchNeverDeletes(t *testing.T) {
 				binding.ConfigPath += ".other"
 			case "peer":
 				binding.Peer = "other:8787"
-			case "key":
-				binding.KeyFingerprint = strings.Repeat("a", 64)
 			}
 			if err := state.Save(path, state.State{Binding: &old, ExportedSecrets: []string{"API_A"}, Tombstones: []state.Tombstone{{Name: "TOMB_A", ExpiresUnix: time.Now().Add(state.TombstoneTTL).Unix()}}}); err != nil {
 				t.Fatal(err)
@@ -292,5 +292,71 @@ func TestTombstoneReplayDoesNotRenewAcrossExpiryBoundary(t *testing.T) {
 	}
 	if buf.Len() != 0 {
 		t.Fatal("expired replay created a new tombstone window")
+	}
+}
+
+func TestTombstoneOverflowWarnsAndDropsOldest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.state.json")
+	binding := testBinding(t, path)
+	now := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	old := make([]state.Tombstone, state.MaxTombstones)
+	for i := range old {
+		old[i] = state.Tombstone{Name: fmt.Sprintf("OLD_%04d", i), ExpiresUnix: now.Add(24*time.Hour + time.Duration(i)*time.Second).Unix()}
+	}
+	if err := state.Save(path, state.State{Binding: &binding, ExportedSecrets: []string{"LATEST"}, Tombstones: old}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
+	s := &Syncer{StatePath: path, Binding: binding, Clock: &tombClock{now: now}, Out: &buf, Sealer: sealer}
+	defer s.Close()
+	message := captureStderr(t, func() {
+		if err := s.SyncOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(message, "dropped 1 oldest secret deletion tombstone") {
+		t.Fatal("missing eviction count", message)
+	}
+	st, err := state.Load(path)
+	if err != nil || len(st.Tombstones) != state.MaxTombstones {
+		t.Fatal("state exceeds tombstone limit", err)
+	}
+	found := false
+	for _, tomb := range st.Tombstones {
+		if tomb.Name == "OLD_0000" {
+			t.Fatal("oldest tombstone retained")
+		}
+		if tomb.Name == "LATEST" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("newest deletion dropped")
+	}
+}
+func TestOversizedStateCannotAuthorizeDeletes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.state.json")
+	binding := testBinding(t, path)
+	raw, err := json.Marshal(state.State{Binding: &binding, ExportedSecrets: []string{"OLD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, bytes.Repeat([]byte{' '}, state.MaxStateBytes)...)
+	if err = os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
+	s := &Syncer{StatePath: path, Binding: binding, Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "NEW", Value: "fixture"}}}}, Out: &buf, Sealer: sealer}
+	defer s.Close()
+	captureStderr(t, func() {
+		if err := s.SyncOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	p := decodePayload(t, &buf)
+	if len(p.Secrets.Deletes) != 0 {
+		t.Fatal("oversized state supplied delete baseline")
 	}
 }

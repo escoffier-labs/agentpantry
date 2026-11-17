@@ -27,7 +27,10 @@ func TestEmptySelectionThenSourceRemovalRevokesAtSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787", bytes.Repeat([]byte{24}, 32))
+	if err = os.WriteFile(path+".toml", []byte(`role="source"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787")
 	if err != nil {
 		t.Fatal(err)
 	}

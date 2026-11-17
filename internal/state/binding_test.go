@@ -1,33 +1,55 @@
 package state
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 )
 
-func TestBindingFingerprintDomainSeparation(t *testing.T) {
-	key := bytes.Repeat([]byte{42}, 32)
-	b, err := NewBinding("fixture.toml", "node", "sink:8787", key)
+func TestBindingContainsNoKeyDerivedMetadata(t *testing.T) {
+	cfg := fixtureConfig(t)
+	b, err := NewBinding(cfg, "node", "sink:8787")
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := sha256.Sum256(append([]byte("agentpantry/source-state/psk-fingerprint/v1\x00"), key...))
-	plain := sha256.Sum256(key)
-	if !b.Valid() || b.KeyFingerprint != hex.EncodeToString(expected[:]) || b.KeyFingerprint == hex.EncodeToString(plain[:]) {
-		t.Fatal("incorrect fingerprint binding")
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !filepath.IsAbs(b.ConfigPath) || b.Hostname == "" {
-		t.Fatal("missing path or host binding")
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
 	}
+	if len(fields) != 4 || fields["key_fingerprint"] != nil || !b.Valid() {
+		t.Fatal("key-derived metadata in binding")
+	}
+}
+func fixtureConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fixture.toml")
+	if err := os.WriteFile(path, []byte(`role="source"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+func mustStatePath(t *testing.T, path string) string {
+	t.Helper()
+	out, err := PathForConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 func TestLegacyStateDisplayOnly(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "a.toml")
+	for _, name := range []string{"a.toml", "b.toml"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`role="source"`), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	old := State{LastSyncUnix: 123, ExportedSecrets: []string{"API_A"}, Tombstones: []Tombstone{{Name: "OLD", ExpiresUnix: 999}}}
 	if err := Save(filepath.Join(dir, "state.json"), old); err != nil {
 		t.Fatal(err)
@@ -36,14 +58,14 @@ func TestLegacyStateDisplayOnly(t *testing.T) {
 	if err != nil || display.LastSyncUnix != 123 || len(display.ExportedSecrets) != 0 || len(display.Tombstones) != 0 || display.Binding != nil {
 		t.Fatal("legacy names exposed as baseline", err)
 	}
-	baseline, err := Load(PathForConfig(cfg))
+	baseline, err := Load(mustStatePath(t, cfg))
 	if err != nil || len(baseline.ExportedSecrets) != 0 {
 		t.Fatal("legacy names used for new config", err)
 	}
-	if PathForConfig(cfg) == PathForConfig(filepath.Join(dir, "b.toml")) {
+	if mustStatePath(t, cfg) == mustStatePath(t, filepath.Join(dir, "b.toml")) {
 		t.Fatal("configs share a state file")
 	}
-	if err := Save(PathForConfig(cfg), State{LastSyncUnix: 456}); err != nil {
+	if err := Save(mustStatePath(t, cfg), State{LastSyncUnix: 456}); err != nil {
 		t.Fatal(err)
 	}
 	display, err = LoadForDisplay(cfg)
@@ -89,7 +111,7 @@ func TestLockExcludesSecondProcess(t *testing.T) {
 }
 
 func TestBindingAllowsConfiguredEmptyStdioPeer(t *testing.T) {
-	binding, err := NewBinding("fixture.toml", "node", "", bytes.Repeat([]byte{42}, 32))
+	binding, err := NewBinding(fixtureConfig(t), "node", "")
 	if err != nil || !binding.Valid() || binding.Peer != "" {
 		t.Fatal("configured empty stdio peer not preserved", err)
 	}
