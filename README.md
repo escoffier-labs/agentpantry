@@ -222,7 +222,10 @@ profile's role, lane URL, surfaces, adapter and domain counts, and the cookie
 count of a configured store. A sink that relies on the default store path
 reports that the path is unresolved rather than an empty count, because the
 default resolves against that process's own config dir and cannot be inferred
-from elsewhere. Use `-profiles <dir>` to point at another directory.
+from elsewhere. A store that exists but cannot be read, or a relative
+`sidecar_path` (the sink resolves it against its own working directory), is
+reported in the row's note rather than silently dropped. Use `-profiles <dir>`
+to point at another directory.
 
 `agentpantry verify` answers the `website_authentication` question that
 `source --dry-run` can only report as `not_verified`, by checking whether a
@@ -233,16 +236,23 @@ running browser still has a working session for one domain:
 
 It opens one tab in the lane browser you name, waits for the document to
 finish loading, reads the title, final URL, and a bounded sample of rendered
-text, then closes the tab. It exits 0 for usable content, 1 when a challenge or
-an empty shell came back, and 2 when the check could not run. Cookie counts and
-expiry dates cannot answer this question: a clearance cookie is bound to the
-TLS fingerprint and header order of the browser that earned it, so a fresh
-cookie replayed from another client is refused even when its value and
+text, then closes the tab. It exits 0 for usable content, 1 when a challenge, an
+empty shell, or an off-domain page came back (`ok`, `challenge`, `empty`,
+`off_domain`), and 2 when the check could not run, which includes a missing
+`-lane` or any other usage error and a page that failed to load at all. Cookie
+counts and expiry dates cannot answer this question: a clearance cookie is bound
+to the TLS fingerprint and header order of the browser that earned it, so a
+fresh cookie replayed from another client is refused even when its value and
 User-Agent match. Only the browser that holds the session proves the session.
 `-domain` is required and scopes the check, so the command cannot drive an
-authenticated browser anywhere else. `--json` emits `verdict`, `marker`,
-`final_url`, `text_len`, and `checked_at`. No cookie value, header, or page text
-is printed.
+authenticated browser anywhere else. The scope covers where the page ends up as
+well as where it starts: an expired session that redirects to an external
+sign-in reports `off_domain` with only the host it landed on, polling stops
+there, and that page's title is not printed. The lane URL must be loopback, and
+URLs with embedded credentials are refused. `--json` emits `verdict`, `marker`,
+`final_url`, `text_len`, and `checked_at`. Output includes the page title for an
+on-domain result and the URL with its query string and fragment removed. Cookie
+values, request headers, and page body text are never printed.
 
 `agentpantry run -- <command>` is the sink-side, memory-only way to hand synced
 secrets to a child process, in the style of 1Password `op run`. It reads the

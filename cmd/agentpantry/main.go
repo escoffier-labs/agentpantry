@@ -1126,9 +1126,21 @@ type profileSummary struct {
 // its own XDG config dir, which cannot be inferred from another process, and
 // guessing would reproduce the misleading count this command exists to fix.
 func summarizeProfiles(dir string) ([]profileSummary, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, "*.toml"))
+	// ReadDir, not Glob: dir is an operator path and may contain glob
+	// metacharacters, which Glob would interpret as a pattern.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, e.Name()))
 	}
 	sort.Strings(paths)
 	out := make([]profileSummary, 0, len(paths))
@@ -1161,14 +1173,32 @@ func summarizeProfiles(dir string) ([]profileSummary, error) {
 		}
 		if c.SidecarPath != "" {
 			p.Store = c.SidecarPath
-			if info, statErr := os.Stat(c.SidecarPath); statErr == nil {
-				p.Updated = info.ModTime().UTC().Format(time.RFC3339)
-				if sc, openErr := surface.OpenSidecarReadOnly(c.SidecarPath); openErr == nil {
-					if cookies, listErr := sc.List(); listErr == nil {
-						n := len(cookies)
-						p.Cookies = &n
+			switch {
+			case !filepath.IsAbs(c.SidecarPath):
+				// The sink opens sidecar_path as written (sidecarDBPath), so a
+				// relative path resolves against that process's working
+				// directory, which cannot be known from here.
+				p.StoreNote = "relative path (resolved against the sink's working directory, not checked)"
+			default:
+				info, statErr := os.Stat(c.SidecarPath)
+				switch {
+				case statErr == nil:
+					p.Updated = info.ModTime().UTC().Format(time.RFC3339)
+					sc, openErr := surface.OpenSidecarReadOnly(c.SidecarPath)
+					if openErr != nil {
+						p.StoreNote = "store unreadable: " + openErr.Error()
+						break
 					}
+					cookies, listErr := sc.List()
 					_ = sc.Close()
+					if listErr != nil {
+						p.StoreNote = "store unreadable: " + listErr.Error()
+						break
+					}
+					n := len(cookies)
+					p.Cookies = &n
+				case !errors.Is(statErr, os.ErrNotExist):
+					p.StoreNote = "store unreadable: " + statErr.Error()
 				}
 			}
 		} else if c.Role == "sink" {
@@ -1209,6 +1239,9 @@ func statusAll(dir string, jsonOut bool) error {
 			detail = "lane " + strings.Join(r.Lanes, ", ")
 		case r.Store != "":
 			detail = "store " + r.Store
+			if r.StoreNote != "" {
+				detail += " (" + r.StoreNote + ")"
+			}
 		case r.Role == "sink" && r.StoreNote != "":
 			detail = r.StoreNote + fmt.Sprintf(" (%d adapter(s))", r.Adapters)
 		case r.StoreNote != "":
