@@ -127,7 +127,9 @@ func TestSummarizeProfilesEmptyDir(t *testing.T) {
 // -profiles is an operator path; glob metacharacters in it must be literal, and
 // a directory that happens to end in .toml is not a profile.
 func TestSummarizeProfilesLiteralDirAndSkipsDirs(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "prof[a-z]*iles")
+	// "[" is a glob metacharacter that is also legal in Windows file names
+	// ("*" is not, so it cannot be used here).
+	dir := filepath.Join(t.TempDir(), "prof[a-z]iles")
 	if err := os.MkdirAll(filepath.Join(dir, "nested.toml"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +137,8 @@ func TestSummarizeProfilesLiteralDirAndSkipsDirs(t *testing.T) {
 	if err := os.WriteFile(keyPath, []byte("k"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	body := "role = \"source\"\npeer = \"127.0.0.1:8787\"\nkey_path = \"" + keyPath + "\"\n"
+	// TOML literal strings keep Windows backslashes from being read as escapes.
+	body := "role = \"source\"\npeer = \"127.0.0.1:8787\"\nkey_path = '" + keyPath + "'\n"
 	if err := os.WriteFile(filepath.Join(dir, "one.toml"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -169,8 +172,8 @@ func TestSummarizeProfilesStoreProblemsAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink := func(path string) string {
-		return "role = \"sink\"\npeer = \"127.0.0.1:8787\"\nkey_path = \"" + keyPath +
-			"\"\nsurfaces = [\"sidecar\"]\nsidecar_path = \"" + path + "\"\n"
+		return "role = \"sink\"\npeer = \"127.0.0.1:8787\"\nkey_path = '" + keyPath +
+			"'\nsurfaces = [\"sidecar\"]\nsidecar_path = '" + path + "'\n"
 	}
 	if err := os.WriteFile(filepath.Join(dir, "corrupt.toml"), []byte(sink(bad)), 0o600); err != nil {
 		t.Fatal(err)
