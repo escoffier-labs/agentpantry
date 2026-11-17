@@ -230,6 +230,7 @@ flowchart LR
   A --> C["restore: file or CDP"]
   A --> D["browser: signed-in Chrome"]
   A --> E["inventory, status, doctor"]
+  A --> F["verify: lane still signed in?"]
 ```
 
 ### Inject secrets into one process
@@ -256,9 +257,15 @@ Source: `internal/browser/browser.go`, `cmd/agentpantry/main.go`
 
 Source: `internal/doctor/doctor.go`, `cmd/agentpantry/main.go`
 
+### Check that a lane is still signed in
+
+`agentpantry verify -lane http://127.0.0.1:9224 -domain example.com https://example.com/` opens one tab in that browser, reads the title, final URL, and how much text came back, then closes the tab. It exits 0 for `ok`, 1 for `challenge`, `empty`, or `off_domain`, and 2 when the check could not run. Cookie counts cannot answer this: a clearance cookie only works in the browser that earned it. `-domain` is required and also holds the final URL, so an expired session that bounces to an external sign-in reports `off_domain`. `status -all` summarizes every per-profile config under `profiles/`.
+
+Source: `internal/lane/lane.go`, `cmd/agentpantry/verify.go`
+
 ### Handing off from a public-web reader
 
-Some agent web readers deliberately refuse signed-in profiles and stop with a "requires auth" or challenge result. That is where agentpantry takes over. It keeps a named local browser lane signed in, and the agent reads the authenticated page there:
+Some agent web readers deliberately refuse signed-in profiles and stop with a "requires auth" or challenge result. That is where agentpantry takes over. It keeps a named local browser lane signed in, and the agent reads the authenticated page there. Run `verify` first to confirm the lane is still signed in:
 
 ```bash
 agentpantry browser -config ./sink.toml --profile ~/lanes/research --port 9223 --keep-open
@@ -315,6 +322,7 @@ Every path that reads, writes, or exposes cookies and secrets, and what limits i
 | `run` | Yes, `secrets_dir` | Child environment only, never a file | Deny-wins policy, loader variables refused |
 | `restore` | Yes, sidecar | Yes, to one explicit target | Domain narrowing, loopback-only `cdp=`, refuses to overwrite a non-`storageState` file, `desktop-app=` refuses writes |
 | `browser` | Yes, sidecar | Yes, into the Chrome it launches | Loopback port, throwaway profile by default |
+| `verify` | Title, final host, and text length of one page | No | Loopback lane, `-domain` scope on the start and final URL, tab closed, no cookie values, headers, or body text printed |
 | `inventory`, `status`, `doctor` | `inventory` opens the sidecar | No | Print no values, `inventory` never creates a store |
 | Receipts | No | Counts and digests only | HMAC chain, mode `0600`, no values |
 
@@ -327,7 +335,8 @@ Every path that reads, writes, or exposes cookies and secrets, and what limits i
 - `source`: run on the daily driver, watch browsers, and push sealed diffs.
 - `sink`: run on the agent machine, receive diffs, and apply them to surfaces.
 - `doctor`: validate the config, key, and role-specific setup.
-- `status`: print the active role, peer, surfaces, and last sync.
+- `status`: print the active role, peer, surfaces, and last sync. `-all` summarizes every per-profile config.
+- `verify`: check that a running lane browser still has a working session for one domain.
 - `inventory`: summarize a backup store with per-host counts and near-expiry cookies.
 - `restore`: materialize cookies from a sidecar backup into one target.
 - `browser`: launch an automation Chrome pre-seeded with a session.
@@ -339,7 +348,7 @@ Every path that reads, writes, or exposes cookies and secrets, and what limits i
 ### Detail docs
 
 - [Configuring sources and browsers](docs/configuring-sources.md): browser kinds, Windows, app-bound Chrome over CDP
-- [Operating](docs/operating.md): doctor, receipts, status, inventory, run, restore, desktop app inspection, stdio, source dry-run plan, reliability, release packaging
+- [Operating](docs/operating.md): doctor, receipts, status, `status -all`, `verify`, inventory, run, restore, desktop app inspection, stdio, source dry-run plan, reliability, release packaging
 - [Key management and pairing](docs/key-management.md): session handshake, short-code pairing, rotating the pre-shared key
 - [Surfaces, secrets, and adapters](docs/surfaces-and-adapters.md): surfaces, named secrets, `localStorage`, the automation browser, adapter config
 - [Design notes](docs/design-notes.md): the original overview and "Why not something else?"

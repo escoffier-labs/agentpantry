@@ -3,6 +3,27 @@
 ## Unreleased
 
 ### Added
+- `verify` checks whether a running browser still has a working session for one
+  domain by loading a page in that browser and classifying what came back. It
+  reports `ok`, `challenge`, `empty`, or `off_domain`, with the marker that
+  decided it. It exits 0 for ok, 1 for challenge, empty, or off_domain, and 2
+  when the check could not run (usage errors, a page that failed to load, an
+  unreachable lane). This is the check behind `website_authentication`,
+  which `source --dry-run` can only report as `not_verified` because a plan
+  reads metadata. A cookie count cannot answer the question: clearance cookies
+  are bound to the browser that earned them, so a fresh value replayed from
+  another client is still refused. `-domain` is required so the command cannot
+  steer an authenticated browser outside the domain under test, and the final
+  URL is held to the same scope, so an expired session bounced to an external
+  sign-in reports `off_domain` instead of `ok`. The tab it opens is closed again,
+  the DevTools HTTP calls refuse redirects and carry timeouts, and printed URLs
+  have their query string and fragment removed.
+- `status -all` summarizes every per-profile config in `<config dir>/profiles`,
+  so a deployment that captures per browser profile no longer reports
+  `last sync: never` from the canonical config alone. A sink using the default
+  store path reports it as unresolved instead of reporting a zero count.
+  A store that exists but cannot be read, or a relative `sidecar_path`, is
+  flagged in the row note instead of being omitted.
 - `agentpantry source --dry-run [--json]` prints a read-only disclosure plan before capture: the route (`tcp`, `stdio`, or `peerless`), key presence and mode, one row per browser (kind, profile, read mechanism, store, `capture_localstorage`, `account_identity: unknown`), the effective deny-wins domain and secret-name policy, secret source enablement, and the local files a real run would write. It reads config and file metadata only: no key, cookie, localStorage, or secret value is read, nothing is dialed, and no salt, frame, state, or receipt is written. `status` separates `config_readiness` from `capture_coverage` (`not_measured`) and `website_authentication` (`not_verified`). The command exits 1 when the config is not ready.
 - `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`; refuses `PATH`/`LD_PRELOAD` and other loader vars).
 - Hash-chained local sync receipts (`receipts verify` / `receipts show`): opt-in JSONL provenance of each send/apply with payload digests only (no cookie or secret values), a signed monotonic `seq`, a `receipts.head` tip pointer, and a configured per-node identity (default: hostname).
