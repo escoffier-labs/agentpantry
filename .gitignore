@@ -19,3 +19,6 @@ testdata/fuzz/
 
 # Local brigade memory (cards are local-only, never committed)
 /memory/
+
+# Local tool logs (may contain account identifiers)
+/error.log
