@@ -35,7 +35,7 @@ This tool moves live authenticated browser sessions and real secrets. The follow
 - Strictly monotonic replay counter on the sink. Never accept equal or lower counters, never reset it for convenience.
 - Deny-wins domain and secret-name policy. Never flip to allow-wins or add bypass flags.
 - 0600 modes on key and secret files. Never broaden permissions to fix a test.
-- The sink's dual-key rotation window (`rotate-key` until `-finish`) intentionally accepts the old key. Do not "fix" that without reading the rotation section of the README.
+- The sink's dual-key rotation window (`rotate-key` until `-finish`) intentionally accepts the old key. Do not "fix" that without reading the rotation section of `docs/key-management.md`.
 - Never run `agentpantry source` or `agentpantry sink` against real browser profiles or a real `~/.config/agentpantry` during development or tests unless the user explicitly asks in this session. Tests use temp dirs and fixtures; keep it that way.
 
 ## Gotchas
