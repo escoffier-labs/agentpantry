@@ -116,7 +116,9 @@ func LoadChecked(path string) (Config, []string, error) {
 			return c, nil, fmt.Errorf("section must be exactly [tailnet]: %s", k[0])
 		}
 		if len(k) == 1 {
-			switch k[0] {
+			// Case-folded so Allow_Nodes or ALLOW_NODES cannot slip past as an
+			// unknown-key warning and leave the sink ungated.
+			switch strings.ToLower(k[0]) {
 			case "allow_nodes", "allow_tags", "allow_user_ids", "allow_loopback":
 				return c, nil, fmt.Errorf("%s must be inside [tailnet]", k[0])
 			}

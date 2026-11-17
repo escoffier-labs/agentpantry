@@ -58,6 +58,7 @@ allow_user_ids=["123"]`} {
 func TestTailnetMisplacedSelectorsAndSectionCase(t *testing.T) {
 	for _, body := range []string{
 		`allow_nodes=["node"]`, `allow_tags=["tag:source"]`, `allow_user_ids=["123"]`, `allow_loopback=true`,
+		`Allow_Nodes=["node"]`, `ALLOW_NODES=["node"]`, `Allow_Tags=["tag:source"]`, `ALLOW_USER_IDS=["123"]`, `Allow_Loopback=true`,
 		`[Tailnet]
 allow_nodes=["node"]`, `[TAILNET]
 allow_nodes=["node"]`, `[tailNet]`, `allow_nodes=["node"]
