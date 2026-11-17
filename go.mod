@@ -10,8 +10,8 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.4
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
-	github.com/tobischo/gokeepasslib/v3 v3.7.0
-	golang.org/x/crypto v0.57.0
+	github.com/tobischo/gokeepasslib/v3 v3.7.1
+	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0
@@ -37,12 +37,12 @@ require (
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
-	github.com/tobischo/argon2 v0.1.0 // indirect
+	github.com/tobischo/argon2 v0.2.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
 	modernc.org/libc v1.79.0 // indirect

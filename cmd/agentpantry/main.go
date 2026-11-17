@@ -71,6 +71,8 @@ func main() {
 		err = cmdStatus(args)
 	case "inventory":
 		err = cmdInventory(args)
+	case "verify":
+		err = cmdVerify(args)
 	case "restore":
 		err = cmdRestore(args)
 	case "browser":
@@ -109,6 +111,7 @@ commands:
   doctor           validate the config, key, and role-specific setup
   status           print the active role, peer, surfaces, and last sync
   inventory        summarize a backup store: per-host counts and near-expiry
+  verify           check that a running lane browser still has a working session
   restore          materialize cookies from a sidecar backup to one target
   browser          launch an automation Chrome pre-seeded with a session
   run              inject synced secrets into a child process environment
@@ -998,12 +1001,22 @@ func printDoctorJSON(payload map[string]any) {
 	fmt.Println(string(b))
 }
 
+// cmdStatus reports the active configuration. With -all it summarizes every
+// per-profile config instead, because a deployment that captures per browser
+// profile keeps the real state in those files: reporting only the canonical
+// config shows "never synced" on a box that synced this morning.
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	cfgPath := fs.String("config", filepath.Join(config.Dir(), "config.toml"), "config path")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output")
+	all := fs.Bool("all", false, "summarize every per-profile config instead of the canonical one")
+	profilesDir := fs.String("profiles", filepath.Join(config.Dir(), "profiles"), "directory of per-profile configs used by -all")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if *all {
+		return statusAll(*profilesDir, *jsonOut)
 	}
 
 	if _, statErr := os.Stat(*cfgPath); errors.Is(statErr, os.ErrNotExist) {
@@ -1069,6 +1082,161 @@ func cmdStatus(args []string) error {
 		fmt.Printf("rotation: in progress (old key at %s)\n", keyfile.OldKeyPath(c.KeyPath))
 	}
 	fmt.Printf("last sync: %s (cookies %d, secrets %d, localStorage %d)\n", lastSync, st.Cookies, st.Secrets, st.Storage)
+	return nil
+}
+
+// profileSummary is one per-profile config as reported by `status -all`.
+type profileSummary struct {
+	Profile   string   `json:"profile"`
+	Role      string   `json:"role"`
+	Peer      string   `json:"peer"`
+	Lanes     []string `json:"lanes,omitempty"`
+	Surfaces  []string `json:"surfaces,omitempty"`
+	Adapters  int      `json:"adapters"`
+	Domains   int      `json:"domains"`
+	Store     string   `json:"store,omitempty"`
+	StoreNote string   `json:"store_note,omitempty"`
+	Cookies   *int     `json:"cookies,omitempty"`
+	Updated   string   `json:"updated,omitempty"`
+}
+
+// summarizeProfiles reads every *.toml in dir. It reports a store only when the
+// config names one: a sink that relies on the default path resolves it against
+// its own XDG config dir, which cannot be inferred from another process, and
+// guessing would reproduce the misleading count this command exists to fix.
+func summarizeProfiles(dir string) ([]profileSummary, error) {
+	// ReadDir, not Glob: dir is an operator path and may contain glob
+	// metacharacters, which Glob would interpret as a pattern.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, e.Name()))
+	}
+	sort.Strings(paths)
+	out := make([]profileSummary, 0, len(paths))
+	for _, path := range paths {
+		c, err := loadConfigWarn(path)
+		if err != nil {
+			out = append(out, profileSummary{
+				Profile:   strings.TrimSuffix(filepath.Base(path), ".toml"),
+				StoreNote: "unreadable: " + err.Error(),
+			})
+			continue
+		}
+		p := profileSummary{
+			Profile:  strings.TrimSuffix(filepath.Base(path), ".toml"),
+			Role:     c.Role,
+			Peer:     c.Peer,
+			Surfaces: c.Surfaces,
+			Adapters: len(c.Adapters),
+			Domains:  len(c.Domains.Allow),
+		}
+		for _, b := range c.Browsers {
+			laneDesc := b.Kind
+			switch {
+			case b.URL != "":
+				laneDesc += " " + b.URL
+			case b.CookiePath != "":
+				laneDesc += " " + b.CookiePath
+			}
+			p.Lanes = append(p.Lanes, laneDesc)
+		}
+		if c.SidecarPath != "" {
+			p.Store = c.SidecarPath
+			switch {
+			case !filepath.IsAbs(c.SidecarPath):
+				// The sink opens sidecar_path as written (sidecarDBPath), so a
+				// relative path resolves against that process's working
+				// directory, which cannot be known from here.
+				p.StoreNote = "relative path (resolved against the sink's working directory, not checked)"
+			default:
+				info, statErr := os.Stat(c.SidecarPath)
+				switch {
+				case statErr == nil:
+					p.Updated = info.ModTime().UTC().Format(time.RFC3339)
+					sc, openErr := surface.OpenSidecarReadOnly(c.SidecarPath)
+					if openErr != nil {
+						p.StoreNote = "store unreadable: " + openErr.Error()
+						break
+					}
+					cookies, listErr := sc.List()
+					_ = sc.Close()
+					if listErr != nil {
+						p.StoreNote = "store unreadable: " + listErr.Error()
+						break
+					}
+					n := len(cookies)
+					p.Cookies = &n
+				case !errors.Is(statErr, os.ErrNotExist):
+					p.StoreNote = "store unreadable: " + statErr.Error()
+				}
+			}
+		} else if c.Role == "sink" {
+			p.StoreNote = "default path (not resolved from here)"
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func statusAll(dir string, jsonOut bool) error {
+	rows, err := summarizeProfiles(dir)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		fmt.Fprintf(os.Stderr, "no per-profile configs in %s\n", dir)
+		os.Exit(2)
+	}
+	if jsonOut {
+		payload := map[string]any{
+			"profiles_dir": dir,
+			"count":        len(rows),
+			"profiles":     rows,
+		}
+		b, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	fmt.Printf("profiles: %d in %s\n", len(rows), dir)
+	for _, r := range rows {
+		detail := ""
+		switch {
+		case len(r.Lanes) > 0:
+			detail = "lane " + strings.Join(r.Lanes, ", ")
+		case r.Store != "":
+			detail = "store " + r.Store
+			if r.StoreNote != "" {
+				detail += " (" + r.StoreNote + ")"
+			}
+		case r.Role == "sink" && r.StoreNote != "":
+			detail = r.StoreNote + fmt.Sprintf(" (%d adapter(s))", r.Adapters)
+		case r.StoreNote != "":
+			detail = r.StoreNote
+		}
+		cookies := "-"
+		if r.Cookies != nil {
+			cookies = fmt.Sprintf("%d cookies", *r.Cookies)
+		}
+		updated := r.Updated
+		if updated == "" {
+			updated = "-"
+		}
+		fmt.Printf("  %-26s %-7s %-34s %-12s %s\n",
+			r.Profile, r.Role, detail, cookies, updated)
+	}
 	return nil
 }
 
