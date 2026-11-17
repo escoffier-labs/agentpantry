@@ -98,13 +98,16 @@ ambiguous fields, invalid names, duplicate titles, list/get failures and limits
 fail the whole read. Cross-source name collisions suppress the secret diff.
 The sink retains its previous secrets on failures.
 
-An absent name is deleted only after 2 independently successful polls. Cached
+During one uninterrupted 1Password reader lifetime, an absent name is deleted
+only after 2 independently successful polls. Cached
 reads do not confirm a deletion. Renaming a title exports the new name while
 retaining the old value until the second successful absence confirms its delete.
 An empty selected set after a non-empty successful poll fails the reader and
 keeps all prior secrets. The diagnostic names the vault ID and tag. An empty
 first poll is allowed. To deliberately remove everything, remove the
-`[onepassword]` section. If another item claims a name still held by an absent
+`[onepassword]` section and restart the source with the same config/state path.
+The next successful secret read sends explicit deletes for its persisted names.
+If another item claims a name still held by an absent
 item, the old value stays exported until the second successful absence confirms
 release of the name. Duplicate titles in a single selected set still fail.
 Rate limits fail the read and defer another attempt for one poll interval.
@@ -125,3 +128,32 @@ On Windows a rejected token diagnostic includes exact PowerShell `icacls.exe`
 commands to reset the ACL and restrict access to the current user. Owners may
 be the current user, SYSTEM or BUILTIN\Administrators. The DACL may grant access
 only to those principals.
+
+## Secret removal across restarts
+
+The source's existing `state.json`, beside the resolved config file, stores a
+sorted `exported_secrets` list. It contains names only, never secret values, and
+is written atomically with mode 0600. Keep that state path when restarting a
+source or editing its configuration.
+
+After a successful secret read and successful frame write, the source records
+the complete set of names it exported. On restart or reconnect, it loads those
+names as a deletion baseline while keeping the value snapshot empty. Every
+currently produced secret is resent as an upsert, including an empty value.
+A previously exported name that no reader now produces becomes an explicit
+sink delete. This applies to removing `secrets_dir`, KeePass or `[onepassword]`
+from the configuration, and to untagging individual entries. The 1Password
+empty-selection rule still applies while that section remains configured.
+
+Reader errors and cross-source collisions retain the previous names and send
+no secret deletes. A missing state file is a clean first run. An unreadable or
+corrupt state file produces a warning and supplies no deletion baseline. It is
+rewritten only after a fully successful secret read. If a frame is needed, its
+write must succeed first. State-write failures are reported as sync errors.
+
+Older state files contain no exported names. Complete a successful sync with
+this version before removing a source. Without a readable names baseline, the
+source cannot identify old sink secrets for deletion. Reader caches and
+absence-confirmation counters remain in memory. After restart, a fully
+successful read reconciles the persisted names directly. Cookie and secret values
+are never restored from this state file.

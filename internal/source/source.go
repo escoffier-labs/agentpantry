@@ -13,6 +13,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/secret"
+	"github.com/escoffier-labs/agentpantry/internal/state"
 	"github.com/escoffier-labs/agentpantry/internal/transport"
 	"github.com/escoffier-labs/agentpantry/internal/webstorage"
 	"github.com/escoffier-labs/agentpantry/internal/wire"
@@ -53,6 +54,10 @@ type Syncer struct {
 	Sealer       *transport.Sealer
 	Out          io.Writer
 
+	// StatePath is the existing source status file. Only exported names are persisted.
+	StatePath string
+	Clock     state.Clock
+
 	// AfterSync, if set, is called at the end of each successful SyncOnce.
 	// sent reports whether a frame was written; cookies/secrets/storage are the
 	// upsert counts in that frame (0 when nothing was sent).
@@ -60,6 +65,11 @@ type Syncer struct {
 
 	// AfterPayload, if set, is called after a non-empty frame is written.
 	AfterPayload func(p wire.Payload)
+
+	baselineLoaded bool
+	baselineNames  []string
+	diskState      state.State
+	stateUsable    bool
 
 	prev        cookie.Snapshot
 	prevSecrets secret.Snapshot
@@ -72,6 +82,29 @@ func (s *Syncer) Reset() {
 	s.prev = cookie.Snapshot{}
 	s.prevSecrets = secret.Snapshot{}
 	s.prevStorage = webstorage.Snapshot{}
+	s.baselineLoaded = false
+	s.baselineNames = nil
+}
+
+// loadBaseline keeps names separate from snapshots. Empty snapshots force every
+// current secret to be upserted after startup or reconnect, even an empty value.
+func (s *Syncer) loadBaseline() {
+	if s.baselineLoaded {
+		return
+	}
+	s.baselineLoaded = true
+	if s.StatePath == "" {
+		return
+	}
+	st, err := state.Load(s.StatePath)
+	s.stateUsable = err == nil
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agentpantry: warning: source state %q could not be loaded; no secret deletion baseline\n", s.StatePath)
+		s.diskState = state.State{}
+		return
+	}
+	s.diskState = st
+	s.baselineNames = append([]string(nil), st.ExportedSecrets...)
 }
 
 // Backoff returns a capped exponential delay for reconnect attempt n (0-based):
@@ -137,6 +170,7 @@ func secretCollisions(perReader [][]secret.Secret, kinds []string) []string {
 
 // SyncOnce performs a single read-diff-send cycle.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
+	s.loadBaseline()
 	var allCookies []cookie.Cookie
 	for _, v := range s.Vaults {
 		cs, err := v.ReadCookies(ctx)
@@ -192,6 +226,11 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	} else {
 		curSecrets = secret.NewSnapshot(filterSecrets(allSecrets, s.SecretPolicy))
 		secretDiff = curSecrets.DiffFrom(s.prevSecrets)
+		for _, name := range s.baselineNames {
+			if _, present := curSecrets.Secrets[name]; !present {
+				secretDiff.Deletes = append(secretDiff.Deletes, name)
+			}
+		}
 		secretsCommitted = true
 	}
 
@@ -227,19 +266,52 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		}
 	}
 
-	commitPrev := func() {
+	commitPrev := func(sent bool) error {
+		st := s.diskState
+		clock := s.Clock
+		if clock == nil {
+			clock = state.RealClock{}
+		}
+		now := clock.Now().Unix()
+		st.LastSyncUnix = now
+		if sent {
+			st.LastSentUnix = now
+			st.Cookies = len(cookieDiff.Upserts)
+			st.Secrets = len(secretDiff.Upserts)
+			st.Storage = len(storageDiff.Upserts)
+		}
+		if secretsCommitted {
+			st.ExportedSecrets = make([]string, 0, len(curSecrets.Secrets))
+			for name := range curSecrets.Secrets {
+				st.ExportedSecrets = append(st.ExportedSecrets, name)
+			}
+			sort.Strings(st.ExportedSecrets)
+		}
+		// An invalid state file is replaced only after a fully successful secret
+		// read. A non-empty payload must already have been written successfully.
+		if s.StatePath != "" && (s.stateUsable || secretsCommitted) {
+			if err := state.Save(s.StatePath, st); err != nil {
+				return fmt.Errorf("persist source state: %w", err)
+			}
+			s.diskState = st
+			s.stateUsable = true
+		}
 		s.prev = curCookies
 		if secretsCommitted {
 			s.prevSecrets = curSecrets
+			s.baselineNames = nil
 		}
 		if storageCommitted {
 			s.prevStorage = curStorage
 		}
+		return nil
 	}
 
 	p := wire.Payload{Cookies: cookieDiff, Secrets: secretDiff, Storage: storageDiff}
 	if p.IsEmpty() {
-		commitPrev()
+		if err := commitPrev(false); err != nil {
+			return err
+		}
 		s.afterSync(false, 0, 0, 0)
 		return nil
 	}
@@ -254,7 +326,9 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	if err := transport.WriteFrame(s.Out, frame); err != nil {
 		return err
 	}
-	commitPrev()
+	if err := commitPrev(true); err != nil {
+		return err
+	}
 	s.afterSync(true, len(cookieDiff.Upserts), len(secretDiff.Upserts), len(storageDiff.Upserts))
 	if s.AfterPayload != nil {
 		s.AfterPayload(p)

@@ -3,13 +3,14 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
 
 func TestSaveLoadRoundTripAndPerms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	in := State{LastSyncUnix: 1700000000, LastSentUnix: 1700000000, Cookies: 3, Secrets: 1}
+	in := State{ExportedSecrets: []string{}, LastSyncUnix: 1700000000, LastSentUnix: 1700000000, Cookies: 3, Secrets: 1}
 	if err := Save(path, in); err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +27,7 @@ func TestSaveLoadRoundTripAndPerms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != in {
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("round trip mismatch: %+v vs %+v", out, in)
 	}
 }
@@ -36,7 +37,7 @@ func TestLoadMissingIsZeroValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing state must not error, got %v", err)
 	}
-	if out != (State{}) {
+	if !reflect.DeepEqual(out, State{}) {
 		t.Fatalf("missing state must be zero value, got %+v", out)
 	}
 }
@@ -67,4 +68,31 @@ func TestSaveRefusesSymlink(t *testing.T) {
 	if string(body) != "orig" {
 		t.Fatalf("symlink target was overwritten: %q", body)
 	}
+}
+
+func TestExportedNamesSortedAndValuesAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := Save(path, State{ExportedSecrets: []string{"Z_TOKEN", "A_TOKEN"}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.ExportedSecrets, []string{"A_TOKEN", "Z_TOKEN"}) {
+		t.Fatal(got.ExportedSecrets)
+	}
+}
+func TestRejectCorruptState(t *testing.T) {
+	for _, raw := range []string{"", "null", "[]", `{"exported_secrets":["API"], broken}`, `{"exported_secrets":[1]}`} {
+		got, err := decode([]byte(raw))
+		if err == nil || !reflect.DeepEqual(got, State{}) {
+			t.Fatalf("corrupt state accepted: %v", err)
+		}
+	}
+}
+func FuzzDecode(f *testing.F) {
+	f.Add([]byte(`{"exported_secrets":["API"]}`))
+	f.Add([]byte(`{"last_sync_unix":1}`))
+	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = decode(raw) })
 }

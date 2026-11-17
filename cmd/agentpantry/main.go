@@ -426,7 +426,6 @@ func cmdSource(args []string) error {
 		fmt.Fprintf(os.Stderr, "agentpantry: cdp source detected, defaulting resync to %ds\n", int(defaultCDPResync.Seconds()))
 	}
 
-	clock := state.RealClock{}
 	sp := statePath(*cfgPath)
 	syncer := &source.Syncer{
 		Vaults:       vs,
@@ -434,20 +433,7 @@ func cmdSource(args []string) error {
 		Storage:      storageReaders,
 		Policy:       c.Domains,
 		SecretPolicy: c.SecretNames,
-		AfterSync: func(sent bool, cookies, secrets, storage int) {
-			st, _ := state.Load(sp)
-			now := clock.Now().Unix()
-			st.LastSyncUnix = now
-			if sent {
-				st.LastSentUnix = now
-				st.Cookies = cookies
-				st.Secrets = secrets
-				st.Storage = storage
-			}
-			if err := state.Save(sp, st); err != nil {
-				fmt.Fprintln(os.Stderr, "warning: could not write state:", err)
-			}
-		},
+		StatePath:    sp,
 		AfterPayload: receiptHook(c, *cfgPath, receipt.EventSend),
 	}
 	ctx := signalCtx()

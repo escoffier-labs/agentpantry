@@ -326,7 +326,8 @@ source's existing unavailable-reader and cross-source collision behavior keeps
 the sink's last set. A rate limit postpones requests for one polling window.
 An empty selection after a non-empty successful poll fails the reader and keeps
 the prior inventory. Names claimed by a new item retain the old value until
-the old item has been absent under that name on 2 successful polls. This delays
+the old item has been absent under that name on 2 successful polls during the
+reader lifetime. This delays
 intentional revocation. Renames retain the old name during confirmation.
 
 Unix timeout and output-limit cancellation kill the process group. A descendant
@@ -340,3 +341,32 @@ process groups. Windows tests require a Windows runner for execution.
 
 Session salt, HKDF keys, replay counters, deny-wins policies, 0600 secret files
 and the sink's dual-key rotation window are unchanged.
+
+## Persistent secret deletion baseline
+
+The source stores sorted exported secret names in its existing 0600
+`state.json`. Values are never persisted there. Names can reveal which
+credentials are configured, so protect and retain this file with the source
+configuration. The file is a trusted local deletion baseline.
+
+After restart or reconnect, the source keeps the restored names separate from
+its empty value snapshot. It sends all current values again, even empty ones,
+and sends explicit deletes for persisted names no longer produced after a
+fully successful secret read. Removing a secret source or untagging entries
+therefore revokes their sink values across restarts. The 1Password
+empty-selection guard still retains the sink set until the operator removes
+that source section or restores a non-empty selection.
+
+Reader errors and collisions do not advance the names baseline or emit secret
+deletes. An unreadable or corrupt state file is logged and treated as no
+baseline. It cannot cause deletion, and is rewritten only on the next successful
+secret commit. A missing or legacy names list likewise cannot identify old sink
+secrets. Complete a successful sync before removing an existing source after
+upgrade.
+
+For a non-empty diff, the stream write must succeed before the new names are
+saved atomically and the in-memory snapshots advance. A failed send preserves
+the old baseline. A failed state write is reported and leaves the in-memory
+baseline uncommitted. This is sender bookkeeping after a successful stream
+write. The protocol has no sink acknowledgement. Session salt, replay protection,
+secret-name policy and secret-file permissions are unchanged.
