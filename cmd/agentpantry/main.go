@@ -26,6 +26,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/ffvault"
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/receipt"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
@@ -300,10 +301,9 @@ func loadConfigWarnKeys(path string) (config.Config, []string, error) {
 	return c, unknown, nil
 }
 
-// statePath puts state.json beside the resolved config file so two sources with
-// different configs do not stomp a single shared state.
-func statePath(cfgPath string) string {
-	return filepath.Join(filepath.Dir(cfgPath), "state.json")
+// statePath isolates every config, including profiles sharing a directory.
+func statePath(cfgPath string) (string, error) {
+	return state.PathForConfig(cfgPath)
 }
 
 func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
@@ -350,6 +350,11 @@ func cmdSource(args []string) error {
 		return errors.New("-json is only supported with -dry-run")
 	}
 
+	resolved, err := state.ResolveConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	*cfgPath = resolved
 	c, unknown, err := loadConfigWarnKeys(*cfgPath)
 	if err != nil {
 		return err
@@ -366,6 +371,15 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
+	binding, err := state.NewBinding(*cfgPath, receipt.Identity(c), c.Peer)
+	if err != nil {
+		return err
+	}
+	syncer := &source.Syncer{StatePath: binding.ConfigPath + ".state.json", Binding: binding}
+	if err = syncer.OpenState(); err != nil {
+		return err
+	}
+	defer func() { _ = syncer.Close() }()
 	vs, paths, err := buildVaults(c)
 	if err != nil {
 		return err
@@ -395,6 +409,10 @@ func cmdSource(args []string) error {
 		}
 	}
 
+	if c.OnePassword != nil {
+		secretReaders = append(secretReaders, &onepassword.Reader{Config: *c.OnePassword})
+	}
+
 	var storageReaders []source.StorageReader
 	for _, b := range c.Browsers {
 		if !b.CaptureLocalStorage {
@@ -407,6 +425,9 @@ func cmdSource(args []string) error {
 	}
 
 	resync := time.Duration(c.ResyncSeconds) * time.Second
+	if c.OnePassword != nil && resync == 0 {
+		resync = time.Duration(c.OnePassword.PollSeconds) * time.Second
+	}
 	hasCDP := false
 	for _, b := range c.Browsers {
 		if b.Kind == "cdp" {
@@ -418,30 +439,13 @@ func cmdSource(args []string) error {
 		fmt.Fprintf(os.Stderr, "agentpantry: cdp source detected, defaulting resync to %ds\n", int(defaultCDPResync.Seconds()))
 	}
 
-	clock := state.RealClock{}
-	sp := statePath(*cfgPath)
-	syncer := &source.Syncer{
-		Vaults:       vs,
-		Secrets:      secretReaders,
-		Storage:      storageReaders,
-		Policy:       c.Domains,
-		SecretPolicy: c.SecretNames,
-		AfterSync: func(sent bool, cookies, secrets, storage int) {
-			st, _ := state.Load(sp)
-			now := clock.Now().Unix()
-			st.LastSyncUnix = now
-			if sent {
-				st.LastSentUnix = now
-				st.Cookies = cookies
-				st.Secrets = secrets
-				st.Storage = storage
-			}
-			if err := state.Save(sp, st); err != nil {
-				fmt.Fprintln(os.Stderr, "warning: could not write state:", err)
-			}
-		},
-		AfterPayload: receiptHook(c, *cfgPath, receipt.EventSend),
-	}
+	syncer.Vaults = vs
+	syncer.Secrets = secretReaders
+	syncer.Storage = storageReaders
+	syncer.Policy = c.Domains
+	syncer.SecretPolicy = c.SecretNames
+	syncer.AfterPayload = receiptHook(c, *cfgPath, receipt.EventSend)
+
 	ctx := signalCtx()
 	syncOnce := func() error {
 		syncer.Reset()
@@ -1034,7 +1038,7 @@ func cmdStatus(args []string) error {
 	_, oldKeyErr := os.Stat(keyfile.OldKeyPath(c.KeyPath))
 	rotationInProgress := oldKeyErr == nil
 
-	st, _ := state.Load(statePath(*cfgPath))
+	st, _ := state.LoadForDisplay(*cfgPath)
 	lastSync := "never"
 	if st.LastSyncUnix > 0 {
 		lastSync = time.Unix(st.LastSyncUnix, 0).Format(time.RFC3339)

@@ -54,3 +54,136 @@ user unit and prints the commands to enable it.
 The `examples/` directory has copyable source and sink configs for Chromium,
 Firefox, CDP, local script-driven captures, Hermes Agent, GitHub CLI, OpenClaw,
 and SSH stdio transport.
+
+## 1Password service account
+
+Use a dedicated read-only service account granted access to one dedicated vault.
+Every vault readable by the token is in its blast radius. The tag selects items
+inside that vault. It does not restrict the token's authority.
+
+Install 1Password CLI 2.18.0 or later. Store the service-account token in a private
+regular file owned by the running user, with no group or other permission bits
+on Unix. On Windows, grant access only to the current user, SYSTEM and
+Administrators. Do not put the token in TOML, command arguments or the parent's
+environment.
+
+```toml
+[onepassword]
+vault = "Agent Pantry"
+tag = "agentpantry"
+token_file = "~/.config/agentpantry/op-token"
+field = "password"
+op_path = "/usr/bin/op" # optional, otherwise resolved once from PATH
+poll_seconds = 300
+max_items = 200
+max_value_bytes = 65536
+```
+
+All 8 keys are case-sensitive. Unknown keys and blank required strings fail
+configuration loading. Polling has a minimum of 60 seconds. If `resync_seconds`
+is 0, the source timer uses `poll_seconds`. File events and faster source timers
+serve the cached inventory until the next poll deadline.
+
+The CLI path is resolved once to an absolute canonical regular file. On Unix,
+the binary and all its parent directories must have no group or other write
+bits. Windows checks ACLs for write grants. Each execution checks file identity,
+size and modification time against the pinned binary. An upgrade requires a
+source restart.
+
+A poll resolves the vault to an ID and pins it for the reader's lifetime. It
+lists that whole vault, matches exact tag elements locally, and fetches the
+configured field only for new or changed item versions. Item titles become
+secret names under the existing deny-wins `[secret_names]` policy. Missing or
+ambiguous fields, invalid names, duplicate titles, list/get failures and limits
+fail the whole read. Cross-source name collisions suppress the secret diff.
+The sink retains its previous secrets on failures.
+
+During one uninterrupted 1Password reader lifetime, an absent name is deleted
+only after 2 independently successful polls. Cached
+reads do not confirm a deletion. Renaming a title exports the new name while
+retaining the old value until the second successful absence confirms its delete.
+An empty selected set after a non-empty successful poll fails the reader and
+keeps all prior secrets. The diagnostic names the vault ID and tag. An empty
+first poll is allowed. To deliberately remove everything, remove the
+`[onepassword]` section and restart the source with the same config/state path.
+The next successful secret read sends explicit deletes for its persisted names.
+If another item claims a name still held by an absent
+item, the old value stays exported until the second successful absence confirms
+release of the name. Duplicate titles in a single selected set still fail.
+Rate limits fail the read and defer another attempt for one poll interval.
+
+Each call has a 20-second timeout. A whole poll has a 120-second timeout.
+Stdout is capped at 4 MiB and stderr at 64 KiB. Values default to 64 KiB each.
+The complete retained inventory must stay below 4 MiB, including JSON encoding.
+`max_items` counts the whole vault, including unselected items. Its maximum is
+10,000. `max_value_bytes` cannot exceed 4 MiB. `poll_seconds` cannot exceed 86,400.
+
+`doctor` checks the binary, version, token file and live vault inventory, and
+reports the tagged item count without fetching field values. It warns when the
+source timer default applies and when the selected set is empty. It reports the
+whole vault item count against `max_items`. `source --dry-run` discloses the vault,
+tag and field, with `token_file: configured` and `op_path: configured|auto`.
+It omits token and binary paths, does not open the token file, and never runs `op`.
+On Windows a rejected token diagnostic includes exact PowerShell `icacls.exe`
+commands to reset the ACL and restrict access to the current user. Owners may
+be the current user, SYSTEM or BUILTIN\Administrators. The DACL may grant access
+only to those principals.
+
+## Secret removal across restarts
+
+Each source config is first resolved through symlinks to its real absolute path.
+Windows also resolves the final path through an opened handle. Resolution errors
+stop startup. State paths and identities both use that resolved path. Retargeting
+`current.toml` from `a.toml` to `b.toml` therefore selects B's state, not A's.
+Renaming or moving a config creates fresh identity and cannot authorize deletes
+from its former path.
+
+Each resolved config has its own state file: `profiles/a.toml` uses
+`profiles/a.toml.state.json` and `profiles/b.toml` uses
+`profiles/b.toml.state.json`. Files contain sorted exported names and recent
+deletion tombstones, never secret values. They are written atomically with mode
+0600. Keep the same config path and state file when restarting a source.
+
+The baseline is bound to the resolved config path, hostname, receipt identity
+(or its hostname default) and configured sink peer. The PSK is not part of the
+binding. Rotation preserves pending revocations and tombstones. State stores no
+key fingerprint or other key-derived material that could test candidate keys.
+An older fingerprint field is ignored on load and removed on the next commit. A copied, legacy or
+mismatched baseline logs one warning per source process and supplies no deletes.
+A fully successful secret read replaces it with the current binding and names.
+Reader errors and collisions do not replace mismatched or corrupt state.
+
+Only one source process may run for a config. It holds an exclusive advisory
+lock on `<config filename>.state.json.lock` for its lifetime, including
+reconnects. A second process fails immediately. The empty lock file can remain
+after exit. Do not unlink it while a source may be running. Windows validates
+the owner and existing DACL, permitting only the current user, SYSTEM and
+Administrators. A pre-existing broader ACL is rejected.
+
+After a successful secret read and stream write, the source records the names
+it exported. On restart or reconnect, those names form a deletion baseline while
+the value snapshot starts empty. Every current secret is resent as an upsert,
+including an empty value. Missing names become explicit sink deletes. Removing
+`secrets_dir`, KeePass or `[onepassword]` therefore revokes the source's previous
+exports. Reader caches and absence-confirmation counters remain in memory.
+The 1Password empty-selection guard still applies while its reader returns an
+error.
+
+Deleted names remain as tombstones for 7 days from their first successful delete
+send. Every full resend after reconnect or restart includes unexpired tombstones
+as deletes. At most 1,000 tombstones are retained. Overflow drops the oldest
+first-send deadlines and logs the number dropped. A replay does not extend the deadline. A name that reappears in the
+permitted reader output clears its tombstone immediately. The sink treats
+repeated deletes idempotently. The protocol has no sink acknowledgement, so a
+restart or reconnect within this window is needed to retry a delete lost before
+application.
+
+State reads are capped at 4 MiB. A larger file is invalid and supplies no
+deletion baseline. A missing state file is a clean first run. An unreadable or corrupt file warns
+and supplies no baseline. It is rewritten only after a fully successful secret
+read and any required stream write. State-write failures are sync errors.
+`status` prefers the config-specific state file and falls back to the old shared
+`state.json` only for display counters. Shared legacy names are never migrated
+into deletion state. Complete a successful sync with this version before
+removing an existing source. Without a matching names baseline, the source
+cannot identify unknown old sink secrets for deletion.

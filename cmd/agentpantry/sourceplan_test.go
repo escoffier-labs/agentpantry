@@ -16,6 +16,7 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
+	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 )
 
@@ -112,6 +113,11 @@ func planFixture(t *testing.T) (string, config.Config) {
 		SecretNames: policy.Names{Deny: []string{"drop_token"}},
 		Receipts:    config.Receipts{Enabled: true},
 	}
+	for _, name := range []string{"source.toml", "config.toml"} {
+		if err := config.Save(filepath.Join(dir, name), c); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return dir, c
 }
 
@@ -169,7 +175,7 @@ func TestSourcePlanReadyDisclosesWithoutReadingValues(t *testing.T) {
 	for _, w := range p.LocalWrites {
 		writes[w.Purpose] = w.Path
 	}
-	if writes["state"] != filepath.Join(dir, "state.json") || writes["receipts"] != filepath.Join(dir, "receipts.jsonl") {
+	if writes["state"] != mustTestStatePath(t, cfgPath) || writes["state_lock"] != mustTestStatePath(t, cfgPath)+".lock" || writes["receipts"] != filepath.Join(dir, "receipts.jsonl") {
 		t.Fatalf("local writes wrong: %+v", p.LocalWrites)
 	}
 
@@ -225,7 +231,7 @@ func TestSourcePlanKeyPermsTooOpen(t *testing.T) {
 	if err := os.Chmod(c.KeyPath, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	p := buildSourcePlan("source.toml", c, false, false, nil)
+	p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 	if p.Status.ConfigReadiness != planNotReady || !strings.Contains(strings.Join(p.Problems, "\n"), "too open") {
 		t.Fatalf("want a perms problem, got %v", p.Problems)
 	}
@@ -254,7 +260,7 @@ func TestSourcePlanFlagsWhatSourceRejects(t *testing.T) {
 					t.Fatal("buildVaults accepted a browser the plan must flag")
 				}
 			}
-			p := buildSourcePlan("source.toml", c, false, false, nil)
+			p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 			if p.Status.ConfigReadiness != planNotReady {
 				t.Fatalf("want not_ready, got %s", p.Status.ConfigReadiness)
 			}
@@ -268,14 +274,14 @@ func TestSourcePlanFlagsWhatSourceRejects(t *testing.T) {
 func TestSourcePlanRoutes(t *testing.T) {
 	_, c := planFixture(t)
 
-	p := buildSourcePlan("source.toml", c, true, true, nil)
+	p := buildSourcePlan(testPlanConfig(t), c, true, true, nil)
 	if p.Route.Kind != planRouteStdio || p.Mode != planModeOnce {
 		t.Fatalf("want stdio once, got %+v mode %s", p.Route, p.Mode)
 	}
 
 	peerless := c
 	peerless.Peer = config.PeerNone
-	p = buildSourcePlan("source.toml", peerless, false, false, nil)
+	p = buildSourcePlan(testPlanConfig(t), peerless, false, false, nil)
 	if p.Route.Kind != planRoutePeerless {
 		t.Fatalf("want peerless route, got %+v", p.Route)
 	}
@@ -285,19 +291,19 @@ func TestSourcePlanRoutes(t *testing.T) {
 
 	badPeer := c
 	badPeer.Peer = "not-a-hostport"
-	p = buildSourcePlan("source.toml", badPeer, false, false, nil)
+	p = buildSourcePlan(testPlanConfig(t), badPeer, false, false, nil)
 	if p.Status.ConfigReadiness != planNotReady {
 		t.Fatal("an unparseable TCP peer must fail the plan")
 	}
 	// The same peer is not used in stdio mode, so it is not a problem there.
-	p = buildSourcePlan("source.toml", badPeer, true, false, nil)
+	p = buildSourcePlan(testPlanConfig(t), badPeer, true, false, nil)
 	if p.Status.ConfigReadiness != planReady {
 		t.Fatalf("stdio mode does not dial the peer: %v", p.Problems)
 	}
 
 	wrongRole := c
 	wrongRole.Role = "sink"
-	if p := buildSourcePlan("source.toml", wrongRole, false, false, nil); p.Status.ConfigReadiness != planNotReady {
+	if p := buildSourcePlan(testPlanConfig(t), wrongRole, false, false, nil); p.Status.ConfigReadiness != planNotReady {
 		t.Fatal("a sink config must fail the source plan")
 	}
 }
@@ -306,7 +312,7 @@ func TestSourcePlanCDPResyncAndLocalStorage(t *testing.T) {
 	_, c := planFixture(t)
 	c.Browsers = []config.BrowserRef{{Kind: "cdp", Profile: "app", URL: "http://127.0.0.1:9222", CaptureLocalStorage: true}}
 
-	p := buildSourcePlan("source.toml", c, false, false, nil)
+	p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 	if p.Status.ConfigReadiness != planReady {
 		t.Fatalf("want ready, got %v", p.Problems)
 	}
@@ -317,7 +323,7 @@ func TestSourcePlanCDPResyncAndLocalStorage(t *testing.T) {
 	if b.StoreCheck != planStoreNotChecked || !b.CaptureLocalStorage || !strings.Contains(b.Mechanism, "localStorage") {
 		t.Fatalf("cdp row wrong: %+v", b)
 	}
-	if p := buildSourcePlan("source.toml", c, false, true, nil); p.ResyncSeconds != 0 {
+	if p := buildSourcePlan(testPlanConfig(t), c, false, true, nil); p.ResyncSeconds != 0 {
 		t.Fatalf("once mode keeps resync off, got %d", p.ResyncSeconds)
 	}
 }
@@ -331,7 +337,7 @@ func TestSourcePlanKeepassPresenceOnly(t *testing.T) {
 	c.KeepassPath = vault
 	c.KeepassKeyfile = filepath.Join(dir, "missing.key")
 
-	p := buildSourcePlan("source.toml", c, false, false, nil)
+	p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 	kp := p.SecretSources.Keepass
 	if !kp.Enabled || !kp.Present || kp.Tag != "agentpantry" || kp.Keyfile.Present {
 		t.Fatalf("keepass row wrong: %+v", kp)
@@ -393,7 +399,7 @@ func TestSourcePlanKeepassCredentialFiles(t *testing.T) {
 			}
 			tc.setup(t, dir, &c)
 
-			p := buildSourcePlan("source.toml", c, false, false, nil)
+			p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 			problems := strings.Join(p.Problems, "\n")
 			if tc.want == "" {
 				if p.Status.ConfigReadiness != planReady {
@@ -439,7 +445,7 @@ func TestSourcePlanJSONSchema(t *testing.T) {
 	c.Domains = policy.Domain{}
 	c.SecretNames = policy.Names{}
 	var payload map[string]any
-	if err := json.Unmarshal([]byte(renderPlan(t, buildSourcePlan("source.toml", c, false, false, nil), true)), &payload); err != nil {
+	if err := json.Unmarshal([]byte(renderPlan(t, buildSourcePlan(testPlanConfig(t), c, false, false, nil), true)), &payload); err != nil {
 		t.Fatal(err)
 	}
 	keys := func(m map[string]any) []string {
@@ -497,7 +503,7 @@ func TestSourcePlanPeerPort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, c := planFixture(t)
 			c.Peer = tc.peer
-			p := buildSourcePlan("source.toml", c, false, false, nil)
+			p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 			if tc.valid {
 				if p.Status.ConfigReadiness != planReady {
 					t.Fatalf("want ready for %q, got %v", tc.peer, p.Problems)
@@ -508,7 +514,7 @@ func TestSourcePlanPeerPort(t *testing.T) {
 				t.Fatalf("want not_ready naming %q, got %s %v", tc.peer, p.Status.ConfigReadiness, p.Problems)
 			}
 			// stdio mode never dials the peer, so the same value is not a problem there.
-			if p := buildSourcePlan("source.toml", c, true, false, nil); p.Status.ConfigReadiness != planReady {
+			if p := buildSourcePlan(testPlanConfig(t), c, true, false, nil); p.Status.ConfigReadiness != planReady {
 				t.Fatalf("stdio mode does not dial the peer: %v", p.Problems)
 			}
 		})
@@ -541,7 +547,7 @@ func TestSourcePlanResyncByMode(t *testing.T) {
 				c.Browsers = tc.browsers
 			}
 			c.ResyncSeconds = tc.resync
-			p := buildSourcePlan("source.toml", c, false, tc.once, nil)
+			p := buildSourcePlan(testPlanConfig(t), c, false, tc.once, nil)
 			if p.ResyncSeconds != tc.want {
 				t.Fatalf("resync_seconds = %d, want %d", p.ResyncSeconds, tc.want)
 			}
@@ -592,7 +598,7 @@ func TestSourcePlanTextListsKeepassCredentialFiles(t *testing.T) {
 				write(c.KeepassPassFile)
 			}
 
-			text := renderPlan(t, buildSourcePlan("source.toml", c, false, false, nil), false)
+			text := renderPlan(t, buildSourcePlan(testPlanConfig(t), c, false, false, nil), false)
 			for _, w := range tc.want {
 				if !strings.Contains(text, w) {
 					t.Fatalf("text plan missing %q:\n%s", w, text)
@@ -638,7 +644,7 @@ func TestSourcePlanPathTypes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, c := planFixture(t)
 			tc.setup(t, dir, &c)
-			p := buildSourcePlan("source.toml", c, false, false, nil)
+			p := buildSourcePlan(testPlanConfig(t), c, false, false, nil)
 			problems := strings.Join(p.Problems, "\n")
 			if p.Status.ConfigReadiness != planNotReady || !strings.Contains(problems, tc.want) || !strings.Contains(problems, "not a ") {
 				t.Fatalf("want not_ready with a wrong-type problem containing %q, got %v", tc.want, p.Problems)
@@ -713,4 +719,58 @@ func TestSourcePlanStatFailureDiagnostics(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOnePasswordDryRunNeverOpensTokenOrRunsOp(t *testing.T) {
+	dir, c := planFixture(t)
+	c.OnePassword = &onepassword.Config{Vault: "dedicated", Tag: "agentpantry", Field: "password", TokenFile: filepath.Join(dir, "nonexistent-token"), OpPath: filepath.Join(dir, "nonexistent-op"), PollSeconds: 300}
+	p := buildSourcePlan(filepath.Join(dir, "config.toml"), c, false, false, nil)
+	if p.ResyncSeconds != 300 || p.SecretSources.OnePassword == nil {
+		t.Fatal("missing polling or source")
+	}
+	if _, err := os.Stat(c.OnePassword.TokenFile); !os.IsNotExist(err) {
+		t.Fatal("token touched")
+	}
+	if !strings.Contains(renderPlan(t, p, false), "not contacted") {
+		t.Fatal("missing disclosure")
+	}
+}
+
+func TestOnePasswordPlanRedactsPaths(t *testing.T) {
+	dir, c := planFixture(t)
+	c.OnePassword = &onepassword.Config{Vault: "vault", Tag: "tag", Field: "password", TokenFile: "private-token-location", OpPath: "private-binary-location"}
+	for _, auto := range []bool{false, true} {
+		if auto {
+			c.OnePassword.OpPath = ""
+		}
+		p := buildSourcePlan(filepath.Join(dir, "config.toml"), c, false, false, nil)
+		text := renderPlan(t, p, true) + renderPlan(t, p, false)
+		if strings.Contains(text, "private-token-location") || strings.Contains(text, "private-binary-location") {
+			t.Fatal("plan leaks paths")
+		}
+		want := "configured"
+		if auto {
+			want = "auto"
+		}
+		if p.SecretSources.OnePassword.TokenFile != "configured" || p.SecretSources.OnePassword.OpPath != want {
+			t.Fatal("missing presence indicators")
+		}
+	}
+}
+
+func testPlanConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "source.toml")
+	if err := os.WriteFile(path, []byte(`role="source"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+func mustTestStatePath(t *testing.T, path string) string {
+	t.Helper()
+	out, err := statePath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

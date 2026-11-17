@@ -286,3 +286,115 @@ Stdio has no network peer and retains its existing salt direction. PSK checks,
 per-connection salt plus HKDF, strictly monotonic replay counters, deny-wins
 domain and secret-name policy, 0600 file modes, and the dual-key rotation grace
 window are unchanged.
+
+## 1Password CLI source
+
+The service-account token has the same handling class as a KeePass key file.
+Use a dedicated read-only account limited to one dedicated vault. All vaults
+readable by that account are in the token's blast radius. Exact tag matching is
+selection inside the pinned vault. It cannot restrict the account permissions.
+
+The token is opened once per poll. Unix uses a no-follow, nonblocking open and
+checks the descriptor for a regular file, current-user ownership and private
+mode bits. Windows rejects reparse points and checks the opened handle's owner
+and DACL. Only the current user, SYSTEM and Administrators may receive grants.
+The file is read with a size bound, allowing rotation between polls.
+
+Each child receives only the token, private config directory and private HOME.
+Windows also receives APPDATA, LOCALAPPDATA, TEMP and TMP pointing into that
+directory, and SystemRoot. Nothing else is inherited. Every invocation passes
+`--cache=false`. Its working directory and config directory are a private
+per-poll directory removed after the poll. Windows installs a protected DACL.
+
+A same-UID process can inspect the child's token environment and can already
+read the token file. Tokens and secret values can enter core or crash dumps.
+Go provides no zeroization guarantee. Operators must control same-UID processes
+and crash collection. No raw child stdout, stderr, exit text or crash output is
+returned in diagnostics. Errors use fixed categories and token text is redacted
+before error classification.
+
+The canonical CLI binary is trusted with the token. Identity pinning and binary
+and parent-directory permission checks detect replacement between calls. These
+checks do not eliminate same-UID modification, privileged tampering or the race
+between checking a path and executing it. A source restart accepts a newly
+validated binary. CLI versions older than 2.18.0 are rejected.
+
+Output, per-value, item-count, inventory and time limits bound a poll below the
+8 MiB transport frame cap. Any failed list/get or parse discards the candidate
+cache and inventory. Only a complete successful read commits new state. The
+source's existing unavailable-reader and cross-source collision behavior keeps
+the sink's last set. A rate limit postpones requests for one polling window.
+An empty selection after a non-empty successful poll fails the reader and keeps
+the prior inventory. Names claimed by a new item retain the old value until
+the old item has been absent under that name on 2 successful polls during the
+reader lifetime. This delays
+intentional revocation. Renames retain the old name during confirmation.
+
+Unix timeout and output-limit cancellation kill the process group. A descendant
+that calls `setsid()` can leave the group and outlive that kill. The Unix control
+bounds the original process group. The Windows Job Object covers the whole tree.
+Windows
+starts a suspended child, assigns it to a kill-on-close Job Object, then resumes
+it. Assignment failure terminates the suspended child. Closing the job kills
+its descendants. Windows uses ACLs and Job Objects in place of Unix modes and
+process groups. Windows tests require a Windows runner for execution.
+
+Session salt, HKDF keys, replay counters, deny-wins policies, 0600 secret files
+and the sink's dual-key rotation window are unchanged.
+
+## Persistent secret deletion baseline
+
+Source deletion state is specific to one config. `a.toml.state.json` and
+`b.toml.state.json` remain separate even when the configs share a directory.
+The 0600 JSON contains names, deletion expiry times and identity metadata.
+Secret values and PSK bytes are never persisted there. Names can reveal which
+credentials are configured, so the file remains trusted local metadata.
+
+Both the state filename and bound config identity use the fully resolved real
+config path. The source resolves it before loading the config, follows symlinks
+and uses the final opened-handle path on Windows. Retargeting a config alias
+cannot reuse its former target's deletion baseline. Renames and moves get fresh
+identity and cannot delete exports from the old path.
+
+The binding includes resolved config path, hostname, receipt identity and
+configured sink peer. The PSK is deliberately excluded. Transport key rotation
+must preserve revocations pending for the same source and destination. No PSK
+fingerprint is stored, avoiding an offline candidate-key oracle. Old fingerprint
+fields are ignored and disappear after the next successful state commit. Any mismatch discards both exported names and tombstones as a
+delete baseline. It logs once per source process and rewrites the file only after the next
+successful secret commit. Missing, corrupt, legacy and mismatched state cannot
+authorize baseline deletes. Loading reads at most 4 MiB plus one overflow byte.
+Larger state is invalid and cannot supply a baseline. Saves also enforce 4 MiB. The old shared `state.json` is read only for status
+display and is never migrated as deletion authority.
+
+The source holds an exclusive nonblocking advisory lock on a sibling `.lock`
+file before reading any baseline. Windows checks existing lock-file ownership
+and DACL grants against the current user, SYSTEM and Administrators, even when
+the file predates startup. A broader ACL is rejected. Unix uses `flock` and Windows uses
+`LockFileEx`. The lock survives reconnect resets and is held until source exit.
+All baseline reads and read-modify-write commits happen under that lock. A
+second cooperating source for the same config fails fast. Lock files are never
+unlinked by the application. OS handle cleanup releases the lock on a crash.
+
+After restart or reconnect, restored names stay separate from an empty value
+snapshot. All current values are upserted again, including empty ones, and
+missing names are deleted after a fully successful secret read. Removing a
+secret source or untagging entries therefore revokes their sink values across
+restarts. Reader errors, cross-source collisions and the 1Password
+empty-selection error suppress the entire secret diff, including tombstone
+replays.
+
+Every successful delete send records a names-only tombstone expiring 7 days
+after its first send. Full resends on reconnect or restart replay unexpired
+tombstones, and repeated sink deletes are idempotent. Tombstones are capped at
+1,000 entries. On overflow the oldest first-send deadlines are dropped, with a
+warning naming the count. Those evicted names lose their remaining retry window. Replays keep the original
+expiry. Reappearing permitted names clear their tombstones. A failed send does
+not commit names or tombstones. A failed state write is reported and leaves the
+in-memory baseline uncommitted.
+
+The protocol has no sink acknowledgement. Tombstones provide a bounded retry
+window when the sink crashes between stream write and apply. Deletes lost
+without a reconnect or restart during that window may need operator cleanup.
+State binding, writer exclusion and tombstones preserve session salt, replay
+protection, deny-wins policy, secret-file permissions and dual-key rotation.

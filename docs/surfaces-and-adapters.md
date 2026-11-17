@@ -227,3 +227,7 @@ Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
 Hermes Agent bundle. Source support includes Linux Chromium, Firefox, Windows
 Chromium, and Chrome DevTools Protocol export for app-bound Chrome profiles,
 with optional `localStorage` capture over CDP.
+
+The 1Password service-account source exports tagged item fields as named secrets
+to the same secret surfaces and adapters. See [configuration](configuring-sources.md#1password-service-account)
+for vault isolation, polling and deletion confirmation.

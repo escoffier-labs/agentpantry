@@ -90,8 +90,17 @@ type sourcePlanPolicy struct {
 }
 
 type sourcePlanSecrets struct {
-	SecretsDir sourcePlanSecretsDir `json:"secrets_dir"`
-	Keepass    sourcePlanKeepass    `json:"keepass"`
+	SecretsDir  sourcePlanSecretsDir   `json:"secrets_dir"`
+	OnePassword *configOnePasswordPlan `json:"onepassword,omitempty"`
+	Keepass     sourcePlanKeepass      `json:"keepass"`
+}
+
+type configOnePasswordPlan struct {
+	Vault     string `json:"vault"`
+	Tag       string `json:"tag"`
+	Field     string `json:"field"`
+	TokenFile string `json:"token_file"`
+	OpPath    string `json:"op_path"`
 }
 
 type sourcePlanSecretsDir struct {
@@ -413,6 +422,14 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		p.SecretSources.Keepass = kp
 	}
 
+	if op := c.OnePassword; op != nil {
+		opPath := "auto"
+		if op.OpPath != "" {
+			opPath = "configured"
+		}
+		p.SecretSources.OnePassword = &configOnePasswordPlan{op.Vault, op.Tag, op.Field, "configured", opPath}
+		note("1Password configured: plan does not run op or open token_file")
+	}
 	// Mode and resync, matching cmdSource: once mode syncs one time and
 	// returns, so no interval applies; watch mode keeps the configured value
 	// or the cdp default.
@@ -422,6 +439,8 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		if c.ResyncSeconds > 0 {
 			note("resync_seconds = %d is ignored in once mode", c.ResyncSeconds)
 		}
+	case c.OnePassword != nil && c.ResyncSeconds == 0:
+		p.ResyncSeconds = c.OnePassword.PollSeconds
 	case hasCDP && c.ResyncSeconds == 0:
 		p.ResyncSeconds = int(defaultCDPResync.Seconds())
 		note("cdp source detected: resync defaults to %ds", p.ResyncSeconds)
@@ -430,7 +449,12 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 	}
 
 	// Local files a real run would write.
-	p.LocalWrites = append(p.LocalWrites, sourcePlanWrite{Purpose: "state", Path: statePath(cfgPath)})
+	sp, stateErr := statePath(cfgPath)
+	if stateErr != nil {
+		problem("cannot resolve source config for state: %v", stateErr)
+	} else {
+		p.LocalWrites = append(p.LocalWrites, sourcePlanWrite{Purpose: "state", Path: sp}, sourcePlanWrite{Purpose: "state_lock", Path: sp + ".lock"})
+	}
 	if c.Receipts.Enabled {
 		logPath := receipt.ResolvePath(c, cfgPath)
 		p.LocalWrites = append(p.LocalWrites,
@@ -439,7 +463,7 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 		)
 	}
 
-	if len(c.Browsers) == 0 && c.SecretsDir == "" && c.KeepassPath == "" {
+	if len(c.Browsers) == 0 && c.SecretsDir == "" && c.KeepassPath == "" && c.OnePassword == nil {
 		note("no browsers or secret sources are configured: a real run would capture nothing")
 	}
 	if len(c.Browsers) > 0 && len(c.Domains.Allow) == 0 {
@@ -530,6 +554,9 @@ func printSourcePlan(w io.Writer, p sourcePlan, jsonOut bool) error {
 		line("  secrets_dir: %s (present: %t)", sd.Path, sd.Present)
 	} else {
 		line("  secrets_dir: disabled")
+	}
+	if op := p.SecretSources.OnePassword; op != nil {
+		line("1Password: vault %s, tag %s, field %s (not contacted), token_file: %s, op_path: %s", op.Vault, op.Tag, op.Field, op.TokenFile, op.OpPath)
 	}
 	if kp := p.SecretSources.Keepass; kp.Enabled {
 		line("  keepass: %s (present: %t, tag %q)", kp.Path, kp.Present, kp.Tag)
