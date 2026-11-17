@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Optional Tailscale identity gates for sink and pairing listeners, `tailnet:` / `tailnet6:` binds, and LocalAPI doctor checks. Sync still requires the PSK.
+- Pin `tailscale.com` v1.102.5 (LocalAPI client only). Its dependency floor raises the Go directive from 1.26.0 to 1.26.6. The toolchain remains go1.26.11.
 - `verify` checks whether a running browser still has a working session for one
   domain by loading a page in that browser and classifying what came back. It
   reports `ok`, `challenge`, `empty`, or `off_domain`, with the marker that

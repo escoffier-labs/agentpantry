@@ -387,7 +387,39 @@ state you explicitly allow.
 - Transport is AES-256-GCM with a shared key. Run it over Tailscale, Twingate,
   a LAN you trust, or an SSH tunnel.
 - The sink defaults to loopback. Both `doctor` and `agentpantry sink` startup
-  warn when the bind address exposes the sink beyond loopback.
+  warn when the bind address exposes the sink beyond loopback, except for a
+  Tailscale address with `[tailnet]` enforcement configured.
+
+### Tailscale identity gate
+
+On the sink, `peer = "tailnet:8787"` resolves this node's Tailscale IPv4 at
+startup. `tailnet6:8787` selects IPv6. Resolution requires a running local
+Tailscale daemon and never falls back to a wildcard. Add identity selectors:
+
+```toml
+[tailnet]
+allow_nodes = ["nXXXXXXCNTRL"]
+allow_tags = []
+allow_user_ids = []
+allow_loopback = false
+```
+
+The presence of `[tailnet]` enforces identity checks before the sink sends its
+salt, including on explicit IP binds. At least one nonblank selector is required.
+Stable node IDs select individual nodes. Tags require tight Tailscale `tagOwners`.
+Numeric UserIDs (quoted decimal strings) allow every untagged device of that user.
+Tagged devices never match a UserID. Names do not authorize connections.
+`doctor` checks LocalAPI, Running state, the self bind, selectors, and offline or
+missing allowed nodes. Without `[tailnet]`, every reachable tailnet member can
+reach the pre-auth surface.
+
+`pair -role sink -bind tailnet:8788 -config <sink-config>` uses the same gate
+before SPAKE2 attempt accounting and preflights it before printing the code.
+Denied connections receive no bytes. `allow_loopback = true` explicitly bypasses
+identity checks only when both socket addresses are loopback: it trusts every
+local process and any SSH tunnel terminating locally, without verifying a
+Tailscale identity. `--stdio` is unchanged. The PSK remains mandatory for sync.
+Restrict the sink port to the source tag with a Tailscale grant or ACL as well.
 
 ## Acknowledgements
 

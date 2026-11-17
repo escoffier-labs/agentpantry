@@ -87,8 +87,11 @@ func cmdPair(args []string) error {
 	var psk []byte
 	switch r {
 	case "sink":
-		addr := sinkPairAddr(*bind)
-		if !doctor.IsLoopbackBind(addr) {
+		addr, authorize, selfBind, err := prepareTailnet(ctx, sinkPairAddr(*bind), c.Tailnet)
+		if err != nil {
+			return err
+		}
+		if !doctor.IsLoopbackBind(addr) && !selfBind {
 			fmt.Fprintf(os.Stderr, "warning: pairing bind %s exposes a pre-auth SPAKE2 listener beyond loopback\n", addr)
 		}
 		code, err := pair.GenerateCode()
@@ -97,9 +100,10 @@ func cmdPair(args []string) error {
 		}
 		fmt.Printf("pairing code: %s\nshare this once with the source over an out-of-band channel\n", code)
 		psk, err = pair.Serve(ctx, pair.ServeConfig{
-			Addr:    addr,
-			Code:    code,
-			Timeout: *timeout,
+			Addr:      addr,
+			Authorize: authorize,
+			Code:      code,
+			Timeout:   *timeout,
 			OnListening: func(a string) {
 				fmt.Printf("waiting on %s (timeout %s, %d attempts)\n", a, *timeout, pair.MaxAttempts)
 			},
