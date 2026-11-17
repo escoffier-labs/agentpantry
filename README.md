@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://brigade.tools/agentpantry">Website</a> &middot; <a href="#install">Install</a> &middot; <a href="https://brigade.tools">Brigade hub</a>
+  <a href="https://brigade.tools/agentpantry">Website</a> · <a href="#install">Install</a> · <a href="https://brigade.tools">Brigade hub</a>
 </p>
 
 <p align="center">
@@ -26,6 +26,16 @@
   <img src="https://shieldcn.dev/badge/go-1.26%2B-00ADD8.svg?logo=go&logoColor=white" alt="Go 1.26+">
   <img src="https://shieldcn.dev/badge/license-MIT-green.svg" alt="MIT license">
 </p>
+
+Agents run on a different machine than the one you browse on. Your logins and API keys live on the daily driver, the laptop or desktop where you are already signed in. Copying cookie files across by hand breaks when a session refreshes, and it leaks into shell history, dotfiles, and git.
+
+Agent Pantry reads sessions and named secrets on the daily driver and writes them where the agent runs. Its one promise: only domains on your allowlist and secrets you name ever leave, every connection is sealed with its own key, and a deny entry always beats an allow entry.
+
+<p align="center">
+  <img src="docs/assets/source-sink.svg" alt="Source daily driver allowlist seals AES-256-GCM frames to agent machine sink surfaces" width="880">
+</p>
+
+<p align="center"><em>Source → seal → sink. Opt-in domains only.</em></p>
 
 ## Install
 
@@ -42,753 +52,307 @@ agentpantry doctor
 agentpantry status
 ```
 
-## What it does
+## How it works
 
-| | Job | What you get |
-|---|---|---|
-| **Select** | What leaves the daily driver | Allowlisted domains and named secrets only |
-| **Seal** | AES-256-GCM end to end | Replay-protected frames; nothing moves until you opt in |
-| **Sync** | Source machine to agent host | Cookies and auth state land where the agent runs |
-| **Watch** | Expiry and health | Doctor and status; Brigade pantry station wires checks |
+| # | Stage | The question it answers | Where in the code |
+|---|---|---|---|
+| 1 | [Capture](#1-capture) | What gets read on the daily driver? | `internal/vault`, `internal/ffvault`, `internal/cdpvault`, `internal/secretsrc`, `internal/keepass` |
+| 2 | [Filter](#2-filter) | What is allowed to leave? | `internal/policy`, `internal/cookie`, `internal/secret`, `internal/webstorage`, `internal/source` |
+| 3 | [Seal and carry](#3-seal-and-carry) | How does it travel, and who can open it? | `internal/transport`, `internal/pair`, `internal/keyfile` |
+| 4 | [Land](#4-land) | Where does it end up on the agent machine? | `internal/sink`, `internal/surface`, `internal/receipt` |
+| 5 | [Use](#5-use) | How does the agent actually use it? | `cmd/agentpantry`, `internal/runenv`, `internal/browser` |
 
-<p align="center">
-  <img src="docs/assets/source-sink.svg" alt="Source daily driver allowlist seals AES-256-GCM frames to agent machine sink surfaces" width="880">
-</p>
+The source role runs stages 1 to 3 on the daily driver. The sink role runs stages 3 and 4 on the agent machine. Stage 5 is a set of sink-side commands.
 
-<p align="center"><em>Source → seal → sink. Not a password manager. Not a cloud vault. Opt-in domains only.</em></p>
+## 1. Capture
 
+*What gets read on the daily driver?*
+
+```mermaid
+flowchart LR
+  A["Browser profile"] --> B["Copy locked DB"]
+  B --> C["Decrypt per platform"]
+  C --> F["Snapshot"]
+  D["CDP port"] --> F
+  E["Secrets dir or KeePass"] --> F
+```
+
+### Copy the locked cookie store
+
+The Chromium and Firefox cookie databases are copied to a private temp file before reading, so a running browser's lock never blocks the source. The temp copy is removed after the read.
+
+Source: `internal/dbcopy/dbcopy.go`
+
+### Decrypt per platform
+
+Linux Chromium values decrypt with the passphrase from the freedesktop Secret Service, falling back to the fixed `peanuts` key. Windows Chromium uses the DPAPI-unwrapped key from the profile's `Local State`. Firefox cookies are plaintext.
+
+Source: `internal/vault/linux_chromium.go`, `internal/vault/windows_chromium.go`, `internal/ffvault/firefox.go`
+
+### Ask Chrome directly for app-bound cookies
+
+For Chrome 127+ `v20` cookies the key is no longer recoverable from `Local State`. A `kind = "cdp"` browser entry connects to a loopback DevTools port, and Chrome does its own decryption. With `capture_localstorage = true` the same connection also reads `localStorage` from tabs that are already open, without navigating them.
+
+Source: `internal/cdpvault/cdp.go`
+
+### Read named secrets
+
+Each regular, non-hidden file in `secrets_dir` becomes one secret. Dotfiles such as `.env` are skipped. KeePass entries become secrets only when they carry the `keepass_tag` tag, which defaults to `agentpantry`.
+
+Source: `internal/secretsrc/secretsrc.go`, `internal/keepass/keepass.go`
+
+The live cookie database is never opened directly.
+
+## 2. Filter
+
+*What is allowed to leave?*
+
+```mermaid
+flowchart LR
+  A["Snapshot"] --> B["Domain policy"]
+  A --> C["Secret-name policy"]
+  B --> D["Diff vs last snapshot"]
+  C --> D
+  D --> E["Sealed frame"]
+```
+
+### Apply the domain policy
+
+A cookie host must match `domains.allow` and must not match `domains.deny`. An empty allow list permits nothing. `localStorage` origins pass through the same policy, and non-http(s) origins are dropped.
+
+Source: `internal/policy/domain.go`, `internal/source/source.go`
+
+### Apply the secret-name policy
+
+`[secret_names]` takes exact names. Deny overrides allow. An empty allow list permits every secret in the configured `secrets_dir` or tagged KeePass entry set, because configuring that source is the opt-in.
+
+Source: `internal/policy/names.go`
+
+### Send only the difference
+
+The source diffs each snapshot against the last one it sent, so only changes move. If a secrets or `localStorage` source cannot be read in a cycle, the sink keeps what it has instead of receiving deletes. A reconnect resends full state.
+
+Source: `internal/cookie/diff.go`, `internal/secret/diff.go`, `internal/webstorage/diff.go`
+
+### Preview with a dry-run plan
+
+`agentpantry source --dry-run` prints what a config would read and where it would send it. It uses the config and file metadata only. It does not load the key, read a cookie, or contact the peer.
+
+Source: `cmd/agentpantry/sourceplan.go`
+
+An empty `domains.allow` list syncs no cookies, and a `domains.deny` match wins over any allow match.
+
+## 3. Seal and carry
+
+*How does it travel, and who can open it?*
+
+```mermaid
+flowchart LR
+  A["Pre-shared key"] --> B["Per-connection salt"]
+  B --> C["HKDF session key"]
+  C --> D["AES-256-GCM frame"]
+  D --> E["TCP or stdio over SSH"]
+  E --> F["Sink checks counter"]
+```
+
+### Share one key
+
+Both ends hold the same 32-byte pre-shared key, stored hex-encoded in a `0600` file. `keygen` writes it, or `pair` derives it from a one-time `XXXX-XXXX` short code with SPAKE2. Compare the confirmation fingerprint printed on both ends before the first sync.
+
+Source: `internal/keyfile/keyfile.go`, `internal/pair/pair.go`
+
+### Start each connection with a fresh salt
+
+Every connection begins with a random 16-byte salt. Over TCP the sink issues it. Over `--stdio` the source does. The session key is HKDF-SHA256 of the pre-shared key and that salt, so a frame captured in one session fails to open in another.
+
+Source: `internal/transport/handshake.go`, `internal/transport/envelope.go`
+
+### Seal each payload as a frame
+
+The payload is one JSON object holding cookie, secret, and `localStorage` diffs. It is sealed with AES-256-GCM as `counter || nonce || ciphertext`, with the counter bound as additional data, then written length-prefixed. Frames are capped at 8 MiB.
+
+Source: `internal/transport/envelope.go`, `internal/transport/frame.go`, `internal/wire/wire.go`
+
+### Carry it over TCP or SSH
+
+A TCP source reconnects with capped backoff from 1s to 30s. For a tunnel, pipe it: `agentpantry source --stdio | ssh sink.example agentpantry sink --stdio`. Over TCP the sink serves at most 32 concurrent connections and waits 30 seconds for the first authenticated frame.
+
+Source: `cmd/agentpantry/main.go`
+
+### Rotate the key without downtime
+
+`rotate-key` on the sink keeps the previous key as `psk.key.old`, and the sink accepts either key until `rotate-key -finish` retires the old one. Details are in [docs/key-management.md](docs/key-management.md).
+
+Source: `internal/transport/fallback.go`, `internal/keyfile/keyfile.go`
+
+A frame with an equal or lower counter is rejected.
+
+## 4. Land
+
+*Where does it end up on the agent machine?*
+
+```mermaid
+flowchart LR
+  A["Sink opens frame"] --> B["Sidecar SQLite"]
+  A --> C["Chrome store"]
+  A --> D["Secrets dir"]
+  A --> E["Adapters"]
+  A --> F["Receipt"]
+```
+
+### Write the surfaces
+
+The `surfaces` list in the sink config selects destinations. `sidecar` is the default: a plaintext SQLite database holding the current cookie set. `chrome` re-encrypts cookies into a Chrome Cookies store that is not running. `secrets` writes one file per secret.
+
+Source: `internal/sink/sink.go`, `internal/surface/sidecar.go`, `internal/surface/chromestore.go`, `internal/surface/secretdir.go`
+
+### Write the native files tools already read
+
+`[[adapters]]` blocks add `netscape` (curl-style `cookies.txt`), `storagestate` (Playwright and Puppeteer), `gh` (GitHub CLI `hosts.yml`), `openclaw` (`auth-profiles.json`), and `hermes` (an Agent Pantry bundle directory). `gh` and `openclaw` are merge-only and upsert-only, so a missing secret never deletes a working login.
+
+Source: `internal/surface/netscape.go`, `internal/surface/storagestate.go`, `internal/surface/ghhosts.go`, `internal/surface/openclawauth.go`, `internal/surface/hermes.go`
+
+### Record a receipt
+
+With `[receipts] enabled = true`, each send or apply appends one JSON line to a hash-chained log with an HMAC bound to the pre-shared key. Receipts hold counts and a digest, never values. `agentpantry receipts verify` walks the chain.
+
+Source: `internal/receipt/receipt.go`
+
+Files the sink writes for the sidecar, secrets, adapters, and receipts are mode `0600`.
+
+## 5. Use
+
+*How does the agent actually use it?*
+
+```mermaid
+flowchart LR
+  A["Sidecar and secrets_dir"] --> B["run: env injection"]
+  A --> C["restore: file or CDP"]
+  A --> D["browser: signed-in Chrome"]
+  A --> E["inventory, status, doctor"]
+  A --> F["verify: lane still signed in?"]
+```
+
+### Inject secrets into one process
+
+`agentpantry run -- <command>` reads the synced secrets, applies the deny-wins `[secret_names]` policy, and starts the command with the permitted values in its environment. Nothing is written to a staging file. Loader variables such as `PATH` and `LD_PRELOAD` are refused.
+
+Source: `cmd/agentpantry/run.go`, `internal/runenv/runenv.go`
+
+### Restore into a tool's format
+
+`agentpantry restore --to` writes a sidecar backup into `netscape=`, `chromium=`, `storagestate=`, or a loopback `cdp=` target. `desktop-app=` targets are inspection-only and need `--dry-run`.
+
+Source: `cmd/agentpantry/main.go`, `cmd/agentpantry/desktopapp.go`
+
+### Launch a signed-in automation browser
+
+`agentpantry browser` starts Chrome on a loopback debugging port, and loads cookies and `localStorage` from the sidecar. It stops Chrome when it returns. Pass `--keep-open` to leave the endpoint up for a scraper to attach. The profile is a throwaway directory unless you pass `--profile`.
+
+Source: `internal/browser/browser.go`, `cmd/agentpantry/main.go`
+
+### Check what is there
+
+`inventory` summarizes a sidecar by host and near-expiry cookies, `status` prints role, peer, surfaces, and last sync, and `doctor` validates the key, config, and role-specific setup. None of them print values.
+
+Source: `internal/doctor/doctor.go`, `cmd/agentpantry/main.go`
+
+### Check that a lane is still signed in
+
+`agentpantry verify -lane http://127.0.0.1:9224 -domain example.com https://example.com/` opens one tab in that browser, reads the title, final URL, and how much text came back, then closes the tab. It exits 0 for `ok`, 1 for `challenge`, `empty`, or `off_domain`, and 2 when the check could not run. Cookie counts cannot answer this: a clearance cookie only works in the browser that earned it. `-domain` is required and also holds the final URL, so an expired session that bounces to an external sign-in reports `off_domain`. `status -all` summarizes every per-profile config under `profiles/`.
+
+Source: `internal/lane/lane.go`, `cmd/agentpantry/verify.go`
+
+### Handing off from a public-web reader
+
+Some agent web readers deliberately refuse signed-in profiles and stop with a "requires auth" or challenge result. That is where agentpantry takes over. It keeps a named local browser lane signed in, and the agent reads the authenticated page there. Run `verify` first to confirm the lane is still signed in:
+
+```bash
+agentpantry browser -config ./sink.toml --profile ~/lanes/research --port 9223 --keep-open
+```
+
+The `--profile` directory persists between launches, so the lane stays warm. To refresh a lane you already drive, run `agentpantry restore -config ./sink.toml --to cdp=http://127.0.0.1:9223`. Match the browser's user agent, timezone, and language to where the session was minted, or the site may flag it anyway.
 
 ## Quickstart
 
-### On the sink (agent machine)
-    agentpantry init --role sink
-    agentpantry keygen
-    # or: agentpantry pair --role sink   # then pair --role source --code ... on the daily driver
-    # copy ~/.config/agentpantry/psk.key to the source machine
-    # edit config.toml: set peer to the bind address, e.g. 0.0.0.0:8787 over your VPN
-    agentpantry doctor
-    agentpantry sink
-
-### On the source (daily driver)
-    agentpantry init --role source
-    # copy the psk.key from the sink into ~/.config/agentpantry/psk.key
-    # edit config.toml: set peer to the sink address, add a [[browsers]] block and allow domains
-    agentpantry doctor
-    agentpantry source
-
-`init` writes a commented config that walks through each field, including
-commented `[[browsers]]` examples for both `chromium` and `cdp` (it refuses to
-overwrite an existing config unless you pass `--force`), and `doctor` validates
-the result before you rely on it, warning about misspelled or misplaced config
-keys instead of ignoring them.
-
-A `[[browsers]]` entry takes a `kind`: `chromium` (Chrome, Chromium, Brave, Edge;
-decrypted via the Secret Service with a `peanuts` fallback) or `firefox` (reads
-plaintext cookies from the profile's `cookies.sqlite`, so no keyring is needed).
-Point `cookie_path` at the profile's cookie store. A source configured with only
-Firefox browsers skips the keyring check in `agentpantry doctor`.
-
-On Windows, `kind = "chromium"` decrypts `v10` cookies using the DPAPI-unwrapped
-key from the profile's `Local State`. `agentpantry install-service` on Windows
-prints a Scheduled Task command (agentpantry is a console app, so it runs as a
-logon task rather than an SCM service). A Windows sink supports the sidecar,
-secrets, and adapter surfaces, plus the real-Chrome re-encrypt surface described
-next.
-
-A Windows sink can also use the real-Chrome re-encrypt surface (`chrome`): it
-writes synced cookies into the target Chrome Cookies store as `v10` AES-256-GCM,
-encrypted with the sink's own DPAPI-unwrapped key. Use it against a not-running,
-pre-app-bound, or dedicated automation profile; an app-bound (version 127+)
-profile may prefer `v20`, so v10 writes are best treated as a legacy/automation
-path.
-
-For app-bound Chrome (version 127+, `v20` cookies) where the key is no longer
-recoverable from `Local State`, use `kind = "cdp"`: launch Chrome with
-`--remote-debugging-port=9222` (bound to loopback, ideally a dedicated automation
-profile) and set `url = "http://127.0.0.1:9222"` on the browser entry. agentpantry
-asks Chrome for the cookies over the DevTools Protocol, so Chrome performs its own
-authorized decryption. The debugging port grants full browser control, so keep it
-on loopback and treat it as sensitive. A `cdp` reader syncs at startup, on
-other browsers' file events, and on the `resync_seconds` poll, which defaults
-to 60 seconds for a CDP source when unset. For an operator-export run that
-should refresh the sink once and return control to a wrapper, run
-`agentpantry source --once`: it reads the CDP source, applies the same policies,
-updates source state, closes the connection, and exits 0 after a successful
-initial sync.
-
-Both ends must hold the same pre-shared key. Generate it once on the sink with
-`agentpantry keygen` and copy the file to the source, or bootstrap it with
-`agentpantry pair` (SPAKE2 short code; compare the printed confirmation
-fingerprint on both ends before the first sync). Run `agentpantry status`
-on either machine to print the active role, peer, key path, surfaces, and the
-configured allow/deny domains. To run the source or sink as a persistent
-background service, use `agentpantry install-service`, which writes a systemd
-user unit and prints the commands to enable it.
-
-The `examples/` directory has copyable source and sink configs for Chromium,
-Firefox, CDP, local script-driven captures, Hermes Agent, GitHub CLI, OpenClaw,
-and SSH stdio transport.
-
-## How it works
-
-agentpantry is a single binary that takes on one of two roles, chosen by
-subcommand.
-
-The source runs on your daily driver. It watches the Chromium cookie store for
-changes, copies the locked SQLite file to a temporary path, and decrypts each
-value using the keyring passphrase from the freedesktop Secret Service (falling
-back to Chromium's fixed "peanuts" key when no keyring is present). The
-decrypted cookies are normalized into a snapshot, filtered through your domain
-allow/deny policy, and diffed against the last snapshot so only changes move.
-Each diff is JSON-encoded, sealed in an AES-256-GCM frame carrying a monotonic
-replay counter, and written length-prefixed onto a stream.
-
-The sink runs on your agent's machine. It opens each frame, rejects any frame
-whose counter is not strictly greater than the last accepted one, and applies
-the diff to its configured surfaces. The default sink surface is a plaintext
-sidecar SQLite database that holds the current cookie set; opt-in surfaces and
-adapters can also write secrets, browser stores, Netscape cookie files, GitHub
-CLI auth, OpenClaw provider profiles, and a Hermes Agent bundle.
-
-### Source-to-sink flow
-
-<p align="center"><em>The generated source-to-sink plate above is rebuilt from <code>docs/assets/workflows/source-sink.json</code>.</em></p>
-
-The transport is just a byte stream, so the link can be a TCP connection over a
-trusted network or a piped stdio channel through a tunnel. The encryption and
-framing do not care which.
-
-## Operating
-
-`agentpantry doctor` checks a configuration before you rely on it. It verifies
-that the pre-shared key exists, is 32 bytes, and is mode 0600, that the role
-and peer are well formed, and that the role-specific pieces are in place: on a
-source it confirms each browser cookie store and the secrets directory are
-readable, and on a sink it confirms the bind address is loopback (warning for
-wide binds, including an empty host such as `:8787`), and that each configured
-surface is satisfiable. On a source it also
-dials the peer to confirm reachability; pass `--no-net` to skip that or
-`--timeout` to change the dial timeout. A source config may set
-`peer = "none"` for a local script-driven deployment with no long-running
-network peer; doctor reports that as an `OK` peer row and skips the dial.
-Sink configs cannot use that sentinel. Each check prints `OK`, `WARN`, or
-`FAIL`. doctor exits 0 when nothing failed and exits 1 when any check is a
-`FAIL` (warnings do not fail the run), so it can gate a startup script. Pass
-`--json` for a machine-readable payload with check rows, fail/warn counts, and a
-safe config summary for operator dashboards such as Brigade.
-
-`agentpantry receipts` is an opt-in, local, append-only JSON Lines log of
-successful syncs. Enable `[receipts] enabled = true` on a source and/or sink
-(default path: `receipts.jsonl` beside the config). Each line records a UTC
-timestamp, this node's identity (`[receipts] identity`, default hostname;
-`source_id` and `sink_id` both carry that local asserted identity),
-event type (`sync.send` or `sync.apply`), a monotonic `seq`, a SHA-256 digest
-of a value-free payload summary (counts and identifiers only), the previous
-receipt's hash, and an HMAC-SHA256 bound to the pre-shared key. A `0600` tip
-file (`receipts.head`) stores the last seq and hash; deleting or truncating
-the log fails `receipts verify`. The transport is PSK-only, so identity is
-asserted, not proven. Cookie values, secret values, and `localStorage` values
-are never written. `payload_hash` is hashed, not confidential. `agentpantry
-receipts verify` walks the chain, checks every MAC, and cross-checks the tip
-(nonzero exit on failure). `agentpantry receipts show [--last N] [--json]`
-prints metadata only. Receipt files are mode `0600`. This is tamper-evident
-provenance against casual edits, not a defense against a compromised host that
-already has the PSK.
-
-`agentpantry status` reports the active role, peer, key path, surfaces, and the
-configured allow/deny domains. It also reports the last sync: the time of the
-most recent successful source cycle and the cookie, secret, and localStorage
-counts in the last frame that was sent, or `never` if the source has not run
-yet. Pass `--json` for machine-readable output.
-
-`agentpantry inventory` reads a sidecar backup store and summarizes what it
-holds: the total cookie count, the persistent vs session-only split, a per-host
-breakdown sorted by count, the auth cookies that are near expiry, and the
-localStorage item and origin counts. Where
-`status` reports config and a last-sync count, `inventory` reads the store
-itself, so you can see what a backup actually contains without querying the
-SQLite schema by hand. Point it at a store with `--store` (default
-`<config dir>/sidecar.db`), set the near-expiry window with `--expiry-days`
-(default 14), and pass `--json` for a payload that downstream tools and
-dashboards can consume. The JSON payload includes cookie `name` and `host` for
-near-expiry rows (never values). It reports on existing stores only: if the path
-does not exist it exits 2 rather than create an empty one.
-
-`agentpantry status -all` summarizes every per-profile config instead of the
-canonical one. A deployment that captures per browser profile keeps the real
-state in `<config dir>/profiles/*.toml`, so reporting only `config.toml` can
-show `last sync: never` on a box that captured this morning. It lists each
-profile's role, lane URL, surfaces, adapter and domain counts, and the cookie
-count of a configured store. A sink that relies on the default store path
-reports that the path is unresolved rather than an empty count, because the
-default resolves against that process's own config dir and cannot be inferred
-from elsewhere. A store that exists but cannot be read, or a relative
-`sidecar_path` (the sink resolves it against its own working directory), is
-reported in the row's note rather than silently dropped. Use `-profiles <dir>`
-to point at another directory.
-
-`agentpantry verify` answers the `website_authentication` question that
-`source --dry-run` can only report as `not_verified`, by checking whether a
-running browser still has a working session for one domain:
-
-    agentpantry verify -lane http://127.0.0.1:9224 -domain glassdoor.com \
-      https://www.glassdoor.com/index.htm
-
-It opens one tab in the lane browser you name, waits for the document to
-finish loading, reads the title, final URL, and a bounded sample of rendered
-text, then closes the tab. It exits 0 for usable content, 1 when a challenge, an
-empty shell, or an off-domain page came back (`ok`, `challenge`, `empty`,
-`off_domain`), and 2 when the check could not run, which includes a missing
-`-lane` or any other usage error and a page that failed to load at all. Cookie
-counts and expiry dates cannot answer this question: a clearance cookie is bound
-to the TLS fingerprint and header order of the browser that earned it, so a
-fresh cookie replayed from another client is refused even when its value and
-User-Agent match. Only the browser that holds the session proves the session.
-`-domain` is required and scopes the check, so the command cannot drive an
-authenticated browser anywhere else. The scope covers where the page ends up as
-well as where it starts: an expired session that redirects to an external
-sign-in reports `off_domain` with only the host it landed on, polling stops
-there, and that page's title is not printed. The lane URL must be loopback, and
-URLs with embedded credentials are refused. `--json` emits `verdict`, `marker`,
-`final_url`, `text_len`, and `checked_at`. Output includes the page title for an
-on-domain result and the URL with its query string and fragment removed. Cookie
-values, request headers, and page body text are never printed.
-
-`agentpantry run -- <command>` is the sink-side, memory-only way to hand synced
-secrets to a child process, in the style of 1Password `op run`. It reads the
-already-synced files under the sink config's `secrets_dir`, applies the same
-deny-wins `[secret_names]` policy, overlays the permitted values onto the
-parent environment, and runs `<command>`. Values are never written to a
-staging file. Names that sanitize to loader or interpreter variables such as
-`PATH` or `LD_PRELOAD` are refused. `-secret NAME` (repeatable) injects only
-those names, `-env NAME=ENVVAR` remaps a secret to a specific variable
-(default: uppercase sanitized name), and `-dry-run` prints the env var names
-that would be set without executing anything. Secret values are never logged. Prefer `run` when
-the consumer can take environment variables; keep the `secrets` surface for
-tools that must read files. A local process that can inspect the child
-(`/proc/<pid>/environ`, ptrace, or the Windows equivalent) can still see the
-injected values while it runs. On Unix the wrapper forwards SIGINT and
-SIGTERM to the child. On Windows signals are not forwarded.
-
-    agentpantry run --config ./sink.toml -- your-agent --flag
-    agentpantry run -secret gh_token -env gh_token=GH_TOKEN -- gh auth status
-    agentpantry run --dry-run
-
-`agentpantry restore` materializes cookies from an existing sidecar backup into
-one explicit target. This is the capture-once-materialize-anywhere path: keep a
-sidecar as the portable capture, then write it into the format a local tool or
-browser target needs. Restore reads cookies from the sidecar, applies the
-same suffix-style domain narrowing, skips already-expired persistent cookies,
-and reports counts without printing cookie values. A `storagestate=` target also
-reads captured `localStorage` from the sidecar and writes it into the file's
-`origins`, narrowed by the same domain policy on each origin's host.
-
-Examples:
-
-    agentpantry restore -sidecar ~/.config/agentpantry/sidecar.db \
-      --to netscape=/tmp/cookies.txt --domains example.com --dry-run
-
-    agentpantry restore -config ./sink.toml \
-      --to chromium=/tmp/agent-chrome-profile
-
-    agentpantry restore -sidecar ./sidecar.db \
-      --to storagestate=./state.json --domains github.com
-
-    agentpantry restore -sidecar ./sidecar.db \
-      --to cdp=http://127.0.0.1:9222 --verify
-
-    agentpantry restore -sidecar ./sidecar.db \
-      --to desktop-app=codex --dry-run
-
-Use `-sidecar` to name the store directly, or `-config` to derive the sidecar
-path the same way `sink` does. Targets are `netscape=<path>` for curl-family
-`cookies.txt`, `chromium=<profile-dir>` for a not-running Chrome-compatible
-profile directory, `storagestate=<path>` for a Playwright/Puppeteer
-`storageState` JSON file (`browser.newContext({ storageState })`), consumed by
-headless or headed automation, and `cdp=<http://127.0.0.1:PORT>` for a running
-Chromium DevTools endpoint on loopback. A `cdp=` restore also writes captured
-`localStorage` best-effort (see below), and a `storagestate=` restore writes it
-into the file's `origins`. `--verify` is CDP-only: after writing, it reads
-back through `Storage.getCookies` and prints per-domain expected and present
-counts plus cookie names. It exits nonzero if any expected cookie is absent.
-`desktop-app=codex` and `desktop-app=claude` are inspection-only targets. They
-require `--dry-run`, report the selected profile candidate, lock state, cookie
-store candidate, domain and cookie counts, and the unavailable injection method.
-Without a supported session-injection and read-back bridge, a non-dry-run call
-fails before opening or writing an app profile. `--verify` is rejected for the
-same reason.
-
-### Desktop app inspection
-
-Desktop app profiles often contain a Chromium-style `Network/Cookies` or
-`Cookies` file. The filename does not prove that agentpantry can encrypt values
-the way that app expects. `desktop-app=` checks the paths below, then reports a
-cookie store only as a candidate. It uses read-only filesystem metadata calls
-and never opens the cookie database.
-
-The candidates come from Go's platform user-config lookup. They do not contain a
-compiled-in home directory, and they are not vendor API contracts. A missing
-path is reported as `not found`. A `SingletonLock`, `SingletonCookie`, or
-`SingletonSocket` entry is reported as `possibly running`. An absent lock is
-reported as `not detected`, which does not prove that the app is stopped.
-
-#### Linux
-
-Go resolves the user config directory from `$XDG_CONFIG_HOME`, or from the
-current user's home when that variable is empty. The candidates are
-`${XDG_CONFIG_HOME:-~/.config}/Codex` and
-`${XDG_CONFIG_HOME:-~/.config}/Claude`.
-
-#### macOS
-
-Go resolves the user config directory from the current user's home. The
-candidates are `~/Library/Application Support/Codex` and
-`~/Library/Application Support/Claude`.
-
-#### Windows
-
-Go resolves the user config directory from `%AppData%`. The candidates are
-`%AppData%\Codex` and `%AppData%\Claude`. The Windows build uses the same
-metadata-only lock and cookie-file checks as Linux and macOS.
-
-Offline desktop-app restore stays blocked until the implementation can prove all
-of these conditions: the app is stopped, the cookie store is a regular file with
-a supported schema, the host and app encryption scheme is compatible, a private
-backup is created before the transaction, and read-back verification is
-available. A detected Chromium layout alone does not clear that gate. The
-portable sidecar remains the backup and can still be restored into `netscape=`,
-`storagestate=`, `chromium=`, or a loopback `cdp=` target.
-
-A refused write prints the recovery sequence: stop the app completely, remove
-`--verify` if present, rerun the same target with `--dry-run`, and do not edit the
-profile. Keep the sidecar backup. Until a supported bridge or proven offline
-path exists, restore into `storagestate=<path>`, `chromium=<profile-dir>`, or
-`cdp=<loopback-http-url>` instead.
-
-Restore limitations:
-
-| Limit | What happens |
-| --- | --- |
-| Encrypted or app-bound profile state | `chromium=<profile-dir>` writes a local cookie DB and cannot recreate another browser's encrypted profile state. Use CDP for a running browser that must encrypt its own cookies. |
-| Partitioned or CHIPS cookies | The sidecar model does not preserve the partition key, so restore cannot recreate partitioned identity exactly. |
-| Session storage | Cookies always restore. `localStorage` restores into a `storagestate=` target when a CDP source captured it (see the localStorage section). Other targets are cookie-only. `sessionStorage`, IndexedDB, service worker state, and cache data are out of scope. |
-| `storagestate` overwrite guard | `storagestate=<path>` merges into an existing `storageState` JSON (preserving its `origins`). It refuses to overwrite a file that is not valid `storageState` JSON, so pointing `--to` at the wrong path fails loudly instead of clobbering it. |
-| `SameSite=None` on import | Playwright's `storageState` loader hands cookies to Chromium, which requires `Secure` for `SameSite=None`. agentpantry writes the cookie's real attributes; an insecure `None` cookie may be dropped by the browser on import, as with CDP. |
-| `SameSite=None` on CDP | Chromium requires `Secure` when setting `SameSite=None`; CDP may reject insecure cookies with that attribute. |
-| Unreachable CDP | `cdp=` targets must be loopback HTTP(S) endpoints with a reachable DevTools websocket. Remote DevTools URLs are rejected. |
-| Desktop app process state | `desktop-app=` treats a profile lock as possibly running. An absent lock does not prove the app is stopped. The target remains inspection-only in either case. |
-| Desktop app cookie encryption | A Chromium cookie filename is only a layout candidate. Codex and Claude restore stays blocked because no supported injection/read-back bridge or encryption compatibility check is implemented. No app file is opened or written. |
-| localStorage into a live browser | A `cdp=` restore writes `localStorage` without navigating the operator's browser, so an origin with no open tab is rejected by Chrome and skipped (counted, best-effort). To seed `localStorage` for any origin reliably, use a browser you own that can navigate to it. The `storagestate=` file path has no such limit. |
-| Missing sidecar | Restore opens the sidecar read-only and exits 2 if the store is missing. It does not create an empty backup by accident. |
-| Unwritable target | Netscape, Chromium, and CDP writes fail rather than silently dropping cookies when the target cannot be written. |
-| Non-representable cookies | Cookies that CDP or a file format cannot represent may fail the restore. Expired cookies are skipped and counted. |
-
-The transport can ride an SSH channel instead of a TCP listener. Run the source
-with `--stdio` to stream sealed frames to stdout, and the sink with `--stdio` to
-read them from stdin, then connect the two over SSH:
-
-    agentpantry source --stdio | ssh sink.example agentpantry sink --stdio
-
-In `--stdio` mode the source never dials the peer and the sink never binds a
-port, so the encrypted link exists only inside the SSH channel. The same key
-and framing apply.
-
-For same-box captures driven by an external scheduler, use separate per-profile
-source and sink config files and pass each path with `-config` from the script.
-Set `peer = "none"` only on those source configs so `agentpantry doctor` can
-validate the local setup without requiring a listener. Do not run
-`agentpantry source` with that config; the scheduler is responsible for driving
-each explicit capture pair.
-For a one-shot stdio export, add `--once` on the source side:
-
-    agentpantry source --once --stdio | ssh sink.example agentpantry sink --stdio
-
-`--once` is useful in scripts because the source exits on its own after the
-initial sync succeeds. Do not wrap a normal long-running `agentpantry source`
-in `timeout` just to force it to stop: a healthy run killed by `timeout` exits
-as 124, which can look like an agentpantry failure. Use `source --once` when
-the expected result is "sync once, then exit."
-
-### Source dry-run plan
-
-Before a capture, `source --dry-run` prints a read-only plan of what that
-source config would read and where it would send it. Pass the same `-config`,
-`--stdio`, and `--once` flags you intend to run with, so the route and mode
-match:
-
-    agentpantry source --dry-run -config research.toml
-    agentpantry source --dry-run --json --once --stdio -config research.toml
-
-The plan reports:
-
-- the config path, role, run mode (`watch` or `once`), and the effective resync interval (`0` in
-  `once` mode)
-- the route: `tcp` to the configured peer, `stdio`, or `peerless` for a
-  `peer = "none"` config driven by an external scheduler
-- the key path, whether it exists, and its mode
-- one row per browser: kind, profile, read mechanism, cookie store path or
-  loopback CDP URL, whether the store exists, `capture_localstorage`, and
-  `account_identity`
-- the effective `[domains]` and `[secret_names]` allow and deny lists, with the
-  deny-wins rule
-- whether `secrets_dir` and KeePass are enabled and present, the KeePass tag,
-  and the `keepass_keyfile` and `keepass_pass_file` paths with their presence
-  and mode
-- the local files a real run would write (`state.json`, plus receipts when
-  enabled)
-
-The plan reads the config and file metadata (`stat`) only. It does not load the
-key, read or decrypt cookies, localStorage, secret files, or KeePass entries,
-query the keyring, contact a CDP endpoint, dial the peer, send a session salt or
-frame, or write state or receipts.
-
-`status` keeps three answers separate. `config_readiness` is `ready` when every
-configured endpoint checks out on metadata alone. It is `not_ready` when, for
-example, the key, a cookie store, or a configured secret source is missing, the
-key mode is too open, `keepass_path` is set without `keepass_keyfile`, a KeePass
-key or password file is not a regular file, is empty, or has a mode that is too
-open, the role is not `source`, a browser kind is unsupported, a
-CDP URL is not loopback, `capture_localstorage` is set on a non-CDP browser, or
-a cookie store or KeePass vault is not a regular file, `secrets_dir` is not a
-directory, or the TCP peer is not `host:port` with a port from 1 to 65535 (or a
-known service name). `capture_coverage` is always `not_measured`
-and `website_authentication` is always `not_verified`: only a real capture can
-count what a profile holds, and only the site can confirm a login. A stored
-cookie count never implies a working session. For the same reason
-`account_identity` is `unknown`, and a successful backup of one profile does not
-show coverage of a different profile.
-
-The command prints the plan and exits 0 when `config_readiness` is `ready`, or 1
-with the problems listed when it is not. `--json` without `--dry-run` is
-rejected.
-
-## Hardening
-
-The transport begins each connection with a session-salt handshake (the sink
-issues a fresh random salt over TCP; the source issues it over `--stdio`) and
-derives a per-session AES-256 key from the pre-shared key via HKDF, so a frame
-captured from one session cannot be replayed into another.
-
-### Pairing with a short code
-
-`agentpantry pair` is an additive setup mode that bootstraps `psk.key` so you
-do not have to copy the 64-hex file by hand. It does not replace the
-session-salt handshake or HKDF session keys.
-
-    # on the sink (prints a one-time XXXX-XXXX code and waits)
-    agentpantry pair --role sink [--bind 127.0.0.1:8787] [--config PATH]
-
-    # on the source (same code, out of band)
-    agentpantry pair --role source --code ABCD-EFGH --peer 127.0.0.1:8787
-
-Compare the `confirmation:` fingerprint printed on both ends before the first
-sync. The pairing listener defaults to `127.0.0.1:8787` and does not inherit
-the sink config `peer` (that field is the sync bind and is often
-`0.0.0.0:8787`). Pass `-bind` to listen elsewhere; a non-loopback or empty-host
-address (`:8787`) prints a warning. The listener is short-lived (two minutes,
-three failed SPAKE2 code attempts, at most four concurrent exchanges) and
-should stay on loopback or a trusted private network. Treat the code as a
-one-time password. Re-pairing backs up an
-existing key like `keygen`; use `rotate-key` for zero-downtime rotation.
-Pairing refuses to start while a rotation grace file (`psk.key.old`) exists.
-Manual `keygen` plus a secure copy remains supported.
-
-Secret syncing can be
-narrowed with a `[secret_names]` allow/deny policy (exact names; deny overrides
-allow; an empty allow permits everything in the `secrets_dir`). `make gosec`
-runs the security scanner, `make vuln` runs govulncheck, and
-`make fuzz PKG=... FUZZ=...` runs the fuzz targets for the untrusted-input
-parsers.
-
-### Rotating the pre-shared key
-
-`agentpantry rotate-key` rotates the key with no sync downtime. Run it on the
-sink: it writes a fresh `psk.key` and preserves the previous key beside it as
-`psk.key.old`. The sink accepts new connections under either key (and logs a
-warning when a peer still uses the old one), so the source keeps syncing while
-you distribute the new key:
-
-    agentpantry rotate-key            # on the sink
-    # copy the new psk.key to the source over a secure channel
-    # restart the source, or let it reconnect
-    agentpantry rotate-key -finish    # on the sink, retires psk.key.old
-
-Key path resolution, in order: `-key` when set, else `key_path` from
-`-config` when that file exists and sets one, else the config dir's
-`psk.key`. Pass `-key` when you generated the file with `keygen -out`
-and it is not the path in config. The same `-key` applies to `-finish`;
-it only selects the file and does not change the dual-key grace window.
-
-`doctor` and `status` show a rotation in progress, and a running sink picks up
-the rotation without a restart. Finish promptly: until `-finish`, a holder of
-the old key is still accepted. `keygen` remains the blunt instrument; it backs
-up an existing key beside itself as `psk.key.bak.<timestamp>` before replacing
-it (pass `--backup=false` to skip that), but unlike `rotate-key` the sink
-accepts only the new key from that moment on. After replacement, stop existing
-sink sessions (or close their connections), distribute the new PSK to peers,
-then restart persistent sources — they load the key once at startup, so a
-running source keeps sealing with the old key until restarted. Delete
-`psk.key.bak.*` files once a rotation is confirmed, especially one prompted by
-suspected key exposure: they hold retired key material.
-
-## Reliability
-
-A TCP source reconnects automatically with capped backoff (1s up to 30s) if the
-sink restarts or the link drops, and resends its full current state on each
-reconnect. Set `resync_seconds` to have the source periodically re-sync on a
-timer in addition to filesystem events (covers any missed event); a `kind=cdp`
-source, which has no file to watch, defaults to a 60s poll when `resync_seconds`
-is unset. `agentpantry source --once` uses the same initial connect, salt
-handshake, read, diff, send, and state-update path, then closes the stream and
-exits. It does not start the filesystem watcher, reconnect loop, or resync
-timer. Dial, handshake, or initial sync failures return a nonzero exit status.
-
-## Surfaces
-
-The sink applies each synced diff to one or more surfaces, chosen by the
-`surfaces` list in the sink config.
-
-- `sidecar` (always available): a plaintext sidecar SQLite database holding the
-  current cookie set, written mode 0600. This is the default and safest target.
-- `chrome` (opt-in, fragile): writes synced cookies directly into an existing
-  Chrome Cookies SQLite, re-encrypting each value with the sink machine's own
-  keyring key. The table schema is introspected at open time so it tolerates
-  Chrome version differences. This surface targets a profile that is not
-  running. Writing a live profile is unsupported, and Chrome may ignore or
-  overwrite the rows. It requires a `[[browsers]]` entry whose `cookie_path`
-  points at the target store.
-- `secrets`: writes synced secrets as individual files under the configured
-  secrets directory, one file per secret, mode 0600.
-
-Example sink config selecting multiple surfaces:
-
-    role = "sink"
-    peer = "127.0.0.1:8787"
-    surfaces = ["sidecar", "secrets"]
-    secrets_dir = "/home/agent/.config/agentpantry/secrets"
-
-## Secrets
-
-Beyond cookies, agentpantry can mirror a directory of secrets from source to
-sink in the same encrypted frame. On the source, set `secrets_dir` to a
-directory and each regular file becomes one secret (the file name is the secret
-name, the file contents are the value). Dotfiles and subdirectories are skipped.
-
-Instead of (or alongside) a plaintext directory, the source can read named
-secrets straight from an encrypted KeePass vault:
-
-    keepass_path = "/home/you/vault.kdbx"
-    keepass_keyfile = "/home/you/.config/agentpantry/vault.key"
-    # keepass_pass_file = "..."   # only for password+keyfile vaults
-    # keepass_tag = "agentpantry" # the default
-
-Only entries carrying the `keepass_tag` tag are exported (entry Title becomes
-the secret name, Password the value), so tagging is the opt-in: the rest of
-the vault never leaves the machine. `[secret_names]` still applies on top.
-Untagging an entry propagates as a delete on the sink. Unlock is
-non-interactive via a 0600 key file (add one in KeePassXC under Database
-Security), so the source runs headless. If the same name comes from both
-`secrets_dir` and the vault, pick one source per name; the merge order is
-otherwise unspecified. A vault that is temporarily unreadable leaves
-already-synced secrets on the sink untouched for that cycle.
-
-On the sink, enable the `secrets` surface and set `secrets_dir` to the
-destination. Each secret is written as a 0600 file named after the secret.
-Secret names are sanitized on the sink: any name containing a path separator,
-a `..` element, or an absolute path is skipped rather than written outside the
-secrets directory.
-
-When a command can take secrets from the environment, `agentpantry run --
-<command>` injects the same deny-wins set into that process only and does not
-stage values to another file. The on-disk `secrets` surface stays available
-for tools that must read files; `run` does not delete those files.
-
-Cookies and secrets travel together inside one AES-256-GCM frame, so a single
-peer connection carries both.
-
-## localStorage
-
-Modern logins increasingly keep session material (JWTs, refresh tokens, device
-IDs) in `localStorage` rather than cookies, so a cookies-only restore can leave a
-session signed out. A `kind = "cdp"` source can mirror `localStorage` so the
-restored session is whole. It is opt-in and off by default:
-
-    [[browsers]]
-    kind = "cdp"
-    url  = "http://127.0.0.1:9222"
-    capture_localstorage = true
-
-Capture is non-intrusive: agentpantry reads `localStorage` from the origins
-already open in the browser's tabs and never navigates or reloads a page (which
-would be visible to anti-bot fingerprinting). Each origin is gated by the same
-`domains.allow` policy as cookies, values are never logged, and an oversized
-store is bounded (per-item, per-origin, and per-cycle caps, with skipped items
-counted). It rides the same AES-256-GCM frame as cookies and secrets and lands in
-the `storagestate` surface (`origins[].localStorage`) and the sidecar, so both
-live sync and `restore --to storagestate=` carry it.
-
-Capture is CDP-only: disk Chromium and Firefox sources cannot read `localStorage`
-while the browser holds the store, so `capture_localstorage` requires
-`kind = "cdp"` and `doctor` fails it otherwise. `sessionStorage`, IndexedDB, and
-service worker state stay out of scope.
-
-## Launching an automation browser
-
-`agentpantry browser` stands up a dedicated automation Chrome that is already
-logged in, so a scraper attaches to a warm session instead of driving a login
-(the step anti-bot systems flag hardest):
-
-    agentpantry browser --sidecar ./sidecar.db --domains github.com --keep-open
-
-    agentpantry browser -config ./sink.toml --keep-open
-
-It launches Chrome with a throwaway profile (never a real one) on a loopback
-debugging port, sets cookies browser-wide, seeds each origin's `localStorage`
-after its tab or frame is ready, and hands the DevTools endpoint back. Headed
-mode passes one startup tab per distinct storage origin. Headless mode starts
-with a single `about:blank` target, waits for loopback CDP, then creates one
-temporary target per distinct validated HTTP or HTTPS storage origin through the
-CDP HTTP target endpoint, seeds `localStorage` once that origin's frame is ready,
-and closes only those temporary targets. The original `about:blank` page stays
-open for attachment. Cookies-only and empty-storage headless runs create no
-origin targets. That sequencing avoids Chrome 151 rejecting multiple headless
-startup targets with "Multiple targets are not supported in headless mode". Use
-`-sidecar` to name the store directly, or `-config` to derive the sidecar path
-and domain policy the same way `sink` and `restore` do (pass exactly one). Flags:
-`--headless` uses new headless (`--headless=new`), `--profile` names a
-persistent user-data-dir instead of a temp one, `--port` sets the debugging port,
-`--chrome` points at a specific binary, `--verify` reads cookies back through
-CDP, and `--keep-open` leaves the browser running (Ctrl-C to stop) for a scraper
-to attach.
-
-Because agentpantry owns this browser, it seeds `localStorage` reliably once
-each storage origin has a live frame, then replays accepted cookies after that
-hydration step. A replay failure warns but does not discard storage hydration.
-By contrast, `restore --to cdp=` against a browser you already launched remains
-best-effort. The launch
-sets `--disable-blink-features=AutomationControlled` so `navigator.webdriver`
-stays unset. That flag is the extent of agentpantry's anti-bot posture. It
-delivers the authenticated session and gets out of the way. Fingerprint shims,
-human-paced input, and captcha handling belong to the tool driving the tab (a
-Playwright/Puppeteer stealth layer). A session restored into a browser whose user
-agent, timezone, or language differ from where it was minted can still be
-flagged, so match those.
-
-For a long-running automation browser you already drive over CDP, keep its
-session fresh in place with `agentpantry restore --to cdp=http://127.0.0.1:PORT`
-instead of relaunching. That pairs with the capture direction: a `kind = "cdp"`
-source can read cookies and `localStorage` back out of the same running browser,
-so one browser stays synced with your daily driver in both directions.
-
-## Adapters
-
-Adapters are extra sink surfaces that write synced data into the native file a
-specific CLI or agent harness already reads, so the tool wakes up authenticated
-without any agentpantry-aware glue. They are declared with an optional
-`[[adapters]]` block in the sink config, each entry chosen by `type`. An adapter
-is layered on top of the regular `surfaces` list; you can run both at once.
-
-Five adapter types ship:
-
-- `netscape`: a cookie surface that writes a Netscape `cookies.txt` (the format
-  curl, wget, and yt-dlp consume), mode 0600. It keeps an in-memory row set
-  seeded from its own file on start, so a sink restart does not drop rows the
-  source has not re-sent, and it rewrites the whole file on each apply.
-- `storagestate`: a cookie surface that writes a Playwright/Puppeteer
-  `storageState` JSON file, mode 0600, so a headless or headed automation
-  browser wakes up authenticated via `browser.newContext({ storageState })`
-  without replaying a login (the login step is what anti-bot systems flag
-  hardest). Like `netscape` it seeds from its own file so a restart keeps rows
-  the source has not re-sent. It writes `origins[].localStorage` when a CDP
-  source captures it (see the localStorage section), so the restored session
-  carries web-storage tokens alongside cookies. Also available as a `restore`
-  target.
-- `gh`: a secret surface that writes the GitHub token into the GitHub CLI's
-  `hosts.yml`. It is merge-only, so unrelated hosts already in the file are
-  preserved, and upsert-only, so a transient missing secret never deletes the
-  token and logs you out. Set `secret` to the secret name holding the token,
-  `host` (defaults to `github.com`), and optionally `user`.
-- `openclaw`: a secret surface that merges provider profiles into an OpenClaw
-  `auth-profiles.json`. The `profiles` field there is an OBJECT keyed by
-  `<provider>:default`, not an array, so each `profiles` mapping entry maps a
-  secret name to its profile key. The secret value must itself be the profile
-  JSON object; a value that is not valid JSON is skipped rather than written, so
-  a malformed secret never corrupts a working gateway file. Like `gh` it is
-  merge-only and upsert-only.
-- `hermes`: a cookie and secret surface that writes an Agent Pantry bundle under
-  a Hermes-readable directory, usually `~/.hermes/agentpantry`. The bundle
-  contains `cookies.txt`, `secrets/<name>`, and `agentpantry.json` describing the
-  relative paths. This is an Agent Pantry-owned subtree, so deletes remove the
-  corresponding bundled cookie or secret.
-
-Example sink config with the common adapters:
-
-    role = "sink"
-    peer = "127.0.0.1:8787"
-    surfaces = ["sidecar"]
-
-    [[adapters]]
-    type = "netscape"
-    path = "/home/agent/.config/agentpantry/cookies.txt"
-
-    [[adapters]]
-    type = "storagestate"
-    path = "/home/agent/.config/agentpantry/state.json"
-
-    [[adapters]]
-    type = "gh"
-    path = "/home/agent/.config/gh/hosts.yml"
-    secret = "gh_token"
-    host = "github.com"
-    user = "octocat"
-
-    [[adapters]]
-    type = "openclaw"
-    path = "/home/agent/.openclaw/auth-profiles.json"
-
-    [adapters.profiles]
-    anthropic_secret = "anthropic:default"
-
-    [[adapters]]
-    type = "hermes"
-    path = "/home/agent/.hermes/agentpantry"
-
-`agentpantry doctor` checks each adapter: that its target directory is writable
-or creatable, that a `gh` adapter names a secret, and that an `openclaw` adapter
-carries a profiles mapping. For `hermes`, `path` is a bundle directory, not a
-single file.
-
-## Status
-
-Current status: cookie sync to the plaintext sidecar remains the default path.
-Additional shipped surfaces include real-Chrome re-encrypt, secrets, Netscape
-`cookies.txt`, Playwright/Puppeteer `storageState`, `gh`, `openclaw`, and the
-Hermes Agent bundle. Source support includes Linux Chromium, Firefox, Windows
-Chromium, and Chrome DevTools Protocol export for app-bound Chrome profiles,
-with optional `localStorage` capture over CDP.
-
-## Why not something else?
-
-- **A password manager or secret vault** (1Password, Bitwarden, Vault) stores
-  credentials and hands them out on request. Agent Pantry does not store your
-  logins; it mirrors live browser session state and named secrets from a machine
-  where you are already logged in to the machine your agent runs on, so tools
-  that read local cookie stores and config files wake up authenticated.
-- **A hosted session or cookie service** runs in someone else's cloud and asks
-  you to trust their storage. Agent Pantry is a single local Go binary with no
-  daemon and no server: it moves bytes between two machines you control over a
-  link you choose, and the encryption and framing do not care whether that link
-  is a LAN socket, a VPN, or stdio piped over SSH.
-- **Committing cookies and tokens into dotfiles** (or pasting a token into an
-  agent's config) drifts the moment a session refreshes and tends to leak the
-  value into git history, logs, and shell history. Agent Pantry re-syncs on file
-  events and a timer, sends only the diff, never logs values, and seals every
-  frame with a replay counter so a captured frame cannot be replayed into another
-  session.
-- **Each agent harness reinventing auth** means every runtime grows its own
-  glue. Agent Pantry writes the native files Codex, Claude Code, OpenClaw,
-  Hermes Agent, the GitHub CLI, and curl-family tools already read, so the
-  harness needs no Agent Pantry awareness.
+On the sink (agent machine):
+
+```bash
+agentpantry init --role sink
+agentpantry keygen          # or: agentpantry pair --role sink
+# copy ~/.config/agentpantry/psk.key to the source machine
+# edit config.toml: set peer to the bind address, e.g. 0.0.0.0:8787 over your VPN
+agentpantry doctor
+agentpantry sink
+```
+
+On the source (daily driver):
+
+```bash
+agentpantry init --role source
+# copy the psk.key from the sink into ~/.config/agentpantry/psk.key
+# or: agentpantry pair --role source --code ABCD-EFGH --peer <sink-address>
+# edit config.toml: set peer to the sink address, add a [[browsers]] block and domains.allow
+agentpantry doctor
+agentpantry source
+```
+
+`init` writes a commented config and refuses to overwrite an existing one unless you pass `--force`. `doctor` validates the result and warns about misspelled config keys. Browser kinds, Windows notes, and app-bound Chrome are covered in [docs/configuring-sources.md](docs/configuring-sources.md). Copyable configs live in `examples/`.
+
+## Reference
+
+### What can touch your sessions
+
+Every path that reads, writes, or exposes cookies and secrets, and what limits it.
+
+| Path | Reads values? | Writes values? | Guard |
+|---|---|---|---|
+| Source read: Chromium and Firefox stores | Yes | No, only a private temp copy that is removed | `domains.allow` and `domains.deny`, explicit `cookie_path` |
+| Source read: CDP (`kind = "cdp"`) | Yes, including `localStorage` when enabled | No | Loopback URL only, `capture_localstorage` is off by default |
+| Source read: `secrets_dir` and KeePass | Yes | No | `[secret_names]`, KeePass tag opt-in, `0600` key file |
+| Wire (TCP or `--stdio`) | Sealed only | Sealed only | Pre-shared key, per-connection HKDF key, strict counter |
+| Sink sidecar | Read by `inventory`, `restore`, `browser` | Yes, plaintext | Mode `0600`, sink bind defaults to loopback |
+| Sink `chrome` surface | No | Yes, re-encrypted | Opt-in, intended for a profile that is not running |
+| Sink `secrets` surface | Read by `run` | Yes, one file per secret | Mode `0600`, names with path separators or `..` skipped |
+| Adapter `netscape` | No | Yes, `cookies.txt` | Mode `0600` |
+| Adapter `storagestate` | No | Yes, cookies and `localStorage` | Mode `0600`, seeds from its own file on restart |
+| Adapter `gh` | No | Yes, token in `hosts.yml` | Merge-only, upsert-only |
+| Adapter `openclaw` | No | Yes, profiles in `auth-profiles.json` | Merge-only, invalid JSON values skipped |
+| Adapter `hermes` | No | Yes, bundle directory | Agent Pantry owns the subtree |
+| `run` | Yes, `secrets_dir` | Child environment only, never a file | Deny-wins policy, loader variables refused |
+| `restore` | Yes, sidecar | Yes, to one explicit target | Domain narrowing, loopback-only `cdp=`, refuses to overwrite a non-`storageState` file, `desktop-app=` refuses writes |
+| `browser` | Yes, sidecar | Yes, into the Chrome it launches | Loopback port, throwaway profile by default |
+| `verify` | Title, final host, and text length of one page | No | Loopback lane, `-domain` scope on the start and final URL, tab closed, no cookie values, headers, or body text printed |
+| `inventory`, `status`, `doctor` | `inventory` opens the sidecar | No | Print no values, `inventory` never creates a store |
+| Receipts | No | Counts and digests only | HMAC chain, mode `0600`, no values |
+
+### Commands
+
+- `init`: write a commented starter config (`-role source|sink`).
+- `keygen`: generate the pre-shared key both endpoints share.
+- `pair`: bootstrap the key with a one-time SPAKE2 short code.
+- `rotate-key`: rotate the pre-shared key in place, and `-finish` retires the old key.
+- `source`: run on the daily driver, watch browsers, and push sealed diffs.
+- `sink`: run on the agent machine, receive diffs, and apply them to surfaces.
+- `doctor`: validate the config, key, and role-specific setup.
+- `status`: print the active role, peer, surfaces, and last sync. `-all` summarizes every per-profile config.
+- `verify`: check that a running lane browser still has a working session for one domain.
+- `inventory`: summarize a backup store with per-host counts and near-expiry cookies.
+- `restore`: materialize cookies from a sidecar backup into one target.
+- `browser`: launch an automation Chrome pre-seeded with a session.
+- `run`: inject synced secrets into a child process environment.
+- `receipts`: show or verify the local hash-chained sync receipt log.
+- `install-service`: install a systemd user unit, or print a task command on Windows.
+- `version`: print version and build metadata.
+
+### Detail docs
+
+- [Configuring sources and browsers](docs/configuring-sources.md): browser kinds, Windows, app-bound Chrome over CDP
+- [Operating](docs/operating.md): doctor, receipts, status, `status -all`, `verify`, inventory, run, restore, desktop app inspection, stdio, source dry-run plan, reliability, release packaging
+- [Key management and pairing](docs/key-management.md): session handshake, short-code pairing, rotating the pre-shared key
+- [Surfaces, secrets, and adapters](docs/surfaces-and-adapters.md): surfaces, named secrets, `localStorage`, the automation browser, adapter config
+- [Design notes](docs/design-notes.md): the original overview and "Why not something else?"
+- [Threat model](docs/threat-model.md): what is protected, operator duties, known limits
 
 ## What agentpantry is not
 
@@ -798,7 +362,7 @@ credential-harvesting tool.
 It does not:
 
 - store or generate your passwords, or hand out credentials on request
-- sync anything until you add a domain to `domains.allow`
+- sync a cookie until you add its domain to `domains.allow`
 - run in the background as a system service unless you install one yourself
 - log cookie values, token values, pre-shared keys, or secret contents
 - reach out to any network it was not configured to dial
@@ -807,26 +371,12 @@ It does not:
 It moves your own authenticated state between your own machines, and only the
 state you explicitly allow.
 
-## Release packaging
-
-Local release archives can be built into `dist/`:
-
-    make package VERSION=v0.2.1
-
-The package target runs `go test ./...`, `go vet ./...`, `gosec`, and
-`govulncheck`, then cross-builds Linux, macOS, and Windows archives with build
-metadata stamped into the `agentpantry version` output. `dist/checksums.txt`
-contains SHA-256 checksums for the generated archives.
-
-Tagged releases (`v*`) are built by GitHub Actions. The release workflow uploads
-the platform archives, `checksums.txt`, a source SPDX SBOM, and GitHub artifact
-provenance attestations.
-
 ## Security
 
-- Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An
-  empty allow list permits nothing, and a `domains.deny` entry overrides any
-  allow match.
+- Domains are opt-in. No cookie syncs until its domain is in `domains.allow`.
+  An empty allow list permits nothing, and a `domains.deny` entry overrides any
+  allow match. Secrets sync only from a configured `secrets_dir` or tagged
+  KeePass entries, gated by `[secret_names]`.
 - The sidecar SQLite is plaintext, mode 0600. Treat the sink like a secret
   store: anyone who can read that file can impersonate the synced sessions.
 - The pre-shared key file is written 0600 and must be kept off shared storage.
@@ -834,7 +384,7 @@ provenance attestations.
   expiry warnings during sync and in `inventory --json` near-expiry output.
   Values live only in memory, in the encrypted frames on the wire, and in the
   sidecar.
-- Transport is AES-256-GCM with a shared key; run it over Tailscale, Twingate,
+- Transport is AES-256-GCM with a shared key. Run it over Tailscale, Twingate,
   a LAN you trust, or an SSH tunnel.
 - The sink defaults to loopback. Both `doctor` and `agentpantry sink` startup
   warn when the bind address exposes the sink beyond loopback.
