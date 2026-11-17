@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Optional Tailscale identity gates for sink and pairing listeners, `tailnet:` / `tailnet6:` binds, and LocalAPI doctor checks. Sync still requires the PSK.
+- Pin `tailscale.com` v1.102.5 (LocalAPI client only). Its dependency floor raises the Go directive from 1.26.0 to 1.26.6. The toolchain remains go1.26.11.
 - `agentpantry source --dry-run [--json]` prints a read-only disclosure plan before capture: the route (`tcp`, `stdio`, or `peerless`), key presence and mode, one row per browser (kind, profile, read mechanism, store, `capture_localstorage`, `account_identity: unknown`), the effective deny-wins domain and secret-name policy, secret source enablement, and the local files a real run would write. It reads config and file metadata only: no key, cookie, localStorage, or secret value is read, nothing is dialed, and no salt, frame, state, or receipt is written. `status` separates `config_readiness` from `capture_coverage` (`not_measured`) and `website_authentication` (`not_verified`). The command exits 1 when the config is not ready.
 - `agentpantry run -- <cmd>` injects synced secrets into a child process environment for that process only (memory-only; deny-wins `[secret_names]`; refuses `PATH`/`LD_PRELOAD` and other loader vars).
 - Hash-chained local sync receipts (`receipts verify` / `receipts show`): opt-in JSONL provenance of each send/apply with payload digests only (no cookie or secret values), a signed monotonic `seq`, a `receipts.head` tip pointer, and a configured per-node identity (default: hostname).

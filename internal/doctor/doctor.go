@@ -14,6 +14,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
 	"github.com/escoffier-labs/agentpantry/internal/receipt"
+	"github.com/escoffier-labs/agentpantry/internal/tailnet"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
 )
 
@@ -220,7 +221,12 @@ func Run(c config.Config) []Check {
 			checks = append(checks, KeyringCheck(&vault.SecretServiceKey{Label: "Chrome Safe Storage"}))
 		}
 	case "sink":
-		if !IsLoopbackBind(c.Peer) {
+		checks = append(checks, TailnetChecks(context.Background(), c, &tailnet.LocalClient{})...)
+		if IsTailnetBind(c.Peer) && c.Tailnet != nil {
+			checks = append(checks, Check{"bind", OK, "tailnet identity enforcement configured"})
+		} else if IsTailnetBind(c.Peer) {
+			checks = append(checks, Check{"bind", Warn, "every tailnet member can reach the pre-auth surface without [tailnet]"})
+		} else if !IsLoopbackBind(c.Peer) {
 			checks = append(checks, Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", c.Peer)})
 		} else {
 			checks = append(checks, Check{"bind", OK, "loopback"})
@@ -334,4 +340,49 @@ func PeerReachable(peer string, timeout time.Duration) Check {
 // Peerless reports a source config that intentionally has no network peer.
 func Peerless() Check {
 	return Check{"peer", OK, "local deployment, no network peer configured"}
+}
+
+// IsTailnetBind identifies literals and startup-resolved tailnet binds.
+func IsTailnetBind(peer string) bool { return tailnet.IsTailnetBind(peer) }
+
+// TailnetChecks uses an injectable LocalAPI client so diagnostics need no daemon in tests.
+func TailnetChecks(ctx context.Context, c config.Config, client tailnet.Client) []Check {
+	if c.Tailnet == nil {
+		return nil
+	}
+	a, err := tailnet.New(client, *c.Tailnet)
+	if err != nil {
+		return []Check{{"tailnet:selectors", Fail, err.Error()}}
+	}
+	checks := []Check{{"tailnet:selectors", OK, "identity selectors valid"}}
+	if c.Tailnet.AllowLoopback {
+		checks = append(checks, Check{"tailnet:loopback", Warn, "bypass trusts every local process and any SSH tunnel terminating locally; no Tailscale identity is verified"})
+	}
+	s, err := a.Preflight(ctx)
+	if err != nil {
+		return append(checks, Check{"tailnet:LocalAPI", Fail, err.Error()})
+	}
+	checks = append(checks, Check{"tailnet:LocalAPI", OK, "reachable; BackendState Running"})
+	bind, err := tailnet.Resolve(c.Peer, s)
+	if err != nil || !tailnet.SelfBind(bind, s) {
+		if !(c.Tailnet.AllowLoopback && IsLoopbackBind(bind)) {
+			checks = append(checks, Check{"tailnet:self-bind", Fail, "bind is not a current self Tailscale IP"})
+		}
+	} else {
+		checks = append(checks, Check{"tailnet:self-bind", OK, bind})
+	}
+	for _, id := range c.Tailnet.AllowNodes {
+		online := false
+		for _, peer := range s.Peers {
+			if peer.StableID == id && peer.Online {
+				online = true
+			}
+		}
+		if !online {
+			checks = append(checks, Check{"tailnet:node", Warn, id + ": offline or missing from netmap"})
+		} else {
+			checks = append(checks, Check{"tailnet:node", OK, id})
+		}
+	}
+	return checks
 }

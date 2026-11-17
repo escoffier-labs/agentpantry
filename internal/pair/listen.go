@@ -11,6 +11,7 @@ import (
 
 // ServeConfig is the sink-side pairing listener.
 type ServeConfig struct {
+	Authorize   func(context.Context, net.Conn) error
 	Addr        string
 	Code        string
 	Timeout     time.Duration
@@ -66,7 +67,16 @@ func Serve(ctx context.Context, cfg ServeConfig) ([]byte, error) {
 				acceptErr <- err
 				return
 			}
-			conns <- c
+			if cfg.Authorize != nil && cfg.Authorize(ctx, c) != nil {
+				_ = c.Close()
+				continue
+			}
+			select {
+			case conns <- c:
+			case <-ctx.Done():
+				_ = c.Close()
+				return
+			}
 		}
 	}()
 

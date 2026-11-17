@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/privfile"
+	"github.com/escoffier-labs/agentpantry/internal/tailnet"
 )
 
 // PeerNone is the case-sensitive source-only sentinel for local, externally
@@ -38,23 +40,24 @@ type AdapterRef struct {
 
 // Config is the on-disk configuration for either role.
 type Config struct {
-	Role            string        `toml:"role"` // "source" | "sink"
-	Peer            string        `toml:"peer"` // dial target (source) or bind addr (sink)
-	KeyPath         string        `toml:"key_path"`
-	Surfaces        []string      `toml:"surfaces"`
-	Browsers        []BrowserRef  `toml:"browsers"`
-	SecretsDir      string        `toml:"secrets_dir"`       // source: read from; sink: write to
-	KeepassPath     string        `toml:"keepass_path"`      // source: read tagged KeePass entries as named secrets
-	KeepassKeyfile  string        `toml:"keepass_keyfile"`   // key file unlocking the vault (0600)
-	KeepassPassFile string        `toml:"keepass_pass_file"` // optional: file holding the DB password (0600)
-	KeepassTag      string        `toml:"keepass_tag"`       // export only entries with this tag (default "agentpantry")
-	Adapters        []AdapterRef  `toml:"adapters"`
-	Domains         policy.Domain `toml:"domains"`
-	SecretNames     policy.Names  `toml:"secret_names"`
-	ResyncSeconds   int           `toml:"resync_seconds"`   // source: periodic resync (0 = off)
-	WarnExpiryDays  int           `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
-	SidecarPath     string        `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
-	Receipts        Receipts      `toml:"receipts"`         // optional local hash-chained sync receipts
+	Tailnet         *tailnet.Policy `toml:"tailnet,omitempty"`
+	Role            string          `toml:"role"` // "source" | "sink"
+	Peer            string          `toml:"peer"` // dial target (source) or bind addr (sink)
+	KeyPath         string          `toml:"key_path"`
+	Surfaces        []string        `toml:"surfaces"`
+	Browsers        []BrowserRef    `toml:"browsers"`
+	SecretsDir      string          `toml:"secrets_dir"`       // source: read from; sink: write to
+	KeepassPath     string          `toml:"keepass_path"`      // source: read tagged KeePass entries as named secrets
+	KeepassKeyfile  string          `toml:"keepass_keyfile"`   // key file unlocking the vault (0600)
+	KeepassPassFile string          `toml:"keepass_pass_file"` // optional: file holding the DB password (0600)
+	KeepassTag      string          `toml:"keepass_tag"`       // export only entries with this tag (default "agentpantry")
+	Adapters        []AdapterRef    `toml:"adapters"`
+	Domains         policy.Domain   `toml:"domains"`
+	SecretNames     policy.Names    `toml:"secret_names"`
+	ResyncSeconds   int             `toml:"resync_seconds"`   // source: periodic resync (0 = off)
+	WarnExpiryDays  int             `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
+	SidecarPath     string          `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
+	Receipts        Receipts        `toml:"receipts"`         // optional local hash-chained sync receipts
 }
 
 // Receipts configures the optional append-only sync receipt log.
@@ -109,6 +112,16 @@ func LoadChecked(path string) (Config, []string, error) {
 	var unknown []string
 	for _, k := range md.Undecoded() {
 		unknown = append(unknown, k.String())
+	}
+	if c.Tailnet != nil {
+		if err := c.Tailnet.Validate(); err != nil {
+			return c, unknown, err
+		}
+		for _, k := range unknown {
+			if k == "tailnet" || strings.HasPrefix(k, "tailnet.") {
+				return c, unknown, fmt.Errorf("unknown tailnet key: %s", k)
+			}
+		}
 	}
 	return c, unknown, nil
 }

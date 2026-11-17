@@ -769,11 +769,15 @@ func cmdSink(args []string) error {
 	// Mirror doctor's bind check at the moment it matters: a wide bind hands
 	// the network an unauthenticated pre-auth surface (connection slots, frame
 	// allocations, key probing) even though frames still require the PSK.
-	if !doctor.IsLoopbackBind(c.Peer) {
+	bind, authorize, err := prepareTailnet(ctx, c.Peer, c.Tailnet)
+	if err != nil {
+		return err
+	}
+	if !doctor.IsLoopbackBind(bind) && !(doctor.IsTailnetBind(bind) && c.Tailnet != nil) {
 		fmt.Fprintf(os.Stderr, "warning: binding %s exposes the sink beyond loopback\n", c.Peer)
 	}
 
-	ln, err := net.Listen("tcp", c.Peer)
+	ln, err := net.Listen("tcp", bind)
 	if err != nil {
 		return err
 	}
@@ -785,66 +789,41 @@ func cmdSink(args []string) error {
 		_ = ln.Close()
 	}()
 
-	// Serve each connection in its own goroutine so one stalled peer cannot
-	// block new sources, bounded by a semaphore so an accept flood cannot spawn
-	// unbounded goroutines. Surface application stays serialized via a shared
-	// mutex: surfaces are not safe for concurrent use.
 	var applyMu sync.Mutex
-	sem := make(chan struct{}, maxSinkConns)
-	for {
-		// Acquire a slot before accepting so a just-accepted connection is never
-		// parked without deadlines waiting for capacity, and shutdown is not
-		// blocked behind a full semaphore.
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			return nil
+	return sink.ServeListener(ctx, ln, maxSinkConns, authorize, func(conn net.Conn) {
+		// Issue a fresh per-connection salt so frames from one session cannot
+		// be replayed into another, and so a reconnecting source is not
+		// rejected. Bound the handshake write so a stuck peer is reaped.
+		if err := conn.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			fmt.Fprintln(os.Stderr, "handshake deadline failed:", err)
+			return
 		}
-		conn, err := ln.Accept()
-		if err != nil {
-			<-sem
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
+		salt, herr := transport.SendSalt(conn)
+		if herr != nil {
+			fmt.Fprintln(os.Stderr, "handshake failed:", herr)
+			return
 		}
-		go func(conn net.Conn) {
-			defer func() { <-sem }()
-			defer func() { _ = conn.Close() }()
-			// Issue a fresh per-connection salt so frames from one session cannot
-			// be replayed into another, and so a reconnecting source is not
-			// rejected. Bound the handshake write so a stuck peer is reaped.
-			if err := conn.SetWriteDeadline(time.Now().Add(handshakeTimeout)); err != nil {
-				fmt.Fprintln(os.Stderr, "handshake deadline failed:", err)
-				return
-			}
-			salt, herr := transport.SendSalt(conn)
-			if herr != nil {
-				fmt.Fprintln(os.Stderr, "handshake failed:", herr)
-				return
-			}
-			if err := conn.SetWriteDeadline(time.Time{}); err != nil { // clear; Serve is a long-lived stream
-				return
-			}
-			opener, oerr := newSinkOpener(c.KeyPath, salt)
-			if oerr != nil {
-				fmt.Fprintln(os.Stderr, "session setup failed:", oerr)
-				return
-			}
-			srv := &sink.Server{
-				Opener:          opener,
-				CookieSurfaces:  cookieSurfaces,
-				SecretSurfaces:  secretSurfaces,
-				StorageSurfaces: storageSurfaces,
-				AuthTimeout:     authTimeout,
-				ApplyMu:         &applyMu,
-				AfterApply:      receiptHook(c, *cfgPath, receipt.EventApply),
-			}
-			if err := srv.Serve(ctx, conn); err != nil {
-				fmt.Fprintln(os.Stderr, "connection ended:", err)
-			}
-		}(conn)
-	}
+		if err := conn.SetWriteDeadline(time.Time{}); err != nil { // clear; Serve is a long-lived stream
+			return
+		}
+		opener, oerr := newSinkOpener(c.KeyPath, salt)
+		if oerr != nil {
+			fmt.Fprintln(os.Stderr, "session setup failed:", oerr)
+			return
+		}
+		srv := &sink.Server{
+			Opener:          opener,
+			CookieSurfaces:  cookieSurfaces,
+			SecretSurfaces:  secretSurfaces,
+			StorageSurfaces: storageSurfaces,
+			AuthTimeout:     authTimeout,
+			ApplyMu:         &applyMu,
+			AfterApply:      receiptHook(c, *cfgPath, receipt.EventApply),
+		}
+		if err := srv.Serve(ctx, conn); err != nil {
+			fmt.Fprintln(os.Stderr, "connection ended:", err)
+		}
+	})
 }
 
 func cmdInstallService(args []string) error {
