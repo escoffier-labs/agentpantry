@@ -286,3 +286,52 @@ Stdio has no network peer and retains its existing salt direction. PSK checks,
 per-connection salt plus HKDF, strictly monotonic replay counters, deny-wins
 domain and secret-name policy, 0600 file modes, and the dual-key rotation grace
 window are unchanged.
+
+## 1Password CLI source
+
+The service-account token has the same handling class as a KeePass key file.
+Use a dedicated read-only account limited to one dedicated vault. All vaults
+readable by that account are in the token's blast radius. Exact tag matching is
+selection inside the pinned vault. It cannot restrict the account permissions.
+
+The token is opened once per poll. Unix uses a no-follow, nonblocking open and
+checks the descriptor for a regular file, current-user ownership and private
+mode bits. Windows rejects reparse points and checks the opened handle's owner
+and DACL. Only the current user, SYSTEM and Administrators may receive grants.
+The file is read with a size bound, allowing rotation between polls.
+
+Each child receives only the token, private config directory and private HOME.
+Windows also receives APPDATA, LOCALAPPDATA, TEMP and TMP pointing into that
+directory, and SystemRoot. Nothing else is inherited. Every invocation passes
+`--cache=false`. Its working directory and config directory are a private
+per-poll directory removed after the poll. Windows installs a protected DACL.
+
+A same-UID process can inspect the child's token environment and can already
+read the token file. Tokens and secret values can enter core or crash dumps.
+Go provides no zeroization guarantee. Operators must control same-UID processes
+and crash collection. No raw child stdout, stderr, exit text or crash output is
+returned in diagnostics. Errors use fixed categories and token text is redacted
+before error classification.
+
+The canonical CLI binary is trusted with the token. Identity pinning and binary
+and parent-directory permission checks detect replacement between calls. These
+checks do not eliminate same-UID modification, privileged tampering or the race
+between checking a path and executing it. A source restart accepts a newly
+validated binary. CLI versions older than 2.18.0 are rejected.
+
+Output, per-value, item-count, inventory and time limits bound a poll below the
+8 MiB transport frame cap. Any failed list/get or parse discards the candidate
+cache and inventory. Only a complete successful read commits new state. The
+source's existing unavailable-reader and cross-source collision behavior keeps
+the sink's last set. A rate limit postpones requests for one polling window.
+Deletion requires absence on 2 independently successful polls. This delays
+intentional revocation. Renames retain the old name during confirmation.
+
+Unix timeout and output-limit cancellation kill the process group. Windows
+starts a suspended child, assigns it to a kill-on-close Job Object, then resumes
+it. Assignment failure terminates the suspended child. Closing the job kills
+its descendants. Windows uses ACLs and Job Objects in place of Unix modes and
+process groups. Windows tests require a Windows runner for execution.
+
+Session salt, HKDF keys, replay counters, deny-wins policies, 0600 secret files
+and the sink's dual-key rotation window are unchanged.
