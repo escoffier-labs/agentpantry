@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/privfile"
 	"github.com/escoffier-labs/agentpantry/internal/tailnet"
@@ -40,24 +41,25 @@ type AdapterRef struct {
 
 // Config is the on-disk configuration for either role.
 type Config struct {
-	Tailnet         *tailnet.Policy `toml:"tailnet,omitempty"`
-	Role            string          `toml:"role"` // "source" | "sink"
-	Peer            string          `toml:"peer"` // dial target (source) or bind addr (sink)
-	KeyPath         string          `toml:"key_path"`
-	Surfaces        []string        `toml:"surfaces"`
-	Browsers        []BrowserRef    `toml:"browsers"`
-	SecretsDir      string          `toml:"secrets_dir"`       // source: read from; sink: write to
-	KeepassPath     string          `toml:"keepass_path"`      // source: read tagged KeePass entries as named secrets
-	KeepassKeyfile  string          `toml:"keepass_keyfile"`   // key file unlocking the vault (0600)
-	KeepassPassFile string          `toml:"keepass_pass_file"` // optional: file holding the DB password (0600)
-	KeepassTag      string          `toml:"keepass_tag"`       // export only entries with this tag (default "agentpantry")
-	Adapters        []AdapterRef    `toml:"adapters"`
-	Domains         policy.Domain   `toml:"domains"`
-	SecretNames     policy.Names    `toml:"secret_names"`
-	ResyncSeconds   int             `toml:"resync_seconds"`   // source: periodic resync (0 = off)
-	WarnExpiryDays  int             `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
-	SidecarPath     string          `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
-	Receipts        Receipts        `toml:"receipts"`         // optional local hash-chained sync receipts
+	OnePassword     *onepassword.Config `toml:"onepassword,omitempty"`
+	Tailnet         *tailnet.Policy     `toml:"tailnet,omitempty"`
+	Role            string              `toml:"role"` // "source" | "sink"
+	Peer            string              `toml:"peer"` // dial target (source) or bind addr (sink)
+	KeyPath         string              `toml:"key_path"`
+	Surfaces        []string            `toml:"surfaces"`
+	Browsers        []BrowserRef        `toml:"browsers"`
+	SecretsDir      string              `toml:"secrets_dir"`       // source: read from; sink: write to
+	KeepassPath     string              `toml:"keepass_path"`      // source: read tagged KeePass entries as named secrets
+	KeepassKeyfile  string              `toml:"keepass_keyfile"`   // key file unlocking the vault (0600)
+	KeepassPassFile string              `toml:"keepass_pass_file"` // optional: file holding the DB password (0600)
+	KeepassTag      string              `toml:"keepass_tag"`       // export only entries with this tag (default "agentpantry")
+	Adapters        []AdapterRef        `toml:"adapters"`
+	Domains         policy.Domain       `toml:"domains"`
+	SecretNames     policy.Names        `toml:"secret_names"`
+	ResyncSeconds   int                 `toml:"resync_seconds"`   // source: periodic resync (0 = off)
+	WarnExpiryDays  int                 `toml:"warn_expiry_days"` // source: warn on cookies expiring within N days (0 = off)
+	SidecarPath     string              `toml:"sidecar_path"`     // sink: override the sidecar.db path (default: config dir)
+	Receipts        Receipts            `toml:"receipts"`         // optional local hash-chained sync receipts
 }
 
 // Receipts configures the optional append-only sync receipt log.
@@ -112,6 +114,18 @@ func LoadChecked(path string) (Config, []string, error) {
 	// TOML field matching is case-insensitive. Reject security-section typos
 	// explicitly, even when the decoder would otherwise recognize them.
 	for _, k := range md.Keys() {
+		if len(k) > 0 && strings.EqualFold(k[0], "onepassword") {
+			if k[0] != "onepassword" {
+				return c, nil, fmt.Errorf("section must be exactly [onepassword]")
+			}
+			if len(k) == 2 {
+				switch k[1] {
+				case "vault", "tag", "field", "token_file", "op_path", "poll_seconds", "max_items", "max_value_bytes":
+				default:
+					return c, nil, fmt.Errorf("unknown onepassword key: %s", k.String())
+				}
+			}
+		}
 		if len(k) > 0 && strings.EqualFold(k[0], "tailnet") && k[0] != "tailnet" {
 			return c, nil, fmt.Errorf("section must be exactly [tailnet]: %s", k[0])
 		}
@@ -135,6 +149,16 @@ func LoadChecked(path string) (Config, []string, error) {
 		for _, k := range unknown {
 			if k == "tailnet" || strings.HasPrefix(k, "tailnet.") {
 				return c, unknown, fmt.Errorf("unknown tailnet key: %s", k)
+			}
+		}
+	}
+	if c.OnePassword != nil {
+		if err := c.OnePassword.Validate(); err != nil {
+			return c, unknown, err
+		}
+		for _, k := range unknown {
+			if strings.HasPrefix(k, "onepassword.") {
+				return c, unknown, fmt.Errorf("unknown onepassword key: %s", k)
 			}
 		}
 	}

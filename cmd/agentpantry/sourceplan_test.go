@@ -16,6 +16,7 @@ import (
 
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
+	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 )
 
@@ -712,5 +713,20 @@ func TestSourcePlanStatFailureDiagnostics(t *testing.T) {
 				t.Fatalf("want invalid cookie store, got %s", p.Browsers[0].StoreCheck)
 			}
 		})
+	}
+}
+
+func TestOnePasswordDryRunNeverOpensTokenOrRunsOp(t *testing.T) {
+	dir, c := planFixture(t)
+	c.OnePassword = &onepassword.Config{Vault: "dedicated", Tag: "agentpantry", Field: "password", TokenFile: filepath.Join(dir, "nonexistent-token"), OpPath: filepath.Join(dir, "nonexistent-op"), PollSeconds: 300}
+	p := buildSourcePlan(filepath.Join(dir, "config.toml"), c, false, false, nil)
+	if p.ResyncSeconds != 300 || p.SecretSources.OnePassword == nil {
+		t.Fatal("missing polling or source")
+	}
+	if _, err := os.Stat(c.OnePassword.TokenFile); !os.IsNotExist(err) {
+		t.Fatal("token touched")
+	}
+	if !strings.Contains(renderPlan(t, p, false), "not contacted") {
+		t.Fatal("missing disclosure")
 	}
 }

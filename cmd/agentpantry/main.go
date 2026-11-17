@@ -26,6 +26,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/ffvault"
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/policy"
 	"github.com/escoffier-labs/agentpantry/internal/receipt"
 	"github.com/escoffier-labs/agentpantry/internal/secretsrc"
@@ -395,6 +396,10 @@ func cmdSource(args []string) error {
 		}
 	}
 
+	if c.OnePassword != nil {
+		secretReaders = append(secretReaders, &onepassword.Reader{Config: *c.OnePassword})
+	}
+
 	var storageReaders []source.StorageReader
 	for _, b := range c.Browsers {
 		if !b.CaptureLocalStorage {
@@ -407,6 +412,9 @@ func cmdSource(args []string) error {
 	}
 
 	resync := time.Duration(c.ResyncSeconds) * time.Second
+	if c.OnePassword != nil && resync == 0 {
+		resync = time.Duration(c.OnePassword.PollSeconds) * time.Second
+	}
 	hasCDP := false
 	for _, b := range c.Browsers {
 		if b.Kind == "cdp" {

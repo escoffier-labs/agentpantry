@@ -424,3 +424,5 @@ Restrict the sink port to the source tag with a Tailscale grant or ACL as well.
 ## Acknowledgements
 
 Hat tip to [agentcookie](https://github.com/mvanhorn/agentcookie) for the spark.
+
+For tagged 1Password service-account secrets, see [source configuration](docs/configuring-sources.md#1password-service-account).

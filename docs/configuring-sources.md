@@ -54,3 +54,63 @@ user unit and prints the commands to enable it.
 The `examples/` directory has copyable source and sink configs for Chromium,
 Firefox, CDP, local script-driven captures, Hermes Agent, GitHub CLI, OpenClaw,
 and SSH stdio transport.
+
+## 1Password service account
+
+Use a dedicated read-only service account granted access to one dedicated vault.
+Every vault readable by the token is in its blast radius. The tag selects items
+inside that vault. It does not restrict the token's authority.
+
+Install 1Password CLI 2.18.0 or later. Store the service-account token in a private
+regular file owned by the running user, with no group or other permission bits
+on Unix. On Windows, grant access only to the current user, SYSTEM and
+Administrators. Do not put the token in TOML, command arguments or the parent's
+environment.
+
+```toml
+[onepassword]
+vault = "Agent Pantry"
+tag = "agentpantry"
+token_file = "~/.config/agentpantry/op-token"
+field = "password"
+op_path = "/usr/bin/op" # optional, otherwise resolved once from PATH
+poll_seconds = 300
+max_items = 200
+max_value_bytes = 65536
+```
+
+All 8 keys are case-sensitive. Unknown keys and blank required strings fail
+configuration loading. Polling has a minimum of 60 seconds. If `resync_seconds`
+is 0, the source timer uses `poll_seconds`. File events and faster source timers
+serve the cached inventory until the next poll deadline.
+
+The CLI path is resolved once to an absolute canonical regular file. On Unix,
+the binary and all its parent directories must have no group or other write
+bits. Windows checks ACLs for write grants. Each execution checks file identity,
+size and modification time against the pinned binary. An upgrade requires a
+source restart.
+
+A poll resolves the vault to an ID and pins it for the reader's lifetime. It
+lists that whole vault, matches exact tag elements locally, and fetches the
+configured field only for new or changed item versions. Item titles become
+secret names under the existing deny-wins `[secret_names]` policy. Missing or
+ambiguous fields, invalid names, duplicate titles, list/get failures and limits
+fail the whole read. Cross-source name collisions suppress the secret diff.
+The sink retains its previous secrets on failures.
+
+An absent name is deleted only after 2 independently successful polls. Cached
+reads do not confirm a deletion. Renaming a title exports the new name while
+retaining the old value until the second successful absence confirms its delete.
+An empty list after a populated list follows the same confirmation rule.
+Rate limits fail the read and defer another attempt for one poll interval.
+
+Each call has a 20-second timeout. A whole poll has a 120-second timeout.
+Stdout is capped at 4 MiB and stderr at 64 KiB. Values default to 64 KiB each.
+The complete retained inventory must stay below 4 MiB, including JSON encoding.
+`max_items` counts the whole vault, including unselected items. Its maximum is
+10,000. `max_value_bytes` cannot exceed 4 MiB. `poll_seconds` cannot exceed 86,400.
+
+`doctor` checks the binary, version, token file and live vault inventory, and
+reports the tagged item count without fetching field values. It warns when the
+source timer default applies. `source --dry-run` discloses the configured vault,
+tag and field without opening the token file or running `op`.

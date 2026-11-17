@@ -14,6 +14,7 @@ import (
 	"github.com/escoffier-labs/agentpantry/internal/config"
 	"github.com/escoffier-labs/agentpantry/internal/keepass"
 	"github.com/escoffier-labs/agentpantry/internal/keyfile"
+	"github.com/escoffier-labs/agentpantry/internal/onepassword"
 	"github.com/escoffier-labs/agentpantry/internal/receipt"
 	"github.com/escoffier-labs/agentpantry/internal/tailnet"
 	"github.com/escoffier-labs/agentpantry/internal/vault"
@@ -210,6 +211,18 @@ func Run(c config.Config) []Check {
 				} else {
 					checks = append(checks, Check{"keepass", OK, fmt.Sprintf("%d secret(s) from %s (tag: %s)", len(ss), c.KeepassPath, c.KeepassTagOrDefault())})
 				}
+			}
+		}
+		if c.OnePassword != nil {
+			r := &onepassword.Reader{Config: *c.OnePassword}
+			n, err := r.Inspect(context.Background())
+			if err != nil {
+				checks = append(checks, Check{"onepassword", Fail, err.Error()})
+			} else {
+				checks = append(checks, Check{"onepassword", OK, fmt.Sprintf("binary, token and vault checked: %d tagged item(s), no values read", n)})
+			}
+			if c.ResyncSeconds == 0 {
+				checks = append(checks, Check{"onepassword:timer", Warn, fmt.Sprintf("resync defaults to %d seconds", c.OnePassword.PollSeconds)})
 			}
 		}
 		hasChromium := false

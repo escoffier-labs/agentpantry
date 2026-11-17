@@ -182,3 +182,12 @@ func TestSyncOnceCollisionFallbackKindForUnnamedReader(t *testing.T) {
 		t.Fatalf("unnamed readers should fall back to reader#N: %q", stderr)
 	}
 }
+
+func TestOnePasswordCollision(t *testing.T) {
+	prior := []secret.Secret{{Name: "API", Value: "retained"}}
+	p, stderr, s := runCollisionCycle(t, prior, kindedSecrets{kind: "onepassword", ss: []secret.Secret{{Name: "API", Value: "op-value"}}}, kindedSecrets{kind: "secrets_dir", ss: []secret.Secret{{Name: "API", Value: "dir-value"}}})
+	assertSecretsUntouched(t, p, s, prior)
+	if !strings.Contains(stderr, "onepassword") || strings.Contains(stderr, "op-value") {
+		t.Fatal("collision diagnostic")
+	}
+}
