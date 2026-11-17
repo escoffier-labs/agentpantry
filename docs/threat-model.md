@@ -243,3 +243,39 @@ long-lived PSK, so pairing does not add forward secrecy.
   memory for the invocation; zeroization is not implemented (same as PSK and
   session keys). `run` does not shrink secrets already written by the on-disk
   `secrets` surface.
+
+## Tailnet identity gate
+
+The optional `[tailnet]` policy adds network peer authentication bound to the
+Tailscale node key before any agentpantry byte is sent by the sink or pairing
+listener. It does not replace the PSK: a compromised allowed node still needs
+the PSK to sync. A compromised local tailscaled defeats the gate, which is why
+the PSK stays mandatory. Pairing still uses the one-time SPAKE2 code.
+
+The shared CGNAT range `100.64.0.0/10` alone proves no Tailscale identity. The gate
+requires the accepted socket's local IP to be a current self Tailscale address,
+then binds WhoIs Node.Addresses to the exact remote IP, including IPv4-mapped
+normalization. Remote addresses must be in that CGNAT range or
+`fd7a:115c:a1e0::/48`. Missing fields, errors, malformed addresses and timeouts
+all deny. LocalAPI must be reachable and Running before listening or printing a
+pairing code. Lookups have a three-second deadline, a global four-lookup limit
+independent of sink connection slots, and same-IP singleflight coalescing.
+There is no positive cache. Denials are cached for 15 seconds in a bounded map.
+Revocation and tag changes affect the next lookup. Denials close with zero bytes
+and produce at most one generic stderr line per second with remote IP and known
+StableID, never a mutable name as the primary identifier. Pairing denials consume
+no code attempts.
+
+Prefer StableIDs for individual nodes. Tags are role identities and are safe only
+with tight `tagOwners`. A numeric UserID authorizes every untagged device of that
+user. Tagged nodes cannot match UserIDs. Mutable node names, MagicDNS names and
+login names never authorize connections. Operators should restrict the sink port
+to the source tag using a Tailscale grant or ACL as defense in depth.
+
+`allow_loopback = true` is an explicit bypass on a loopback listener for loopback
+peers. It trusts every local process and any SSH tunnel terminating locally and
+does not verify Tailscale identity. Doctor and startup report this bypass.
+Stdio has no network peer and retains its existing salt direction. PSK checks,
+per-connection salt plus HKDF, strictly monotonic replay counters, deny-wins
+domain and secret-name policy, 0600 file modes, and the dual-key rotation grace
+window are unchanged.
