@@ -588,8 +588,10 @@ the vault never leaves the machine. `[secret_names]` still applies on top.
 Untagging an entry propagates as a delete on the sink. Unlock is
 non-interactive via a 0600 key file (add one in KeePassXC under Database
 Security), so the source runs headless. If the same name comes from both
-`secrets_dir` and the vault, pick one source per name; the merge order is
-otherwise unspecified. A vault that is temporarily unreadable leaves
+`secrets_dir` and the vault (or a name repeats within one source), that
+cycle's secret read fails like an unreadable source: stderr names the colliding
+secret and the sources involved (never values), and the sink keeps what it has
+until you remove the duplicate. A vault that is temporarily unreadable leaves
 already-synced secrets on the sink untouched for that cycle.
 
 On the sink, enable the `secrets` surface and set `secrets_dir` to the

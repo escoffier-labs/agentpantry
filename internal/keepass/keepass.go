@@ -30,6 +30,9 @@ type Reader struct {
 	decodes int // decrypt count, observed by tests
 }
 
+// Kind names this source in collision reports.
+func (r *Reader) Kind() string { return "keepass" }
+
 // ReadSecrets implements source.SecretReader. The KDBX KDF is deliberately
 // slow, so results are cached until the vault file's mtime changes. The
 // mtime recorded is the one from before the read: if the vault is replaced

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/escoffier-labs/agentpantry/internal/cookie"
@@ -25,6 +27,14 @@ type CookieReader interface {
 // SecretReader yields the current secrets from one source.
 type SecretReader interface {
 	ReadSecrets(ctx context.Context) ([]secret.Secret, error)
+}
+
+// KindedSecretReader is an optional extension of SecretReader. A reader that
+// implements it names itself (for example "secrets_dir" or "keepass") so a
+// secret name collision can say which sources produced the name.
+type KindedSecretReader interface {
+	SecretReader
+	Kind() string
 }
 
 // StorageReader yields the current localStorage items from one source.
@@ -90,6 +100,41 @@ func filterSecrets(in []secret.Secret, p policy.Names) []secret.Secret {
 	return out
 }
 
+// readerKind labels reader i for collision reports.
+func readerKind(r SecretReader, i int) string {
+	if k, ok := r.(KindedSecretReader); ok {
+		return k.Kind()
+	}
+	return fmt.Sprintf("reader#%d", i)
+}
+
+// secretCollisions reports every secret name produced more than once, either
+// by different readers or repeatedly by one. perReader[i] holds what reader i
+// returned and kinds[i] labels it. The result is one human-readable string per
+// colliding name, sorted by name, listing the producing reader kinds once per
+// occurrence. It carries names and kinds only, never values.
+func secretCollisions(perReader [][]secret.Secret, kinds []string) []string {
+	owners := make(map[string][]string)
+	for i, ss := range perReader {
+		for _, s := range ss {
+			owners[s.Name] = append(owners[s.Name], kinds[i])
+		}
+	}
+	var names []string
+	for name, o := range owners {
+		if len(o) > 1 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		// %q keeps a hostile file name or entry title from forging log lines.
+		out = append(out, fmt.Sprintf("%q (%s)", name, strings.Join(owners[name], ", ")))
+	}
+	return out
+}
+
 // SyncOnce performs a single read-diff-send cycle.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	var allCookies []cookie.Cookie
@@ -108,20 +153,38 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	cookieDiff := curCookies.DiffFrom(s.prev)
 
 	var allSecrets []secret.Secret
+	perReader := make([][]secret.Secret, 0, len(s.Secrets))
+	kinds := make([]string, 0, len(s.Secrets))
 	secretsUnavailable := false
-	for _, r := range s.Secrets {
+	for i, r := range s.Secrets {
 		ss, err := r.ReadSecrets(ctx)
 		if err != nil {
 			secretsUnavailable = true
 			break
 		}
+		perReader = append(perReader, ss)
+		kinds = append(kinds, readerKind(r, i))
 		allSecrets = append(allSecrets, ss...)
+	}
+
+	// Check for duplicate names BEFORE the [secret_names] policy filter, so a
+	// collision is reported even when one copy would be filtered out: the
+	// ambiguity is in the source configuration and would resurface the moment
+	// the policy changes, and last-writer-wins would otherwise pick a value by
+	// reader order.
+	var collisions []string
+	if !secretsUnavailable {
+		collisions = secretCollisions(perReader, kinds)
 	}
 
 	var secretDiff secret.Diff
 	secretsCommitted := false
 	var curSecrets secret.Snapshot
-	if secretsUnavailable {
+	if len(collisions) > 0 {
+		// Same unavailable semantics as a failed read: no secret diff, so the
+		// sink keeps what it has and no deletes are sent. Cookies still proceed.
+		fmt.Fprintf(os.Stderr, "agentpantry: secret name collision across sources, leaving synced secrets untouched this cycle: %s\n", strings.Join(collisions, "; "))
+	} else if secretsUnavailable {
 		// A source secrets read failed (e.g. a vanished/unmounted dir). Leave the
 		// already-synced secrets on the sink untouched this cycle instead of
 		// emitting deletes for everything. Cookies still proceed.
