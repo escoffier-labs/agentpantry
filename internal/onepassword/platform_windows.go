@@ -1,9 +1,13 @@
 package onepassword
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -24,28 +28,47 @@ func trustedACL(h windows.Handle, private bool) error {
 	}
 	system, _ := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
 	admins, _ := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
-	trusted := func(s *windows.SID) bool { return s.Equals(user.User.Sid) || s.Equals(system) || s.Equals(admins) }
+	// TrustedInstaller owns system-managed binary directories on standard Windows installs.
+	var installer *windows.SID
+	if !private {
+		installer, _, _, _ = windows.LookupSID("", "NT SERVICE\\TrustedInstaller")
+	}
+	trusted := func(s *windows.SID) bool {
+		return s.Equals(user.User.Sid) || s.Equals(system) || s.Equals(admins) || (!private && installer != nil && s.Equals(installer))
+	}
 	owner, _, err := sd.Owner()
-	if err != nil || owner == nil || !trusted(owner) || (private && !owner.Equals(user.User.Sid)) {
+	if err != nil || owner == nil || !trusted(owner) {
 		return fixed("ACL owner rejected")
 	}
 	acl, _, err := sd.DACL()
 	if err != nil || acl == nil {
 		return fixed("ACL rejected")
 	}
+	var info windows.ByHandleFileInformation
+	if windows.GetFileInformationByHandle(h, &info) != nil {
+		return fixed("file rejected")
+	}
+	return checkACL(acl, private, info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0, trusted)
+}
+
+func checkACL(acl *windows.ACL, private, directory bool, trusted func(*windows.SID) bool) error {
+	unsafeMask := windows.ACCESS_MASK(fileDeleteChild | windows.FILE_WRITE_DATA | windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER | windows.GENERIC_WRITE | windows.GENERIC_ALL)
+	if !directory {
+		unsafeMask |= windows.FILE_APPEND_DATA | windows.FILE_WRITE_EA | windows.FILE_WRITE_ATTRIBUTES
+	}
 	for i := uint32(0); i < uint32(acl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if windows.GetAce(acl, i, &ace) != nil {
 			return fixed("ACL rejected")
 		}
-		if ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
+		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 || ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
 			continue
 		}
 		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return fixed("ACL rejected")
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if !trusted(sid) && (private || ace.Mask&(fileDeleteChild|windows.FILE_WRITE_DATA|windows.FILE_APPEND_DATA|windows.FILE_WRITE_EA|windows.FILE_WRITE_ATTRIBUTES|windows.DELETE|windows.WRITE_DAC|windows.WRITE_OWNER|windows.GENERIC_WRITE|windows.GENERIC_ALL) != 0) {
+		if !trusted(sid) && (private || ace.Mask&unsafeMask != 0) {
 			return fixed("ACL rejected")
 		}
 	}
@@ -99,20 +122,45 @@ func checkBinaryPath(path string) error {
 	}
 	return nil
 }
-func secureDir(path string) error {
+func privateDir() (string, error) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return fixed("ACL rejected")
+		return "", fixed("ACL rejected")
 	}
 	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + user.User.Sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if err != nil {
-		return fixed("ACL rejected")
+		return "", fixed("ACL rejected")
 	}
-	acl, _, err := sd.DACL()
+	sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	for range 10 {
+		var nonce [16]byte
+		if _, err = rand.Read(nonce[:]); err != nil {
+			return "", fixed("private directory unavailable")
+		}
+		dir := filepath.Join(os.TempDir(), "agentpantry-op-"+hex.EncodeToString(nonce[:]))
+		p, err := windows.UTF16PtrFromString(dir)
+		if err != nil {
+			return "", err
+		}
+		err = windows.CreateDirectory(p, &sa)
+		if err == windows.ERROR_ALREADY_EXISTS {
+			continue
+		}
+		if err != nil {
+			return "", fixed("private directory unavailable")
+		}
+		return dir, nil
+	}
+	return "", fixed("private directory unavailable")
+}
+func tokenFileError(path string) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
-		return fixed("ACL rejected")
+		return fixed("token file rejected: current user SID unavailable")
 	}
-	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+	// PowerShell single quotes protect spaces and shell metacharacters in the path.
+	p := "'" + strings.ReplaceAll(path, "'", "''") + "'"
+	return fmt.Errorf("onepassword: token file rejected: restrict access to the current user in PowerShell: icacls.exe %s /setowner '*%s'; icacls.exe %s /reset; icacls.exe %s /inheritance:r /grant:r '*%s:(F)'", p, user.User.Sid.String(), p, p, user.User.Sid.String())
 }
 func childEnv(token, dir string) []string {
 	return []string{"OP_SERVICE_ACCOUNT_TOKEN=" + token, "OP_CONFIG_DIR=" + dir, "HOME=" + dir, "APPDATA=" + dir, "LOCALAPPDATA=" + dir, "TEMP=" + dir, "TMP=" + dir, "SystemRoot=" + os.Getenv("SystemRoot")}

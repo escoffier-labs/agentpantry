@@ -74,7 +74,7 @@ func validID(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
 			return false
 		}
 	}
@@ -93,7 +93,7 @@ func parseList(raw []byte, max int) ([]item, error) {
 		return nil, errMalformed
 	}
 	if len(items) > max {
-		return nil, errLimit
+		return nil, fmt.Errorf("onepassword: vault item count %d exceeds max_items %d (counts all items in the vault, not only tagged ones)", len(items), max)
 	}
 	seen := map[string]bool{}
 	for _, i := range items {
@@ -146,17 +146,19 @@ type invoke func(context.Context, string, string, []string) ([]byte, error)
 
 // Reader serializes polls and commits inventory only after a successful complete read.
 type Reader struct {
-	Config    Config
-	mu        sync.Mutex
-	binary    *binary
-	run       invoke
-	vault     string
-	cache     map[string]entry
-	inventory map[string]string
-	absent    map[string]bool
-	next      time.Time
-	lastErr   error
-	now       func() time.Time
+	Config      Config
+	mu          sync.Mutex
+	binary      *binary
+	run         invoke
+	vault       string
+	cache       map[string]entry
+	inventory   map[string]string
+	absent      map[string]bool
+	owners      map[string]string
+	hadSelected bool
+	next        time.Time
+	lastErr     error
+	now         func() time.Time
 }
 
 func (*Reader) Kind() string { return "onepassword" }
@@ -193,7 +195,7 @@ func (r *Reader) session(ctx context.Context) (context.Context, context.CancelFu
 	f, err := openToken(r.Config.TokenFile)
 	if err != nil {
 		cancel()
-		return nil, nil, "", "", errors.New("onepassword: token file rejected")
+		return nil, nil, "", "", tokenFileError(r.Config.TokenFile)
 	}
 	token, err := readToken(f)
 	_ = f.Close()
@@ -201,15 +203,10 @@ func (r *Reader) session(ctx context.Context) (context.Context, context.CancelFu
 		cancel()
 		return nil, nil, "", "", err
 	}
-	dir, err := os.MkdirTemp("", "agentpantry-op-")
+	dir, err := privateDir()
 	if err != nil {
 		cancel()
 		return nil, nil, "", "", errors.New("onepassword: private directory unavailable")
-	}
-	if err = secureDir(dir); err != nil {
-		_ = os.RemoveAll(dir)
-		cancel()
-		return nil, nil, "", "", err
 	}
 	cleanup := func() { cancel(); _ = os.RemoveAll(dir) }
 	if r.vault == "" {
@@ -258,24 +255,25 @@ func (r *Reader) list(ctx context.Context, token, dir string) ([]item, error) {
 func (r *Reader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.clock().Before(r.next) {
+	start := r.clock()
+	if start.Add(time.Second).Before(r.next) {
 		if r.lastErr != nil {
 			return nil, r.lastErr
 		}
 		return snapshot(r.inventory), nil
 	}
-	ctx, cleanup, token, dir, err := r.session(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 	fail := func(err error) ([]secret.Secret, error) {
 		if err.Error() == "onepassword: rate limited" {
-			r.next = r.clock().Add(time.Duration(r.Config.PollSeconds) * time.Second)
+			r.next = start.Add(time.Duration(r.Config.PollSeconds) * time.Second)
 			r.lastErr = err
 		}
 		return nil, err
 	}
+	ctx, cleanup, token, dir, err := r.session(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	defer cleanup()
 	items, err := r.list(ctx, token, dir)
 	if err != nil {
 		return fail(err)
@@ -284,6 +282,7 @@ func (r *Reader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 	current := map[string]string{}
 	absent := map[string]bool{}
 	titles := map[string]bool{}
+	owners := map[string]string{}
 	for _, i := range items {
 		selected := false
 		for _, tag := range i.Tags {
@@ -314,10 +313,19 @@ func (r *Reader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 		e.title = i.Title
 		cache[i.ID] = e
 		current[i.Title] = e.value
+		owners[i.Title] = i.ID
 	}
+	if len(cache) == 0 && r.hadSelected {
+		fmt.Fprintf(os.Stderr, "agentpantry: 1Password selection came back empty (vault ID %q, tag %q), retaining prior secrets\n", r.vault, r.Config.Tag)
+		return fail(fixed("selection came back empty"))
+	}
+	// A name remains owned by its original item until two successful polls
+	// confirm that item's absence under that name, even if another item claims it.
 	for name, value := range r.inventory {
-		if _, ok := current[name]; !ok && !r.absent[name] {
+		owner, selected := owners[name]
+		if (!selected || owner != r.owners[name]) && !r.absent[name] {
 			current[name] = value
+			owners[name] = r.owners[name]
 			absent[name] = true
 		}
 	}
@@ -338,23 +346,31 @@ func (r *Reader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 	r.cache = cache
 	r.inventory = current
 	r.absent = absent
-	r.next = r.clock().Add(time.Duration(r.Config.PollSeconds) * time.Second)
+	r.owners = owners
+	r.hadSelected = r.hadSelected || len(cache) > 0
+	r.next = start.Add(time.Duration(r.Config.PollSeconds) * time.Second)
 	r.lastErr = nil
 	return snapshot(current), nil
 }
 
+// Inspection reports the whole-vault and tagged counts without item values.
+type Inspection struct {
+	VaultItems, TaggedItems, MaxItems int
+	VaultID, Tag                      string
+}
+
 // Inspect checks the binary, token and live inventory without fetching item values.
-func (r *Reader) Inspect(ctx context.Context) (int, error) {
+func (r *Reader) Inspect(ctx context.Context) (Inspection, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ctx, cleanup, token, dir, err := r.session(ctx)
 	if err != nil {
-		return 0, err
+		return Inspection{}, err
 	}
 	defer cleanup()
 	items, err := r.list(ctx, token, dir)
 	if err != nil {
-		return 0, err
+		return Inspection{}, err
 	}
 	n := 0
 	for _, i := range items {
@@ -365,6 +381,6 @@ func (r *Reader) Inspect(ctx context.Context) (int, error) {
 			}
 		}
 	}
-	return n, nil
+	return Inspection{len(items), n, r.Config.MaxItems, r.vault, r.Config.Tag}, nil
 }
 func fixed(category string) error { return fmt.Errorf("onepassword: %s", category) }

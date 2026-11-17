@@ -4,9 +4,11 @@ package onepassword
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -129,10 +131,17 @@ func TestBinaryPathRules(t *testing.T) {
 	if err := os.WriteFile(path, []byte("fixture"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	root := filepath.Dir(path)
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkBinaryPathTo(path, root); err != nil {
+		t.Fatal("positive baseline:", err)
+	}
 	if err := os.Chmod(filepath.Dir(path), 0777); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pinBinary(path); err == nil {
+	if err := checkBinaryPathTo(path, root); err == nil {
 		t.Fatal("writable binary parent accepted")
 	}
 	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
@@ -141,7 +150,60 @@ func TestBinaryPathRules(t *testing.T) {
 	if err := os.Chmod(path, 0777); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pinBinary(path); err == nil {
+	if err := checkBinaryPathTo(path, root); err == nil {
 		t.Fatal("writable binary accepted")
+	}
+}
+
+func checkPrivateDirForTest(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() != 0700 {
+		return fmt.Errorf("directory mode %v", info.Mode().Perm())
+	}
+	return nil
+}
+func TestSetsidEscape(t *testing.T) {
+	if os.Getenv("ONEPASSWORD_DETACH_HELPER") == "1" {
+		child := exec.Command("/bin/sleep", "30")
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Println(child.Process.Pid)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSetsidEscape$")
+	cmd.Env = append(os.Environ(), "ONEPASSWORD_DETACH_HELPER=1")
+	var out strings.Builder
+	cmd.Stdout = &out
+	cleanup, err := startProcess(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err = cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(out.String())
+	if len(fields) == 0 {
+		t.Fatal("no descendant PID")
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Kill()
+	cleanup()
+	if err = child.Signal(syscall.Signal(0)); err != nil {
+		t.Fatal("setsid descendant did not survive group cleanup", err)
 	}
 }

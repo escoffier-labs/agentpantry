@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Tagged 1Password service-account secret source with pinned vault identity, isolated CLI calls, transactional polling, confirmed name release, private token checks, dry-run disclosure and doctor diagnostics.
 - Optional Tailscale identity gates for sink and pairing listeners, `tailnet:` / `tailnet6:` binds, and LocalAPI doctor checks. Sync still requires the PSK.
 - Pin `tailscale.com` v1.102.5 (LocalAPI client only). Its dependency floor raises the Go directive from 1.26.0 to 1.26.6. The toolchain remains go1.26.11.
 - `verify` checks whether a running browser still has a working session for one

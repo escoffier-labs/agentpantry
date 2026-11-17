@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -93,17 +94,28 @@ func TestCacheRenameAndTwoPollDeletion(t *testing.T) {
 	if _, ok := got["API"]; ok {
 		t.Fatal("old title retained")
 	}
-	f.list = "[]"
-	if len(poll(t, r, now)) != 1 {
-		t.Fatal("first empty poll deleted")
+	// Keep one selected item while confirming deletion of another.
+	f.list = `[{"id":"b","title":"KEEP","tags":["agentpantry"],"version":1}]`
+	f.values["b"] = `{"label":"password","value":"keep"}`
+	if got := poll(t, r, now); got["RENAMED"] != "secret" {
+		t.Fatal("first absence deleted")
 	}
 	calls := f.calls
-	if ss, err := r.ReadSecrets(context.Background()); err != nil || len(ss) != 1 || f.calls != calls {
-		t.Fatal("cache read counted as independent poll")
+	if _, err := r.ReadSecrets(context.Background()); err != nil || f.calls != calls {
+		t.Fatal("cache read counted as a poll")
 	}
-	if len(poll(t, r, now)) != 0 {
-		t.Fatal("second poll did not confirm delete")
+	if got := poll(t, r, now); len(got) != 1 || got["KEEP"] != "keep" {
+		t.Fatal("second absence not confirmed")
 	}
+	f.list = "[]"
+	*now = now.Add(301 * time.Second)
+	if ss, err := r.ReadSecrets(context.Background()); err == nil || ss != nil {
+		t.Fatal("empty selection accepted")
+	}
+	if r.inventory["KEEP"] != "keep" {
+		t.Fatal("empty selection committed")
+	}
+
 }
 func TestTransactionalFailures(t *testing.T) {
 	cases := map[string]func(*fake){
@@ -174,12 +186,12 @@ func TestExactTagAndInspect(t *testing.T) {
 	r, f, _ := fixture(t)
 	f.list = strings.Replace(f.list, "agentpantry", "agentpantry/nested", 1)
 	n, err := r.Inspect(context.Background())
-	if err != nil || n != 0 || f.gets != 0 {
+	if err != nil || n.TaggedItems != 0 || n.VaultItems != 1 || n.MaxItems != 200 || f.gets != 0 {
 		t.Fatal(n, err)
 	}
 	f.list = strings.Replace(f.list, "agentpantry/nested", "agentpantry", 1)
 	n, err = r.Inspect(context.Background())
-	if err != nil || n != 1 || f.gets != 0 {
+	if err != nil || n.TaggedItems != 1 || f.gets != 0 {
 		t.Fatal(n, err)
 	}
 }
@@ -289,5 +301,148 @@ func TestCacheCommitsOnlyAfterEveryGetSucceeds(t *testing.T) {
 	f.values["b"] = `{"label":"password","value":"second"}`
 	if got := poll(t, r, now); got["API"] != "changed" || got["SECOND"] != "second" {
 		t.Fatal("retry did not fetch full inventory")
+	}
+}
+
+func TestValidIDAlphabet(t *testing.T) {
+	for s, want := range map[string]bool{"aZ09": true, "a-b": false, "a_b": false, "a b": false, "é": false, "": false, "[": false} {
+		if validID(s) != want {
+			t.Fatal(s)
+		}
+	}
+}
+func TestEmptySelection(t *testing.T) {
+	r, f, now := fixture(t)
+	f.list = "[]"
+	if len(poll(t, r, now)) != 0 {
+		t.Fatal("initial empty selection")
+	}
+	f.list = `[{"id":"a","title":"API","tags":["agentpantry"],"version":1}]`
+	poll(t, r, now)
+	f.list = strings.ReplaceAll(f.list, "agentpantry", "other")
+	*now = now.Add(301 * time.Second)
+	message := captureReaderStderr(t, func() {
+		if ss, err := r.ReadSecrets(context.Background()); err == nil || ss != nil {
+			t.Fatal("empty tagged selection accepted")
+		}
+	})
+	if !strings.Contains(message, "1Password selection came back empty") || !strings.Contains(message, `vault ID "vaultID"`) || !strings.Contains(message, `tag "agentpantry"`) {
+		t.Fatal("missing empty selection context", message)
+	}
+	if r.inventory["API"] != "secret" || len(r.absent) != 0 {
+		t.Fatal("empty selection changed state")
+	}
+}
+func TestNameDisplacement(t *testing.T) {
+	for _, rename := range []bool{false, true} {
+		t.Run(fmt.Sprint(rename), func(t *testing.T) {
+			r, f, now := fixture(t)
+			poll(t, r, now)
+			oldTag, oldTitle := "other", "API"
+			if rename {
+				oldTag = "agentpantry"
+				oldTitle = "Y"
+			}
+			f.list = fmt.Sprintf(`[{"id":"a","title":%q,"tags":[%q],"version":1},{"id":"b","title":"API","tags":["agentpantry"],"version":1}]`, oldTitle, oldTag)
+			f.values["b"] = `{"label":"password","value":"new"}`
+			if got := poll(t, r, now); got["API"] != "secret" || (rename && got["Y"] != "secret") {
+				t.Fatal("old ownership lost", got)
+			}
+			if !r.absent["API"] {
+				t.Fatal("absence not counted")
+			}
+			if got := poll(t, r, now); got["API"] != "new" {
+				t.Fatal("displacement never released", got)
+			}
+		})
+	}
+}
+func TestStartupRateLimitBackoff(t *testing.T) {
+	r, f, now := fixture(t)
+	base := f.invoke
+	r.run = func(ctx context.Context, token, dir string, args []string) ([]byte, error) {
+		if args[0] == "vault" {
+			return nil, fixed("rate limited")
+		}
+		return base(ctx, token, dir, args)
+	}
+	if _, err := r.ReadSecrets(context.Background()); err == nil {
+		t.Fatal("rate limit accepted")
+	}
+	calls := f.calls
+	r.run = base
+	if _, err := r.ReadSecrets(context.Background()); err == nil || f.calls != calls {
+		t.Fatal("startup backoff absent")
+	}
+	*now = now.Add(300 * time.Second)
+	if _, err := r.ReadSecrets(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPollStartAndTolerance(t *testing.T) {
+	r, f, now := fixture(t)
+	base := f.invoke
+	r.run = func(ctx context.Context, token, dir string, args []string) ([]byte, error) {
+		*now = now.Add(100 * time.Millisecond)
+		return base(ctx, token, dir, args)
+	}
+	start := *now
+	if _, err := r.ReadSecrets(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !r.next.Equal(start.Add(300 * time.Second)) {
+		t.Fatal("deadline drifts with call duration")
+	}
+	calls := f.calls
+	*now = start.Add(299500 * time.Millisecond)
+	if _, err := r.ReadSecrets(context.Background()); err != nil || f.calls == calls {
+		t.Fatal("slightly early ticker skipped poll")
+	}
+}
+func TestVaultItemLimitDiagnostic(t *testing.T) {
+	_, err := parseList([]byte(`[{"id":"a"},{"id":"b"}]`), 1)
+	if err == nil || !strings.Contains(err.Error(), "vault item count 2 exceeds max_items 1") || !strings.Contains(err.Error(), "not only tagged") {
+		t.Fatal(err)
+	}
+}
+func TestPrivateDirectory(t *testing.T) {
+	dir, err := privateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if err := checkPrivateDirForTest(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func captureReaderStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	saved := os.Stderr
+	os.Stderr = writer
+	func() { defer func() { os.Stderr = saved; _ = writer.Close() }(); fn() }()
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+func TestNameDisplacementPendingDeletion(t *testing.T) {
+	r, f, now := fixture(t)
+	poll(t, r, now)
+	f.list = `[{"id":"c","title":"KEEP","tags":["agentpantry"],"version":1}]`
+	f.values["c"] = `{"label":"password","value":"keep"}`
+	if got := poll(t, r, now); got["API"] != "secret" {
+		t.Fatal("pending value lost")
+	}
+	f.list = `[{"id":"b","title":"API","tags":["agentpantry"],"version":1}]`
+	f.values["b"] = `{"label":"password","value":"new"}`
+	if got := poll(t, r, now); got["API"] != "new" {
+		t.Fatal("confirmed absence blocked new owner")
 	}
 }

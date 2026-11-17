@@ -324,10 +324,15 @@ Output, per-value, item-count, inventory and time limits bound a poll below the
 cache and inventory. Only a complete successful read commits new state. The
 source's existing unavailable-reader and cross-source collision behavior keeps
 the sink's last set. A rate limit postpones requests for one polling window.
-Deletion requires absence on 2 independently successful polls. This delays
+An empty selection after a non-empty successful poll fails the reader and keeps
+the prior inventory. Names claimed by a new item retain the old value until
+the old item has been absent under that name on 2 successful polls. This delays
 intentional revocation. Renames retain the old name during confirmation.
 
-Unix timeout and output-limit cancellation kill the process group. Windows
+Unix timeout and output-limit cancellation kill the process group. A descendant
+that calls `setsid()` can leave the group and outlive that kill. The Unix control
+bounds the original process group. The Windows Job Object covers the whole tree.
+Windows
 starts a suspended child, assigns it to a kill-on-close Job Object, then resumes
 it. Assignment failure terminates the suspended child. Closing the job kills
 its descendants. Windows uses ACLs and Job Objects in place of Unix modes and

@@ -730,3 +730,25 @@ func TestOnePasswordDryRunNeverOpensTokenOrRunsOp(t *testing.T) {
 		t.Fatal("missing disclosure")
 	}
 }
+
+func TestOnePasswordPlanRedactsPaths(t *testing.T) {
+	dir, c := planFixture(t)
+	c.OnePassword = &onepassword.Config{Vault: "vault", Tag: "tag", Field: "password", TokenFile: "private-token-location", OpPath: "private-binary-location"}
+	for _, auto := range []bool{false, true} {
+		if auto {
+			c.OnePassword.OpPath = ""
+		}
+		p := buildSourcePlan(filepath.Join(dir, "config.toml"), c, false, false, nil)
+		text := renderPlan(t, p, true) + renderPlan(t, p, false)
+		if strings.Contains(text, "private-token-location") || strings.Contains(text, "private-binary-location") {
+			t.Fatal("plan leaks paths")
+		}
+		want := "configured"
+		if auto {
+			want = "auto"
+		}
+		if p.SecretSources.OnePassword.TokenFile != "configured" || p.SecretSources.OnePassword.OpPath != want {
+			t.Fatal("missing presence indicators")
+		}
+	}
+}

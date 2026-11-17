@@ -215,12 +215,7 @@ func Run(c config.Config) []Check {
 		}
 		if c.OnePassword != nil {
 			r := &onepassword.Reader{Config: *c.OnePassword}
-			n, err := r.Inspect(context.Background())
-			if err != nil {
-				checks = append(checks, Check{"onepassword", Fail, err.Error()})
-			} else {
-				checks = append(checks, Check{"onepassword", OK, fmt.Sprintf("binary, token and vault checked: %d tagged item(s), no values read", n)})
-			}
+			checks = append(checks, onePasswordChecks(r.Inspect)...)
 			if c.ResyncSeconds == 0 {
 				checks = append(checks, Check{"onepassword:timer", Warn, fmt.Sprintf("resync defaults to %d seconds", c.OnePassword.PollSeconds)})
 			}
@@ -407,4 +402,16 @@ func tailnetBindCheck(peer string, enforced bool, s tailnet.Status) Check {
 		return Check{"bind", Warn, "every tailnet member can reach the pre-auth surface without [tailnet]"}
 	}
 	return Check{"bind", Warn, fmt.Sprintf("binding %s exposes the sink beyond loopback", peer)}
+}
+
+func onePasswordChecks(inspect func(context.Context) (onepassword.Inspection, error)) []Check {
+	info, err := inspect(context.Background())
+	if err != nil {
+		return []Check{{"onepassword", Fail, err.Error()}}
+	}
+	checks := []Check{{"onepassword", OK, fmt.Sprintf("binary, token and vault checked: %d tagged item(s), vault item count %d / max_items %d (all items, not only tagged ones), no values read", info.TaggedItems, info.VaultItems, info.MaxItems)}}
+	if info.TaggedItems == 0 {
+		checks = append(checks, Check{"onepassword:selection", Warn, fmt.Sprintf("1Password selection came back empty (vault ID %q, tag %q). After a non-empty successful poll this fails the reader. To deliberately remove everything, remove [onepassword].", info.VaultID, info.Tag)})
+	}
+	return checks
 }

@@ -101,7 +101,12 @@ The sink retains its previous secrets on failures.
 An absent name is deleted only after 2 independently successful polls. Cached
 reads do not confirm a deletion. Renaming a title exports the new name while
 retaining the old value until the second successful absence confirms its delete.
-An empty list after a populated list follows the same confirmation rule.
+An empty selected set after a non-empty successful poll fails the reader and
+keeps all prior secrets. The diagnostic names the vault ID and tag. An empty
+first poll is allowed. To deliberately remove everything, remove the
+`[onepassword]` section. If another item claims a name still held by an absent
+item, the old value stays exported until the second successful absence confirms
+release of the name. Duplicate titles in a single selected set still fail.
 Rate limits fail the read and defer another attempt for one poll interval.
 
 Each call has a 20-second timeout. A whole poll has a 120-second timeout.
@@ -112,5 +117,11 @@ The complete retained inventory must stay below 4 MiB, including JSON encoding.
 
 `doctor` checks the binary, version, token file and live vault inventory, and
 reports the tagged item count without fetching field values. It warns when the
-source timer default applies. `source --dry-run` discloses the configured vault,
-tag and field without opening the token file or running `op`.
+source timer default applies and when the selected set is empty. It reports the
+whole vault item count against `max_items`. `source --dry-run` discloses the vault,
+tag and field, with `token_file: configured` and `op_path: configured|auto`.
+It omits token and binary paths, does not open the token file, and never runs `op`.
+On Windows a rejected token diagnostic includes exact PowerShell `icacls.exe`
+commands to reset the ACL and restrict access to the current user. Owners may
+be the current user, SYSTEM or BUILTIN\Administrators. The DACL may grant access
+only to those principals.

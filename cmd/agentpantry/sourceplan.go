@@ -423,7 +423,11 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 	}
 
 	if op := c.OnePassword; op != nil {
-		p.SecretSources.OnePassword = &configOnePasswordPlan{op.Vault, op.Tag, op.Field, op.TokenFile, op.OpPath}
+		opPath := "auto"
+		if op.OpPath != "" {
+			opPath = "configured"
+		}
+		p.SecretSources.OnePassword = &configOnePasswordPlan{op.Vault, op.Tag, op.Field, "configured", opPath}
 		note("1Password configured: plan does not run op or open token_file")
 	}
 	// Mode and resync, matching cmdSource: once mode syncs one time and
@@ -547,7 +551,7 @@ func printSourcePlan(w io.Writer, p sourcePlan, jsonOut bool) error {
 		line("  secrets_dir: disabled")
 	}
 	if op := p.SecretSources.OnePassword; op != nil {
-		line("1Password: vault %s, tag %s, field %s (not contacted)", op.Vault, op.Tag, op.Field)
+		line("1Password: vault %s, tag %s, field %s (not contacted), token_file: %s, op_path: %s", op.Vault, op.Tag, op.Field, op.TokenFile, op.OpPath)
 	}
 	if kp := p.SecretSources.Keepass; kp.Enabled {
 		line("  keepass: %s (present: %t, tag %q)", kp.Path, kp.Present, kp.Tag)
