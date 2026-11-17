@@ -92,6 +92,7 @@ func TestRejectCorruptState(t *testing.T) {
 	}
 }
 func FuzzDecode(f *testing.F) {
+	f.Add([]byte(`{"binding":{"config_path":"/fixture/a.toml","hostname":"fixture","identity":"fixture","peer":"sink:8787","key_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"tombstones":[{"name":"API","expires_unix":1794873600}],"exported_secrets":["CURRENT"]}`))
 	f.Add([]byte(`{"exported_secrets":["API"]}`))
 	f.Add([]byte(`{"last_sync_unix":1}`))
 	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = decode(raw) })

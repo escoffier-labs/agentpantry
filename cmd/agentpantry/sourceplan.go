@@ -449,7 +449,7 @@ func buildSourcePlan(cfgPath string, c config.Config, stdio, once bool, unknownK
 	}
 
 	// Local files a real run would write.
-	p.LocalWrites = append(p.LocalWrites, sourcePlanWrite{Purpose: "state", Path: statePath(cfgPath)})
+	p.LocalWrites = append(p.LocalWrites, sourcePlanWrite{Purpose: "state", Path: statePath(cfgPath)}, sourcePlanWrite{Purpose: "state_lock", Path: statePath(cfgPath) + ".lock"})
 	if c.Receipts.Enabled {
 		logPath := receipt.ResolvePath(c, cfgPath)
 		p.LocalWrites = append(p.LocalWrites,

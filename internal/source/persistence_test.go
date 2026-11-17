@@ -16,11 +16,12 @@ import (
 
 func TestFailedSendDoesNotCommitExportedNames(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	if err := state.Save(path, state.State{ExportedSecrets: []string{"OLD"}}); err != nil {
+	if err := state.Save(path, state.State{Binding: bindingPtr(testBinding(t, path)), ExportedSecrets: []string{"OLD"}}); err != nil {
 		t.Fatal(err)
 	}
 	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
-	s := &Syncer{StatePath: path, Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "NEW", Value: "never-persist-this-value"}}}}, Sealer: sealer, Out: errWriter{err: errors.New("send failed")}}
+	s := &Syncer{StatePath: path, Binding: testBinding(t, path), Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "NEW", Value: "never-persist-this-value"}}}}, Sealer: sealer, Out: errWriter{err: errors.New("send failed")}}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.SyncOnce(context.Background()); err == nil {
 		t.Fatal("send unexpectedly succeeded")
 	}
@@ -36,7 +37,8 @@ func TestReconnectReloadsNamesAndResendsCurrentValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
-	s := &Syncer{StatePath: path, Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "OLD", Value: "value"}}}}, Sealer: sealer, Out: &buf}
+	s := &Syncer{StatePath: path, Binding: testBinding(t, path), Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "OLD", Value: "value"}}}}, Sealer: sealer, Out: &buf}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +59,8 @@ func TestCorruptStateNotRewrittenOnUnavailableRead(t *testing.T) {
 	if err := os.WriteFile(path, bad, 0600); err != nil {
 		t.Fatal(err)
 	}
-	s := &Syncer{StatePath: path, Secrets: []SecretReader{errSecrets{}}}
+	s := &Syncer{StatePath: path, Binding: testBinding(t, path), Secrets: []SecretReader{errSecrets{}}}
+	t.Cleanup(func() { _ = s.Close() })
 	if err := s.SyncOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +77,8 @@ func TestUnreadableStateCannotEmitDeletes(t *testing.T) {
 	}
 	sealer, _ := transport.NewSealer(make([]byte, 32), make([]byte, 16))
 	var buf bytes.Buffer
-	s := &Syncer{StatePath: path, Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "NEW", Value: "fixture-value"}}}}, Sealer: sealer, Out: &buf}
+	s := &Syncer{StatePath: path, Binding: testBinding(t, path), Secrets: []SecretReader{fakeSecrets{ss: []secret.Secret{{Name: "NEW", Value: "fixture-value"}}}}, Sealer: sealer, Out: &buf}
+	t.Cleanup(func() { _ = s.Close() })
 	stderr := captureStderr(t, func() {
 		if err := s.SyncOnce(context.Background()); err == nil {
 			t.Fatal("unwritable state path accepted")
@@ -91,3 +95,13 @@ func TestUnreadableStateCannotEmitDeletes(t *testing.T) {
 		t.Fatal("failed state write committed snapshot")
 	}
 }
+
+func testBinding(t *testing.T, path string) state.Binding {
+	t.Helper()
+	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787", bytes.Repeat([]byte{42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return binding
+}
+func bindingPtr(b state.Binding) *state.Binding { return &b }

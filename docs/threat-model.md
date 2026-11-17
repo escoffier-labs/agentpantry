@@ -344,29 +344,45 @@ and the sink's dual-key rotation window are unchanged.
 
 ## Persistent secret deletion baseline
 
-The source stores sorted exported secret names in its existing 0600
-`state.json`. Values are never persisted there. Names can reveal which
-credentials are configured, so protect and retain this file with the source
-configuration. The file is a trusted local deletion baseline.
+Source deletion state is specific to one config. `a.toml.state.json` and
+`b.toml.state.json` remain separate even when the configs share a directory.
+The 0600 JSON contains names, deletion expiry times and identity metadata.
+Secret values and PSK bytes are never persisted there. Names can reveal which
+credentials are configured, so the file remains trusted local metadata.
 
-After restart or reconnect, the source keeps the restored names separate from
-its empty value snapshot. It sends all current values again, even empty ones,
-and sends explicit deletes for persisted names no longer produced after a
-fully successful secret read. Removing a secret source or untagging entries
-therefore revokes their sink values across restarts. The 1Password
-empty-selection guard still retains the sink set until the operator removes
-that source section or restores a non-empty selection.
+The binding includes the absolute config path, hostname, receipt identity,
+configured sink peer and SHA-256 of a fixed domain-separation label followed by
+the PSK bytes. The label is `agentpantry/source-state/psk-fingerprint/v1` followed
+by a NUL byte. Any mismatch discards both exported names and tombstones as a
+delete baseline. It logs once per source process and rewrites the file only after the next
+successful secret commit. Missing, corrupt, legacy and mismatched state cannot
+authorize baseline deletes. The old shared `state.json` is read only for status
+display and is never migrated as deletion authority.
 
-Reader errors and collisions do not advance the names baseline or emit secret
-deletes. An unreadable or corrupt state file is logged and treated as no
-baseline. It cannot cause deletion, and is rewritten only on the next successful
-secret commit. A missing or legacy names list likewise cannot identify old sink
-secrets. Complete a successful sync before removing an existing source after
-upgrade.
+The source holds an exclusive nonblocking advisory lock on a sibling `.lock`
+file before reading any baseline. Unix uses `flock` and Windows uses
+`LockFileEx`. The lock survives reconnect resets and is held until source exit.
+All baseline reads and read-modify-write commits happen under that lock. A
+second cooperating source for the same config fails fast. Lock files are never
+unlinked by the application. OS handle cleanup releases the lock on a crash.
 
-For a non-empty diff, the stream write must succeed before the new names are
-saved atomically and the in-memory snapshots advance. A failed send preserves
-the old baseline. A failed state write is reported and leaves the in-memory
-baseline uncommitted. This is sender bookkeeping after a successful stream
-write. The protocol has no sink acknowledgement. Session salt, replay protection,
-secret-name policy and secret-file permissions are unchanged.
+After restart or reconnect, restored names stay separate from an empty value
+snapshot. All current values are upserted again, including empty ones, and
+missing names are deleted after a fully successful secret read. Removing a
+secret source or untagging entries therefore revokes their sink values across
+restarts. Reader errors, cross-source collisions and the 1Password
+empty-selection error suppress the entire secret diff, including tombstone
+replays.
+
+Every successful delete send records a names-only tombstone expiring 7 days
+after its first send. Full resends on reconnect or restart replay unexpired
+tombstones, and repeated sink deletes are idempotent. Replays keep the original
+expiry. Reappearing permitted names clear their tombstones. A failed send does
+not commit names or tombstones. A failed state write is reported and leaves the
+in-memory baseline uncommitted.
+
+The protocol has no sink acknowledgement. Tombstones provide a bounded retry
+window when the sink crashes between stream write and apply. Deletes lost
+without a reconnect or restart during that window may need operator cleanup.
+State binding, writer exclusion and tombstones preserve session salt, replay
+protection, deny-wins policy, secret-file permissions and dual-key rotation.

@@ -27,9 +27,14 @@ func TestEmptySelectionThenSourceRemovalRevokesAtSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &source.Syncer{Secrets: []source.SecretReader{r}, StatePath: path}
+	binding, err := state.NewBinding(path+".toml", "fixture", "sink:8787", bytes.Repeat([]byte{24}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &source.Syncer{Binding: binding, Secrets: []source.SecretReader{r}, StatePath: path}
 	cycle := func(s *source.Syncer) wire.Payload {
 		t.Helper()
+		defer s.Close()
 		var handshake, frames bytes.Buffer
 		salt, err := transport.SendSalt(&handshake)
 		if err != nil {
@@ -78,7 +83,7 @@ func TestEmptySelectionThenSourceRemovalRevokesAtSink(t *testing.T) {
 	if err != nil || bytes.Contains(raw, []byte("unique-op-fixture-value")) {
 		t.Fatal("state contains value bytes", err)
 	}
-	restarted := &source.Syncer{StatePath: path}
+	restarted := &source.Syncer{StatePath: path, Binding: binding}
 	if p := cycle(restarted); len(p.Secrets.Deletes) != 1 || p.Secrets.Deletes[0] != "API" {
 		t.Fatal("restart omitted delete", p.Secrets)
 	}

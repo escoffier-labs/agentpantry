@@ -170,7 +170,7 @@ func TestSourcePlanReadyDisclosesWithoutReadingValues(t *testing.T) {
 	for _, w := range p.LocalWrites {
 		writes[w.Purpose] = w.Path
 	}
-	if writes["state"] != filepath.Join(dir, "state.json") || writes["receipts"] != filepath.Join(dir, "receipts.jsonl") {
+	if writes["state"] != statePath(cfgPath) || writes["state_lock"] != statePath(cfgPath)+".lock" || writes["receipts"] != filepath.Join(dir, "receipts.jsonl") {
 		t.Fatalf("local writes wrong: %+v", p.LocalWrites)
 	}
 

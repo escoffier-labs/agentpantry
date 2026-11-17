@@ -301,10 +301,9 @@ func loadConfigWarnKeys(path string) (config.Config, []string, error) {
 	return c, unknown, nil
 }
 
-// statePath puts state.json beside the resolved config file so two sources with
-// different configs do not stomp a single shared state.
+// statePath isolates every config, including profiles sharing a directory.
 func statePath(cfgPath string) string {
-	return filepath.Join(filepath.Dir(cfgPath), "state.json")
+	return state.PathForConfig(cfgPath)
 }
 
 func buildVaults(c config.Config) ([]source.CookieReader, []string, error) {
@@ -367,6 +366,15 @@ func cmdSource(args []string) error {
 	if err != nil {
 		return err
 	}
+	binding, err := state.NewBinding(*cfgPath, receipt.Identity(c), c.Peer, key)
+	if err != nil {
+		return err
+	}
+	syncer := &source.Syncer{StatePath: statePath(*cfgPath), Binding: binding}
+	if err = syncer.OpenState(); err != nil {
+		return err
+	}
+	defer func() { _ = syncer.Close() }()
 	vs, paths, err := buildVaults(c)
 	if err != nil {
 		return err
@@ -426,16 +434,13 @@ func cmdSource(args []string) error {
 		fmt.Fprintf(os.Stderr, "agentpantry: cdp source detected, defaulting resync to %ds\n", int(defaultCDPResync.Seconds()))
 	}
 
-	sp := statePath(*cfgPath)
-	syncer := &source.Syncer{
-		Vaults:       vs,
-		Secrets:      secretReaders,
-		Storage:      storageReaders,
-		Policy:       c.Domains,
-		SecretPolicy: c.SecretNames,
-		StatePath:    sp,
-		AfterPayload: receiptHook(c, *cfgPath, receipt.EventSend),
-	}
+	syncer.Vaults = vs
+	syncer.Secrets = secretReaders
+	syncer.Storage = storageReaders
+	syncer.Policy = c.Domains
+	syncer.SecretPolicy = c.SecretNames
+	syncer.AfterPayload = receiptHook(c, *cfgPath, receipt.EventSend)
+
 	ctx := signalCtx()
 	syncOnce := func() error {
 		syncer.Reset()
@@ -1028,7 +1033,7 @@ func cmdStatus(args []string) error {
 	_, oldKeyErr := os.Stat(keyfile.OldKeyPath(c.KeyPath))
 	rotationInProgress := oldKeyErr == nil
 
-	st, _ := state.Load(statePath(*cfgPath))
+	st, _ := state.LoadForDisplay(*cfgPath)
 	lastSync := "never"
 	if st.LastSyncUnix > 0 {
 		lastSync = time.Unix(st.LastSyncUnix, 0).Format(time.RFC3339)

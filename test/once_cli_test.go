@@ -301,7 +301,7 @@ deny = ["drop_token"]
 	if strings.Contains(output, "blocked.example") {
 		t.Fatalf("near-expiry warning ignored domain policy:\n%s", output)
 	}
-	st, err := state.Load(filepath.Join(dir, "state.json"))
+	st, err := state.Load(state.PathForConfig(sourceCfg))
 	if err != nil {
 		t.Fatal(err)
 	}

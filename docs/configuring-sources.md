@@ -131,29 +131,46 @@ only to those principals.
 
 ## Secret removal across restarts
 
-The source's existing `state.json`, beside the resolved config file, stores a
-sorted `exported_secrets` list. It contains names only, never secret values, and
-is written atomically with mode 0600. Keep that state path when restarting a
-source or editing its configuration.
+Each source config has its own state file: `profiles/a.toml` uses
+`profiles/a.toml.state.json` and `profiles/b.toml` uses
+`profiles/b.toml.state.json`. Files contain sorted exported names and recent
+deletion tombstones, never secret values. They are written atomically with mode
+0600. Keep the same config path and state file when restarting a source.
 
-After a successful secret read and successful frame write, the source records
-the complete set of names it exported. On restart or reconnect, it loads those
-names as a deletion baseline while keeping the value snapshot empty. Every
-currently produced secret is resent as an upsert, including an empty value.
-A previously exported name that no reader now produces becomes an explicit
-sink delete. This applies to removing `secrets_dir`, KeePass or `[onepassword]`
-from the configuration, and to untagging individual entries. The 1Password
-empty-selection rule still applies while that section remains configured.
+The baseline is bound to the absolute config path, hostname, receipt identity
+(or its hostname default), configured sink peer and a domain-separated SHA-256
+fingerprint of the PSK bytes. No key bytes are stored. A copied, legacy or
+mismatched baseline logs one warning per source process and supplies no deletes.
+A fully successful secret read replaces it with the current binding and names.
+Reader errors and collisions do not replace mismatched or corrupt state.
 
-Reader errors and cross-source collisions retain the previous names and send
-no secret deletes. A missing state file is a clean first run. An unreadable or
-corrupt state file produces a warning and supplies no deletion baseline. It is
-rewritten only after a fully successful secret read. If a frame is needed, its
-write must succeed first. State-write failures are reported as sync errors.
+Only one source process may run for a config. It holds an exclusive advisory
+lock on `<config filename>.state.json.lock` for its lifetime, including
+reconnects. A second process fails immediately. The empty lock file can remain
+after exit. Do not unlink it while a source may be running.
 
-Older state files contain no exported names. Complete a successful sync with
-this version before removing a source. Without a readable names baseline, the
-source cannot identify old sink secrets for deletion. Reader caches and
-absence-confirmation counters remain in memory. After restart, a fully
-successful read reconciles the persisted names directly. Cookie and secret values
-are never restored from this state file.
+After a successful secret read and stream write, the source records the names
+it exported. On restart or reconnect, those names form a deletion baseline while
+the value snapshot starts empty. Every current secret is resent as an upsert,
+including an empty value. Missing names become explicit sink deletes. Removing
+`secrets_dir`, KeePass or `[onepassword]` therefore revokes the source's previous
+exports. Reader caches and absence-confirmation counters remain in memory.
+The 1Password empty-selection guard still applies while its reader returns an
+error.
+
+Deleted names remain as tombstones for 7 days from their first successful delete
+send. Every full resend after reconnect or restart includes unexpired tombstones
+as deletes. A replay does not extend the deadline. A name that reappears in the
+permitted reader output clears its tombstone immediately. The sink treats
+repeated deletes idempotently. The protocol has no sink acknowledgement, so a
+restart or reconnect within this window is needed to retry a delete lost before
+application.
+
+A missing state file is a clean first run. An unreadable or corrupt file warns
+and supplies no baseline. It is rewritten only after a fully successful secret
+read and any required stream write. State-write failures are sync errors.
+`status` prefers the config-specific state file and falls back to the old shared
+`state.json` only for display counters. Shared legacy names are never migrated
+into deletion state. Complete a successful sync with this version before
+removing an existing source. Without a matching names baseline, the source
+cannot identify unknown old sink secrets for deletion.

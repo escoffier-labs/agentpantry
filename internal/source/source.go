@@ -54,9 +54,15 @@ type Syncer struct {
 	Sealer       *transport.Sealer
 	Out          io.Writer
 
-	// StatePath is the existing source status file. Only exported names are persisted.
-	StatePath string
-	Clock     state.Clock
+	// StatePath is config-specific status and deletion metadata. Secret values are never persisted.
+	StatePath             string
+	Binding               state.Binding
+	stateLock             *state.Lock
+	lockedPath            string
+	lockedBinding         state.Binding
+	bindingMismatchWarned bool
+	fullResend            bool
+	Clock                 state.Clock
 
 	// AfterSync, if set, is called at the end of each successful SyncOnce.
 	// sent reports whether a frame was written; cookies/secrets/storage are the
@@ -84,6 +90,41 @@ func (s *Syncer) Reset() {
 	s.prevStorage = webstorage.Snapshot{}
 	s.baselineLoaded = false
 	s.baselineNames = nil
+	s.fullResend = true
+}
+
+// OpenState acquires the writer lease before any source read or network write.
+// Call Close at process exit. Reset preserves the lock across reconnects.
+func (s *Syncer) OpenState() error {
+	if s.stateLock != nil {
+		if s.lockedPath != s.StatePath || s.lockedBinding != s.Binding {
+			return fmt.Errorf("source state path or identity changed while writer lock is held")
+		}
+		return nil
+	}
+	if s.StatePath == "" {
+		return nil
+	}
+	if !s.Binding.Valid() {
+		return fmt.Errorf("source state requires a valid identity binding")
+	}
+	lock, err := state.Acquire(s.StatePath)
+	if err != nil {
+		return err
+	}
+	s.stateLock = lock
+	s.lockedPath = s.StatePath
+	s.lockedBinding = s.Binding
+	return nil
+}
+func (s *Syncer) Close() error {
+	if s.stateLock == nil {
+		return nil
+	}
+	err := s.stateLock.Close()
+	s.stateLock = nil
+	s.Reset()
+	return err
 }
 
 // loadBaseline keeps names separate from snapshots. Empty snapshots force every
@@ -93,6 +134,7 @@ func (s *Syncer) loadBaseline() {
 		return
 	}
 	s.baselineLoaded = true
+	s.fullResend = true
 	if s.StatePath == "" {
 		return
 	}
@@ -100,6 +142,18 @@ func (s *Syncer) loadBaseline() {
 	s.stateUsable = err == nil
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agentpantry: warning: source state %q could not be loaded; no secret deletion baseline\n", s.StatePath)
+		s.diskState = state.State{}
+		return
+	}
+	if st.Binding == nil || *st.Binding != s.Binding {
+		if _, statErr := os.Stat(s.StatePath); !os.IsNotExist(statErr) {
+			s.stateUsable = false
+			if !s.bindingMismatchWarned {
+				fmt.Fprintf(os.Stderr, "agentpantry: warning: source state %q identity binding mismatch; no secret deletion baseline\n", s.StatePath)
+				s.bindingMismatchWarned = true
+			}
+		}
+
 		s.diskState = state.State{}
 		return
 	}
@@ -170,6 +224,9 @@ func secretCollisions(perReader [][]secret.Secret, kinds []string) []string {
 
 // SyncOnce performs a single read-diff-send cycle.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
+	if err := s.OpenState(); err != nil {
+		return err
+	}
 	s.loadBaseline()
 	var allCookies []cookie.Cookie
 	for _, v := range s.Vaults {
@@ -212,6 +269,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	}
 
 	var secretDiff secret.Diff
+	var newDeletes []string
 	secretsCommitted := false
 	var curSecrets secret.Snapshot
 	if len(collisions) > 0 {
@@ -231,6 +289,20 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 				secretDiff.Deletes = append(secretDiff.Deletes, name)
 			}
 		}
+		newDeletes = append([]string(nil), secretDiff.Deletes...)
+		if s.fullResend {
+			deleted := map[string]bool{}
+			for _, name := range secretDiff.Deletes {
+				deleted[name] = true
+			}
+			for _, tomb := range s.diskState.Tombstones {
+				if _, present := curSecrets.Secrets[tomb.Name]; !present && tomb.ExpiresUnix > s.now().Unix() && !deleted[tomb.Name] {
+					secretDiff.Deletes = append(secretDiff.Deletes, tomb.Name)
+					deleted[tomb.Name] = true
+				}
+			}
+		}
+		sort.Strings(secretDiff.Deletes)
 		secretsCommitted = true
 	}
 
@@ -268,11 +340,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	commitPrev := func(sent bool) error {
 		st := s.diskState
-		clock := s.Clock
-		if clock == nil {
-			clock = state.RealClock{}
-		}
-		now := clock.Now().Unix()
+		now := s.now().Unix()
 		st.LastSyncUnix = now
 		if sent {
 			st.LastSentUnix = now
@@ -281,6 +349,23 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 			st.Storage = len(storageDiff.Upserts)
 		}
 		if secretsCommitted {
+			binding := s.Binding
+			st.Binding = &binding
+			tombs := map[string]state.Tombstone{}
+			for _, tomb := range st.Tombstones {
+				if _, present := curSecrets.Secrets[tomb.Name]; !present && tomb.ExpiresUnix > now {
+					tombs[tomb.Name] = tomb
+				}
+			}
+			for _, name := range newDeletes {
+				if _, exists := tombs[name]; !exists {
+					tombs[name] = state.Tombstone{Name: name, ExpiresUnix: now + int64(state.TombstoneTTL/time.Second)}
+				}
+			}
+			st.Tombstones = nil
+			for _, tomb := range tombs {
+				st.Tombstones = append(st.Tombstones, tomb)
+			}
 			st.ExportedSecrets = make([]string, 0, len(curSecrets.Secrets))
 			for name := range curSecrets.Secrets {
 				st.ExportedSecrets = append(st.ExportedSecrets, name)
@@ -300,6 +385,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		if secretsCommitted {
 			s.prevSecrets = curSecrets
 			s.baselineNames = nil
+			s.fullResend = false
 		}
 		if storageCommitted {
 			s.prevStorage = curStorage
@@ -334,6 +420,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		s.AfterPayload(p)
 	}
 	return nil
+}
+
+func (s *Syncer) now() time.Time {
+	if s.Clock != nil {
+		return s.Clock.Now()
+	}
+	return time.Now()
 }
 
 func (s *Syncer) afterSync(sent bool, cookies, secrets, storage int) {
