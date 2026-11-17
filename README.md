@@ -37,8 +37,6 @@ Agent Pantry reads sessions and named secrets on the daily driver and writes the
 
 <p align="center"><em>Source → seal → sink. Opt-in domains only.</em></p>
 
-<p align="center"><em>The generated source-to-sink plate above is rebuilt from <code>docs/assets/workflows/source-sink.json</code>.</em></p>
-
 ## Install
 
 ```bash
@@ -59,7 +57,7 @@ agentpantry status
 | # | Stage | The question it answers | Where in the code |
 |---|---|---|---|
 | 1 | [Capture](#1-capture) | What gets read on the daily driver? | `internal/vault`, `internal/ffvault`, `internal/cdpvault`, `internal/secretsrc`, `internal/keepass` |
-| 2 | [Filter](#2-filter) | What is allowed to leave? | `internal/policy`, `internal/cookie`, `internal/source` |
+| 2 | [Filter](#2-filter) | What is allowed to leave? | `internal/policy`, `internal/cookie`, `internal/secret`, `internal/webstorage`, `internal/source` |
 | 3 | [Seal and carry](#3-seal-and-carry) | How does it travel, and who can open it? | `internal/transport`, `internal/pair`, `internal/keyfile` |
 | 4 | [Land](#4-land) | Where does it end up on the agent machine? | `internal/sink`, `internal/surface`, `internal/receipt` |
 | 5 | [Use](#5-use) | How does the agent actually use it? | `cmd/agentpantry`, `internal/runenv`, `internal/browser` |
@@ -99,7 +97,7 @@ Source: `internal/cdpvault/cdp.go`
 
 ### Read named secrets
 
-Each regular file in `secrets_dir` becomes one secret. KeePass entries become secrets only when they carry the `keepass_tag` tag, which defaults to `agentpantry`.
+Each regular, non-hidden file in `secrets_dir` becomes one secret. Dotfiles such as `.env` are skipped. KeePass entries become secrets only when they carry the `keepass_tag` tag, which defaults to `agentpantry`.
 
 Source: `internal/secretsrc/secretsrc.go`, `internal/keepass/keepass.go`
 
@@ -159,7 +157,7 @@ flowchart LR
 
 ### Share one key
 
-Both ends hold the same 32-byte pre-shared key in a `0600` file. `keygen` writes it, or `pair` derives it from a one-time `XXXX-XXXX` short code with SPAKE2. Compare the confirmation fingerprint printed on both ends before the first sync.
+Both ends hold the same 32-byte pre-shared key, stored hex-encoded in a `0600` file. `keygen` writes it, or `pair` derives it from a one-time `XXXX-XXXX` short code with SPAKE2. Compare the confirmation fingerprint printed on both ends before the first sync.
 
 Source: `internal/keyfile/keyfile.go`, `internal/pair/pair.go`
 
@@ -177,7 +175,7 @@ Source: `internal/transport/envelope.go`, `internal/transport/frame.go`, `intern
 
 ### Carry it over TCP or SSH
 
-A TCP source reconnects with capped backoff from 1s to 30s. For a tunnel, pipe it: `agentpantry source --stdio | ssh sink.example agentpantry sink --stdio`. The sink serves at most 32 connections and waits 30 seconds for the first authenticated frame.
+A TCP source reconnects with capped backoff from 1s to 30s. For a tunnel, pipe it: `agentpantry source --stdio | ssh sink.example agentpantry sink --stdio`. Over TCP the sink serves at most 32 concurrent connections and waits 30 seconds for the first authenticated frame.
 
 Source: `cmd/agentpantry/main.go`
 
@@ -248,7 +246,7 @@ Source: `cmd/agentpantry/main.go`, `cmd/agentpantry/desktopapp.go`
 
 ### Launch a signed-in automation browser
 
-`agentpantry browser` starts Chrome on a loopback debugging port, loads cookies and `localStorage` from the sidecar, and leaves the endpoint open for a scraper to attach. The profile is a throwaway directory unless you pass `--profile`.
+`agentpantry browser` starts Chrome on a loopback debugging port, and loads cookies and `localStorage` from the sidecar. It stops Chrome when it returns. Pass `--keep-open` to leave the endpoint up for a scraper to attach. The profile is a throwaway directory unless you pass `--profile`.
 
 Source: `internal/browser/browser.go`, `cmd/agentpantry/main.go`
 
@@ -266,7 +264,7 @@ Some agent web readers deliberately refuse signed-in profiles and stop with a "r
 agentpantry browser -config ./sink.toml --profile ~/lanes/research --port 9223 --keep-open
 ```
 
-The `--profile` directory persists between launches, so the lane stays warm. To refresh a lane you already drive, run `agentpantry restore --to cdp=http://127.0.0.1:9223`. Match the browser's user agent, timezone, and language to where the session was minted, or the site may flag it anyway.
+The `--profile` directory persists between launches, so the lane stays warm. To refresh a lane you already drive, run `agentpantry restore -config ./sink.toml --to cdp=http://127.0.0.1:9223`. Match the browser's user agent, timezone, and language to where the session was minted, or the site may flag it anyway.
 
 ## Quickstart
 
@@ -355,7 +353,7 @@ credential-harvesting tool.
 It does not:
 
 - store or generate your passwords, or hand out credentials on request
-- sync anything until you add a domain to `domains.allow`
+- sync a cookie until you add its domain to `domains.allow`
 - run in the background as a system service unless you install one yourself
 - log cookie values, token values, pre-shared keys, or secret contents
 - reach out to any network it was not configured to dial
@@ -366,9 +364,10 @@ state you explicitly allow.
 
 ## Security
 
-- Domains are opt-in. Nothing syncs until you add it to `domains.allow`. An
-  empty allow list permits nothing, and a `domains.deny` entry overrides any
-  allow match.
+- Domains are opt-in. No cookie syncs until its domain is in `domains.allow`.
+  An empty allow list permits nothing, and a `domains.deny` entry overrides any
+  allow match. Secrets sync only from a configured `secrets_dir` or tagged
+  KeePass entries, gated by `[secret_names]`.
 - The sidecar SQLite is plaintext, mode 0600. Treat the sink like a secret
   store: anyone who can read that file can impersonate the synced sessions.
 - The pre-shared key file is written 0600 and must be kept off shared storage.
