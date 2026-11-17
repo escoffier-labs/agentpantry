@@ -15,6 +15,9 @@ type DirReader struct {
 	Dir string
 }
 
+// Kind names this source in collision reports.
+func (r *DirReader) Kind() string { return "secrets_dir" }
+
 func (r *DirReader) ReadSecrets(ctx context.Context) ([]secret.Secret, error) {
 	entries, err := os.ReadDir(r.Dir)
 	if err != nil {
