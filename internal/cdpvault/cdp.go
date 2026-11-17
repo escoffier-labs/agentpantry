@@ -146,8 +146,15 @@ func canonicalSortedStorageOrigins(origins []string) []string {
 }
 
 func (c *CDP) cdpHTTPClient() *http.Client {
+	return NewHTTPClient(30 * time.Second)
+}
+
+// NewHTTPClient returns the client used for DevTools HTTP endpoints: it has a
+// hard timeout and refuses to follow redirects, so a loopback-validated URL
+// cannot be bounced to another host.
+func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: timeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
