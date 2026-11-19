@@ -2,10 +2,23 @@
 
 ## Unreleased
 
+## v0.8.0 - 2026-11-18
+
+### Security
+- Release binaries now build with the go1.26.11 toolchain (v0.7.0 shipped on
+  go1.25.13). This resolves GO-2026-6809 in `crypto/x509` and GO-2026-6859 in
+  `net/http`, both flagged by govulncheck.
+
+### Changed
+- Building from source now requires Go 1.26.6 or newer (v0.7.0 required 1.25).
+  The `modernc.org/sqlite` 1.60 dependency moved the floor to 1.26, and the
+  `tailscale.com` LocalAPI client raised it to 1.26.6. With Go's automatic
+  toolchain download, `go install` fetches go1.26.11 on its own.
+
 ### Added
 - Tagged 1Password service-account secret source with pinned vault identity, isolated CLI calls, transactional polling, confirmed name release, private token checks, dry-run disclosure and doctor diagnostics.
 - Optional Tailscale identity gates for sink and pairing listeners, `tailnet:` / `tailnet6:` binds, and LocalAPI doctor checks. Sync still requires the PSK.
-- Pin `tailscale.com` v1.102.5 (LocalAPI client only). Its dependency floor raises the Go directive from 1.26.0 to 1.26.6. The toolchain remains go1.26.11.
+- Pin `tailscale.com` v1.102.5 (LocalAPI client only). See Changed for the Go version floor it sets.
 - `verify` checks whether a running browser still has a working session for one
   domain by loading a page in that browser and classifying what came back. It
   reports `ok`, `challenge`, `empty`, or `off_domain`, with the marker that
@@ -35,6 +48,13 @@
 ### Fixed
 - Isolate exported-name state by resolved real config path and bind it to config, host, receipt identity and peer. PSKs are excluded so key rotation preserves pending revocations without storing a candidate-key oracle. Hold a single-writer advisory lock and replay deletion tombstones for 7 days after reconnect or restart. Cap tombstones at 1,000 entries and state reads at 4 MiB, and validate existing Windows lock ACLs. Legacy shared state is display-only. State never contains secret values or key-derived material.
 - A secret name produced by more than one source (`secrets_dir` and KeePass), or repeated within one source, no longer silently overwrites by reader order. The cycle's secret read now fails like an unreadable source: no secret diff, the sink keeps what it has, cookies and storage still sync, and stderr names the colliding secret and the sources involved (never values). The check runs before the `[secret_names]` filter.
+- A listener bind with an empty host (for example `:9443`) was treated as
+  loopback, although it listens on every interface. `doctor` and the startup
+  wide-bind warnings now flag it.
+- `scripts/cut-release.sh` exits nonzero before installing when the GitHub
+  release never becomes visible, instead of installing a binary whose
+  publication is unconfirmed. `make package` now stops at the first failing
+  archive step.
 
 ## v0.7.0 - 2026-08-26
 
