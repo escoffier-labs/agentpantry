@@ -29,6 +29,20 @@ Report actual command results. If anything fails, quote the failure verbatim and
 - Staging files? Run `git status` first. `psk.key`, `config.toml`, the root `agentpantry` binary, `dist/`, `memory/`, and `.brigade/` are gitignored on purpose. Never commit keys, configs, or runtime state, and never use `git add -f` on ignored paths.
 - Pushing? Never. Do not push unless the user explicitly asks, and never with `--no-verify` if a pre-push hook exists.
 
+## GitHub agent attribution
+
+In Solomon's repositories, every issue body, pull request body, and GitHub comment an agent writes or edits on Solomon's behalf ends with this block. Keep the human author identity. Use the actual model, harness, and client. Credit only work performed, include the provider if a model name is ambiguous, and list each review pass. Report the exact checks and observed results above the block. Credit verification to the model that ran the checks.
+
+```text
+Sent on behalf of Solomon by <orchestrator model> via <harness> in <client>
+Models used:
+- Implementation/build: <model> via <harness>, or none
+- Test/verification: <model> via <harness> (checks: listed above), or not run
+- Review: <model> via <harness> for each pass, or none
+```
+
+Every agent-written review comment and review summary also includes `Review by <model> via <harness> in <client>`.
+
 ## Security Invariants (do not weaken)
 This tool moves live authenticated browser sessions and real secrets. The following are load-bearing; do not loosen, bypass, or "simplify" any of them. Any intentional change here requires a matching update to `docs/threat-model.md` and explicit user sign-off:
 - Session-salt handshake plus HKDF per-session keys. Never reuse a session key, never make the salt static, never skip the handshake in tests by patching it out of production paths.
