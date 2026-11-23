@@ -14,3 +14,9 @@
 
 Note any changes to synced secret material, cookie handling, filesystem writes,
 network exposure, or release artifacts.
+
+<!--
+If an agent writes or edits this PR body on Solomon's behalf, report the exact
+checks and observed results above the attribution block. Append the completed
+GitHub agent attribution block from AGENTS.md as the final visible text.
+-->
